@@ -62,11 +62,15 @@ class CoinGlassClient:
         liq_data = raw_data.get("liquidation_leverage_data")
 
         if not y_axis or not liq_data:
-            logger.warning("清算矩阵缺少 y_axis 或 liquidation_leverage_data")
+            logger.warning(f"清算矩阵数据不完整: y_axis={bool(y_axis)}, liq_data={bool(liq_data)}")
             return result
 
         if not isinstance(liq_data, list):
             logger.warning("liquidation_leverage_data 不是列表")
+            return result
+
+        if len(liq_data) == 0:
+            logger.info("清算数据列表为空，可能当前时间段无显著清算压力")
             return result
 
         total_long = 0.0
@@ -96,6 +100,11 @@ class CoinGlassClient:
 
             pain_map[price] = pain_map.get(price, 0.0) + intensity
 
+        if total_long == 0 and total_short == 0:
+            logger.info("清算解析结果为零，可能当前价格附近无显著清算堆积")
+        else:
+            logger.info(f"清算解析: 上方空头={total_short:,.0f}, 下方多头={total_long:,.0f}")
+
         max_pain_price = None
         max_pain_value = 0.0
         for price, val in pain_map.items():
@@ -114,19 +123,18 @@ class CoinGlassClient:
 
         result["above_short_liquidation"] = f"{total_short:,.0f}"
         result["below_long_liquidation"] = f"{total_long:,.0f}"
-        if max_pain_price is not None:
+        if max_pain_price is not None and max_pain_value > 0:
             result["max_pain_price"] = f"{max_pain_price:.1f}"
         if nearest_cluster_price is not None:
             direction = "上" if nearest_cluster_price > current_price else "下"
             intensity_val = pain_map.get(nearest_cluster_price, 0)
-            intensity = min(5, int(intensity_val / 5000000) + 1)
+            intensity = min(5, int(intensity_val / 5000000) + 1) if intensity_val > 0 else 1
             result["nearest_cluster"] = {
                 "direction": direction,
                 "price": f"{nearest_cluster_price:.1f}",
                 "intensity": str(intensity)
             }
 
-        logger.info(f"清算解析: 上方空头={result['above_short_liquidation']}, 下方多头={result['below_long_liquidation']}, 痛点={result['max_pain_price']}")
         return result
 
     # ---------- 持仓量 ----------
@@ -144,12 +152,12 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 顶级交易员多空比（官方端点：/api/futures/top-long-short-account-ratio/history）----------
+    # ---------- 顶级交易员多空比 ----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, silent_fail=True)
 
-    # ---------- 期权信息（官方端点：/api/option/info）----------
+    # ---------- 期权信息 ----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, silent_fail=True)
@@ -219,7 +227,6 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 顶级交易员多空比（官方字段：top_account_long_short_ratio）
         top_ls_history = self.get_top_long_short_ratio_history(symbol)
         top_ls_ratio = "N/A"
         if isinstance(top_ls_history, list) and len(top_ls_history) > 0:
@@ -228,20 +235,17 @@ class CoinGlassClient:
                 top_ls_ratio = latest.get("top_account_long_short_ratio", "N/A")
         data["top_long_short_ratio"] = top_ls_ratio
 
-        # 期权信息（官方返回数组，取第一个元素中的 open_interest_usd 等，无 PCR/IV 字段，故改为提取有意义的指标）
         options_info = self.get_options_info(symbol)
-        pcr = "N/A"      # 官方接口未提供 PCR，暂时保留占位
-        iv = "N/A"       # 官方接口未提供 IV
+        pcr = "N/A"
+        iv = "N/A"
         oi_usd = "N/A"
         if isinstance(options_info, list) and len(options_info) > 0:
-            # 取第一个交易所的数据（通常为 "All"）
             first = options_info[0]
             if isinstance(first, dict):
                 oi_usd = first.get("open_interest_usd", "N/A")
-                # 如果官方后续增加了 PCR/IV 字段，可在此扩展
         data["put_call_ratio"] = pcr
         data["implied_volatility"] = iv
-        data["option_oi_usd"] = oi_usd   # 新增期权持仓价值，供 Prompt 参考
+        data["option_oi_usd"] = oi_usd
 
         taker_history = self.get_taker_volume_history(symbol)
         taker_ratio = "N/A"
