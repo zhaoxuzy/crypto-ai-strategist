@@ -1,17 +1,15 @@
 import os
+import time
 import requests
 from utils.logger import logger
 
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 使用 KeyStore 代理（请确保您的 API Key 是 KeyStore 提供的格式）
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
 
-    def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
-        """
-        发送请求，silent_fail=True 时遇到错误只记录 WARNING 并返回空字典
-        """
+    def _request(self, endpoint: str, params: dict = None) -> dict:
+        """发送 GET 请求，每次请求后强制延迟 0.5 秒以避免速率限制"""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -20,36 +18,29 @@ class CoinGlassClient:
         params = params or {}
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
+            # 速率限制保护
+            time.sleep(0.5)
             data = resp.json()
             if data.get("code") not in (0, "0"):
-                msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                if silent_fail:
-                    logger.warning(msg)
-                else:
-                    logger.error(msg)
+                logger.error(f"CoinGlass API 错误: {data.get('msg', data)}")
                 return {}
             return data.get("data", {})
         except Exception as e:
-            msg = f"CoinGlass 请求失败: {e}"
-            if silent_fail:
-                logger.warning(msg)
-            else:
-                logger.error(msg)
+            logger.error(f"CoinGlass 请求失败: {e}")
             return {}
 
-    # ---------- 核心接口（已验证可用）----------
+    # ---------- 核心接口（已根据文档验证）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
-        """获取清算热力图 (模型2) - 官方文档端点"""
+        """清算热力图 Model2 - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
             "range": "24h"
         }
-        # 此接口需要 Professional 或更高套餐，权限不足时会静默失败
-        return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
+        return self._request("api/futures/liquidation/heatmap/model2", params)
 
     def get_open_interest_history(self, symbol: str = "BTC"):
-        """获取持仓量 OHLC 历史 - 官方文档端点"""
+        """持仓量 OHLC 历史 - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -59,7 +50,7 @@ class CoinGlassClient:
         return self._request("api/futures/openInterest/ohlc-history", params)
 
     def get_funding_rate_history(self, symbol: str = "BTC"):
-        """获取资金费率 OHLC 历史 - 官方文档端点"""
+        """资金费率 OHLC 历史 - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -69,7 +60,7 @@ class CoinGlassClient:
         return self._request("api/futures/fundingRate/ohlc-history", params)
 
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
-        """获取全局多空比历史 - 官方文档端点"""
+        """全局多空比历史 - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -79,7 +70,7 @@ class CoinGlassClient:
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
     def get_taker_volume_history(self, symbol: str = "BTC"):
-        """获取主动买卖量历史 - 官方文档端点 (V4 中无 /v2)"""
+        """主动买卖量历史 - 官方端点（V4中无/v2）"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -88,29 +79,9 @@ class CoinGlassClient:
         }
         return self._request("api/futures/taker-buy-sell-volume/history", params)
 
-    def get_option_max_pain(self, symbol: str = "BTC"):
-        """获取期权最大痛点 - 官方文档端点，用于替代偏度"""
-        params = {
-            "exchange": "All",
-            "symbol": f"{symbol}USDT"
-        }
-        # 此接口可能需要特定权限，权限不足时静默失败
-        return self._request("api/option/max-pain", params, silent_fail=True)
-
-    def get_cvd_history(self, symbol: str = "BTC"):
-        """获取现货聚合 CVD 历史 - 官方文档端点"""
-        params = {
-            "exchange": "All",
-            "symbol": f"{symbol}USDT",
-            "interval": "5m",
-            "limit": 24
-        }
-        return self._request("api/spot/aggregated-cvd/history", params, silent_fail=True)
-
     # ---------- 辅助解析函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
-        """从 OHLC 数据中提取收盘价，兼容列表和字典格式"""
         if isinstance(candle, list) and len(candle) >= 5:
             return float(candle[4])
         elif isinstance(candle, dict):
@@ -119,7 +90,6 @@ class CoinGlassClient:
 
     @staticmethod
     def _get_buy_sell_volumes(candle):
-        """从主动买卖量数据中提取买卖量"""
         if isinstance(candle, list):
             buy = float(candle[4]) if len(candle) > 4 else 0.0
             sell = float(candle[5]) if len(candle) > 5 else 0.0
@@ -130,7 +100,7 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    # ---------- 数据聚合主函数 ----------
+    # ---------- 数据聚合（仅包含已验证接口）----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
@@ -170,7 +140,7 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 5. 主动吃单比率（最新一小时）
+        # 5. 主动吃单比率
         taker_history = self.get_taker_volume_history(symbol)
         taker_ratio = "N/A"
         if isinstance(taker_history, list) and len(taker_history) > 0:
@@ -180,45 +150,9 @@ class CoinGlassClient:
                 taker_ratio = f"{(buy_vol / total):.2f}"
         data["taker_ratio"] = taker_ratio
 
-        # 6. 期权最大痛点（替代偏度）
-        max_pain_data = self.get_option_max_pain(symbol)
-        skew_value = "N/A"
-        if isinstance(max_pain_data, dict):
-            skew_value = max_pain_data.get("maxPain", "N/A")
-        data["skew"] = skew_value
-
-        # 7. CVD 斜率信号（基于现货聚合 CVD）
-        cvd_signal = "N/A"
-        cvd_slope = "N/A"
-        cvd_history = self.get_cvd_history(symbol)
-        if isinstance(cvd_history, list) and len(cvd_history) >= 12:
-            recent = cvd_history[-12:]
-            values = []
-            for item in recent:
-                if isinstance(item, list) and len(item) >= 5:
-                    values.append(float(item[4]))
-                elif isinstance(item, dict):
-                    values.append(float(item.get("close", 0)))
-            if len(values) >= 2:
-                n = len(values)
-                x_mean = (n - 1) / 2
-                y_mean = sum(values) / n
-                numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
-                denominator = sum((i - x_mean) ** 2 for i in range(n))
-                if denominator != 0:
-                    slope = numerator / denominator
-                    cvd_slope = round(slope, 4)
-                    if slope > 10:
-                        cvd_signal = "bullish"
-                    elif slope > 2:
-                        cvd_signal = "slightly_bullish"
-                    elif slope < -10:
-                        cvd_signal = "bearish"
-                    elif slope < -2:
-                        cvd_signal = "slightly_bearish"
-                    else:
-                        cvd_signal = "neutral"
-        data["cvd_signal"] = cvd_signal
-        data["cvd_slope"] = cvd_slope
+        # 6. 期权信号与CVD暂用占位符（后续可按需扩展）
+        data["skew"] = "N/A"
+        data["cvd_signal"] = "N/A"
+        data["cvd_slope"] = "N/A"
 
         return data
