@@ -38,7 +38,7 @@ def main():
 
         # 2. 获取 CoinGlass 数据
         cg = CoinGlassClient()
-        cg_data = cg.get_all_data(symbol)
+       cg_data = cg.get_all_data(symbol, current_price=price)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
 
         # 3. 获取宏观数据
