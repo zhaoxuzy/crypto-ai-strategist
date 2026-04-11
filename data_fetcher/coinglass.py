@@ -37,7 +37,7 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 清算热力图 ----------
+    # ---------- 清算热力图（model2，官方文档确认）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -59,122 +59,106 @@ class CoinGlassClient:
             return result
 
         y_axis = raw_data.get("y_axis")
-        flat_matrix = raw_data.get("liquidation_leverage_data")
+        liq_data = raw_data.get("liquidation_leverage_data")
 
-        if not y_axis or not flat_matrix:
+        if not y_axis or not liq_data:
             logger.warning("清算矩阵缺少 y_axis 或 liquidation_leverage_data")
             return result
 
-        y_len = len(y_axis)
-        m_len = len(flat_matrix)
-
-        if m_len % y_len != 0:
-            logger.warning(f"清算矩阵长度不匹配: y_axis={y_len}, matrix={m_len}, 无法整除")
+        # model2 返回的是稀疏矩阵：[x_index, y_index, intensity] 三元组列表
+        if not isinstance(liq_data, list):
+            logger.warning("liquidation_leverage_data 不是列表")
             return result
-
-        stride = m_len // y_len
-        logger.info(f"清算矩阵分组: {y_len} 个价格档位, 每个档位 {stride} 个数据点")
 
         total_long = 0.0
         total_short = 0.0
+        pain_map = {}  # 价格 -> 清算强度累计
+
+        for item in liq_data:
+            if not isinstance(item, list) or len(item) < 3:
+                continue
+            x_idx = int(item[0])
+            y_idx = int(item[1])
+            intensity = float(item[2])
+
+            if y_idx < 0 or y_idx >= len(y_axis):
+                continue
+
+            price = float(y_axis[y_idx])
+
+            # 根据 x_idx 区分多空清算（通常 0=多头清算，1=空头清算）
+            if x_idx == 0:
+                if price < current_price:
+                    total_long += intensity
+            elif x_idx == 1:
+                if price > current_price:
+                    total_short += intensity
+            else:
+                continue
+
+            # 累计该价格的清算强度
+            pain_map[price] = pain_map.get(price, 0.0) + intensity
+
+        # 找出最大痛点价格
         max_pain_price = None
         max_pain_value = 0.0
-        nearest_cluster_idx = None
+        for price, val in pain_map.items():
+            if val > max_pain_value:
+                max_pain_value = val
+                max_pain_price = price
+
+        # 找最近清算密集区
+        nearest_cluster_price = None
         nearest_cluster_distance = float('inf')
-
-        for i, price in enumerate(y_axis):
-            price_f = float(price)
-            start = i * stride
-            end = start + stride
-            group = flat_matrix[start:end]
-
-            group_long = 0.0
-            group_short = 0.0
-            for item in group:
-                if isinstance(item, list) and len(item) >= 2:
-                    group_long += float(item[0]) if item[0] is not None else 0.0
-                    group_short += float(item[1]) if item[1] is not None else 0.0
-                elif isinstance(item, dict):
-                    group_long += float(item.get("longLiquidation", item.get("long", 0)))
-                    group_short += float(item.get("shortLiquidation", item.get("short", 0)))
-
-            if price_f > current_price:
-                total_short += group_short
-            elif price_f < current_price:
-                total_long += group_long
-
-            total_liq = group_long + group_short
-            if total_liq > max_pain_value:
-                max_pain_value = total_liq
-                max_pain_price = price_f
-
-            if total_liq > 0:
-                distance = abs(price_f - current_price)
+        for price, val in pain_map.items():
+            if val > 0:
+                distance = abs(price - current_price)
                 if distance < nearest_cluster_distance:
                     nearest_cluster_distance = distance
-                    nearest_cluster_idx = i
+                    nearest_cluster_price = price
 
         result["above_short_liquidation"] = f"{total_short:,.0f}"
         result["below_long_liquidation"] = f"{total_long:,.0f}"
         if max_pain_price is not None:
             result["max_pain_price"] = f"{max_pain_price:.1f}"
-
-        if nearest_cluster_idx is not None:
-            price = float(y_axis[nearest_cluster_idx])
-            start = nearest_cluster_idx * stride
-            end = start + stride
-            group = flat_matrix[start:end]
-            group_long = 0.0
-            group_short = 0.0
-            for item in group:
-                if isinstance(item, list) and len(item) >= 2:
-                    group_long += float(item[0]) if item[0] else 0.0
-                    group_short += float(item[1]) if item[1] else 0.0
-                elif isinstance(item, dict):
-                    group_long += float(item.get("long", 0))
-                    group_short += float(item.get("short", 0))
-            direction = "上" if price > current_price else "下"
-            intensity = min(5, int((group_long + group_short) / 5000000) + 1)
+        if nearest_cluster_price is not None:
+            direction = "上" if nearest_cluster_price > current_price else "下"
+            intensity_val = pain_map.get(nearest_cluster_price, 0)
+            intensity = min(5, int(intensity_val / 5000000) + 1)
             result["nearest_cluster"] = {
                 "direction": direction,
-                "price": f"{price:.1f}",
+                "price": f"{nearest_cluster_price:.1f}",
                 "intensity": str(intensity)
             }
 
         logger.info(f"清算解析: 上方空头={result['above_short_liquidation']}, 下方多头={result['below_long_liquidation']}, 痛点={result['max_pain_price']}")
         return result
 
-    # ---------- 持仓量 ----------
+    # ---------- 其他接口 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params)
 
-    # ---------- 资金费率 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params)
 
-    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, silent_fail=True)
 
-    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, silent_fail=True)
 
-    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
-    # ---------- 辅助解析 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -195,7 +179,6 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
             current_price = 70000.0
