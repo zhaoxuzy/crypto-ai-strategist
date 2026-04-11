@@ -37,7 +37,7 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 清算热力图（矩阵解析）----------
+    # ---------- 清算热力图 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -46,7 +46,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-       def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
+    def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
         result = {
             "above_short_liquidation": "0",
             "below_long_liquidation": "0",
@@ -88,7 +88,6 @@ class CoinGlassClient:
             end = start + stride
             group = flat_matrix[start:end]
 
-            # 聚合该价格档位的多空清算总量
             group_long = 0.0
             group_short = 0.0
             for item in group:
@@ -145,32 +144,37 @@ class CoinGlassClient:
         logger.info(f"清算解析: 上方空头={result['above_short_liquidation']}, 下方多头={result['below_long_liquidation']}, 痛点={result['max_pain_price']}")
         return result
 
-    # ---------- 其他接口 ----------
+    # ---------- 持仓量 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params)
 
+    # ---------- 资金费率 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params)
 
+    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
+    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, silent_fail=True)
 
+    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, silent_fail=True)
 
+    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
-    # ---------- 辅助函数 ----------
+    # ---------- 辅助解析 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
