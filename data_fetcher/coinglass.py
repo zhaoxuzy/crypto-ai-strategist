@@ -144,12 +144,12 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 顶级交易员多空比 ----------
+    # ---------- 顶级交易员多空比（官方端点：/api/futures/top-long-short-account-ratio/history）----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, silent_fail=True)
 
-    # ---------- 期权信息（PCR 和 IV）----------
+    # ---------- 期权信息（官方端点：/api/option/info）----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, silent_fail=True)
@@ -219,20 +219,29 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
+        # 顶级交易员多空比（官方字段：top_account_long_short_ratio）
         top_ls_history = self.get_top_long_short_ratio_history(symbol)
         top_ls_ratio = "N/A"
         if isinstance(top_ls_history, list) and len(top_ls_history) > 0:
-            top_ls_ratio = self._get_close_from_candle(top_ls_history[-1])
+            latest = top_ls_history[-1]
+            if isinstance(latest, dict):
+                top_ls_ratio = latest.get("top_account_long_short_ratio", "N/A")
         data["top_long_short_ratio"] = top_ls_ratio
 
+        # 期权信息（官方返回数组，取第一个元素中的 open_interest_usd 等，无 PCR/IV 字段，故改为提取有意义的指标）
         options_info = self.get_options_info(symbol)
-        pcr = "N/A"
-        iv = "N/A"
-        if isinstance(options_info, dict):
-            pcr = options_info.get("putCallRatio", options_info.get("pcr", "N/A"))
-            iv = options_info.get("impliedVolatility", options_info.get("iv", "N/A"))
+        pcr = "N/A"      # 官方接口未提供 PCR，暂时保留占位
+        iv = "N/A"       # 官方接口未提供 IV
+        oi_usd = "N/A"
+        if isinstance(options_info, list) and len(options_info) > 0:
+            # 取第一个交易所的数据（通常为 "All"）
+            first = options_info[0]
+            if isinstance(first, dict):
+                oi_usd = first.get("open_interest_usd", "N/A")
+                # 如果官方后续增加了 PCR/IV 字段，可在此扩展
         data["put_call_ratio"] = pcr
         data["implied_volatility"] = iv
+        data["option_oi_usd"] = oi_usd   # 新增期权持仓价值，供 Prompt 参考
 
         taker_history = self.get_taker_volume_history(symbol)
         taker_ratio = "N/A"
