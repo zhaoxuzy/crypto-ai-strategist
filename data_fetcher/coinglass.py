@@ -6,8 +6,9 @@ from utils.logger import logger
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
+        # 使用 KeyStore 代理，若直连可改为 https://open-api-v4.coinglass.com
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 6.0  # 免费版请求间隔6秒
+        self.delay = 6.0  # 免费版/Professional均建议保留延迟，避免限频
 
     def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -36,7 +37,9 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
+    # ---------- 清算热力图 (修正解析) ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        """官方端点: /api/futures/liquidation/heatmap/model2"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -44,6 +47,25 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
+    def _parse_liquidation_data(self, raw_data: dict) -> dict:
+        """
+        从原始响应中提取清算汇总信息。
+        响应结构可能是 {'summary': {...}} 或直接在顶层包含清算数据。
+        """
+        # 如果 raw_data 本身就是空或非字典，返回空
+        if not isinstance(raw_data, dict):
+            return {}
+        # 优先取 summary 字段
+        summary = raw_data.get("summary")
+        if isinstance(summary, dict):
+            return summary
+        # 若无 summary，检查是否直接包含 shortLiquidationTotal 等字段
+        if "shortLiquidationTotal" in raw_data or "longLiquidationTotal" in raw_data:
+            return raw_data
+        # 某些版本可能将数据放在 data 列表中，我们不做复杂解析，返回空让上层用 N/A
+        return {}
+
+    # ---------- 持仓量历史 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "Binance",
@@ -53,6 +75,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/open-interest/history", params)
 
+    # ---------- 资金费率历史 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "Binance",
@@ -62,6 +85,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/funding-rate/history", params)
 
+    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "Binance",
@@ -71,7 +95,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # 如需主动买卖量，可取消注释（注意增加一次请求）
+    # ---------- 主动买卖量（可选，暂不调用以节省请求）----------
     # def get_taker_volume_history(self, symbol: str = "BTC"):
     #     params = {
     #         "exchange": "Binance",
@@ -81,6 +105,25 @@ class CoinGlassClient:
     #     }
     #     return self._request("api/futures/v2/taker-buy-sell-volume/history", params)
 
+    # ---------- 期权最大痛点 (替代偏度) ----------
+    def get_option_max_pain(self, symbol: str = "BTC"):
+        params = {
+            "exchange": "All",
+            "symbol": f"{symbol}USDT"
+        }
+        return self._request("api/option/max-pain", params, silent_fail=True)
+
+    # ---------- CVD (可选) ----------
+    # def get_cvd_history(self, symbol: str = "BTC"):
+    #     params = {
+    #         "exchange": "Binance",
+    #         "symbol": f"{symbol}USDT",
+    #         "interval": "5m",
+    #         "limit": 24
+    #     }
+    #     return self._request("api/futures/cvd/history", params, silent_fail=True)
+
+    # ---------- 辅助解析 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -89,12 +132,13 @@ class CoinGlassClient:
             return float(candle.get("close", 0))
         return 0.0
 
+    # ---------- 数据聚合主函数 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
-        # 1. 清算热力图
-        heatmap = self.get_liquidation_heatmap(symbol)
-        summary = heatmap.get("summary", {}) if isinstance(heatmap, dict) else {}
+        # 1. 清算热力图 (使用修正后的解析器)
+        heatmap_raw = self.get_liquidation_heatmap(symbol)
+        summary = self._parse_liquidation_data(heatmap_raw)
         data["above_short_liquidation"] = summary.get("shortLiquidationTotal", "N/A")
         data["below_long_liquidation"] = summary.get("longLiquidationTotal", "N/A")
         data["max_pain_price"] = summary.get("maxPain", "N/A")
@@ -128,10 +172,26 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 主动买卖量、期权、CVD 暂用占位符（避免超限）
+        # 5. 主动吃单比率（未调用，设为 N/A）
         data["taker_ratio"] = "N/A"
-        data["skew"] = "N/A"
+
+        # 6. 期权最大痛点
+        max_pain_data = self.get_option_max_pain(symbol)
+        skew_value = "N/A"
+        if isinstance(max_pain_data, dict):
+            # 优先取 maxPain，若无则尝试其他字段
+            skew_value = max_pain_data.get("maxPain", max_pain_data.get("max_pain", "N/A"))
+        elif isinstance(max_pain_data, list) and len(max_pain_data) > 0:
+            latest = max_pain_data[-1]
+            if isinstance(latest, dict):
+                skew_value = latest.get("maxPain", latest.get("max_pain", "N/A"))
+        data["skew"] = skew_value
+
+        # 7. CVD 暂用占位符
         data["cvd_signal"] = "N/A"
         data["cvd_slope"] = "N/A"
+
+        # 可选：打印部分数据以便调试
+        logger.info(f"清算数据解析结果: shortLiq={data['above_short_liquidation']}, longLiq={data['below_long_liquidation']}")
 
         return data
