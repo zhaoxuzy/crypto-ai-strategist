@@ -37,7 +37,6 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 清算热力图（原始矩阵）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -47,13 +46,6 @@ class CoinGlassClient:
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
     def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
-        """
-        从原始热力图矩阵中提取：
-        - 上方空头清算总量
-        - 下方多头清算总量
-        - 最大痛点价格
-        - 最近清算密集区方向/价格/强度
-        """
         result = {
             "above_short_liquidation": "N/A",
             "below_long_liquidation": "N/A",
@@ -62,22 +54,24 @@ class CoinGlassClient:
         }
 
         if not isinstance(raw_data, dict):
+            logger.warning("清算数据不是字典，无法解析")
             return result
 
-        y_axis = raw_data.get("y_axis", [])
-        matrix = raw_data.get("liquidation_leverage_data", [])
+        y_axis = raw_data.get("y_axis")
+        matrix = raw_data.get("liquidation_leverage_data")
 
-        if not y_axis or not matrix or len(y_axis) != len(matrix):
-            logger.warning("清算矩阵数据格式异常，无法解析")
+        if not y_axis or not matrix:
+            logger.warning("清算矩阵缺少 y_axis 或 liquidation_leverage_data 字段")
             return result
 
-        # 矩阵每一行对应一个价格档位，包含 [long_liquidation, short_liquidation]
+        if len(y_axis) != len(matrix):
+            logger.warning(f"y_axis 长度({len(y_axis)})与 matrix 长度({len(matrix)})不匹配")
+            return result
+
         total_long = 0.0
         total_short = 0.0
         max_pain_price = None
         max_pain_value = 0.0
-
-        # 找最近的清算密集区（强度基于清算金额的绝对值）
         nearest_cluster_idx = None
         nearest_cluster_distance = float('inf')
 
@@ -88,34 +82,34 @@ class CoinGlassClient:
             long_liq = float(row[0]) if row[0] is not None else 0.0
             short_liq = float(row[1]) if row[1] is not None else 0.0
 
-            if price > current_price:
+            price_f = float(price)
+            if price_f > current_price:
                 total_short += short_liq
-            elif price < current_price:
+            elif price_f < current_price:
                 total_long += long_liq
 
             total_liq = long_liq + short_liq
             if total_liq > max_pain_value:
                 max_pain_value = total_liq
-                max_pain_price = price
+                max_pain_price = price_f
 
-            # 寻找离当前价最近且有清算量的档位
             if total_liq > 0:
-                distance = abs(price - current_price)
+                distance = abs(price_f - current_price)
                 if distance < nearest_cluster_distance:
                     nearest_cluster_distance = distance
                     nearest_cluster_idx = i
 
-        result["above_short_liquidation"] = f"{total_short:,.0f}" if total_short > 0 else "N/A"
-        result["below_long_liquidation"] = f"{total_long:,.0f}" if total_long > 0 else "N/A"
+        result["above_short_liquidation"] = f"{total_short:,.0f}" if total_short > 0 else "0"
+        result["below_long_liquidation"] = f"{total_long:,.0f}" if total_long > 0 else "0"
         result["max_pain_price"] = f"{max_pain_price:.1f}" if max_pain_price is not None else "N/A"
 
         if nearest_cluster_idx is not None:
-            price = y_axis[nearest_cluster_idx]
+            price = float(y_axis[nearest_cluster_idx])
             row = matrix[nearest_cluster_idx]
             long_liq = float(row[0]) if row[0] else 0.0
             short_liq = float(row[1]) if row[1] else 0.0
             direction = "上" if price > current_price else "下"
-            intensity = min(5, int((long_liq + short_liq) / 5000000) + 1)  # 简单强度分级
+            intensity = min(5, int((long_liq + short_liq) / 5000000) + 1)
             result["nearest_cluster"] = {
                 "direction": direction,
                 "price": f"{price:.1f}",
@@ -125,65 +119,31 @@ class CoinGlassClient:
         logger.info(f"清算解析: 上方空头={result['above_short_liquidation']}, 下方多头={result['below_long_liquidation']}, 痛点={result['max_pain_price']}")
         return result
 
-    # ---------- 持仓量历史 ----------
+    # ---------- 其他接口 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "1h",
-            "limit": 24
-        }
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params)
 
-    # ---------- 资金费率历史 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "1h",
-            "limit": 1
-        }
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params)
 
-    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "1h",
-            "limit": 24
-        }
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "1h",
-            "limit": 24
-        }
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, silent_fail=True)
 
-    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "Deribit",
-            "symbol": symbol.upper()
-        }
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, silent_fail=True)
 
-    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
-        params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "5m",
-            "limit": 24
-        }
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
-    # ---------- 通用辅助函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -204,20 +164,15 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
-            # 如果未传入价格，这里先给一个默认值，实际调用时会从主程序传入
             current_price = 70000.0
 
         data = {}
-
-        # 1. 清算热力图（矩阵解析）
         heatmap_raw = self.get_liquidation_heatmap(symbol)
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
 
-        # 2. 持仓量24h变化
         oi_history = self.get_open_interest_history(symbol)
         oi_change = "N/A"
         if isinstance(oi_history, list) and len(oi_history) >= 2:
@@ -227,21 +182,18 @@ class CoinGlassClient:
                 oi_change = f"{((last_close - prev_close) / prev_close * 100):.2f}%"
         data["oi_change_24h"] = oi_change
 
-        # 3. 最新资金费率
         funding_history = self.get_funding_rate_history(symbol)
         funding_rate = "N/A"
         if isinstance(funding_history, list) and len(funding_history) > 0:
             funding_rate = self._get_close_from_candle(funding_history[-1])
         data["funding_rate"] = funding_rate
 
-        # 4. 最新多空比
         ls_history = self.get_long_short_ratio_history(symbol)
         ls_ratio = "N/A"
         if isinstance(ls_history, list) and len(ls_history) > 0:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 5. 主动吃单比率
         taker_history = self.get_taker_volume_history(symbol)
         taker_ratio = "N/A"
         if isinstance(taker_history, list) and len(taker_history) > 0:
@@ -251,7 +203,6 @@ class CoinGlassClient:
                 taker_ratio = f"{(buy_vol / total):.2f}"
         data["taker_ratio"] = taker_ratio
 
-        # 6. 期权最大痛点
         max_pain_data = self.get_option_max_pain(symbol)
         skew_value = "N/A"
         if isinstance(max_pain_data, dict):
@@ -262,7 +213,6 @@ class CoinGlassClient:
                 skew_value = latest.get("maxPain", latest.get("max_pain", "N/A"))
         data["skew"] = skew_value
 
-        # 7. CVD 斜率信号
         cvd_signal = "N/A"
         cvd_slope = "N/A"
         cvd_history = self.get_cvd_history(symbol)
