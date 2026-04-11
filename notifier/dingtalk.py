@@ -78,6 +78,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 📊 策略概要
 - **方向**：{dir_text}
+- **当前价**：${current_price:,.1f}
 - **入场区间**：${entry_low:,.1f} - ${entry_high:,.1f}
 - **止损**：${stop:,.1f}
 - **止盈1**：${tp1:,.1f}
