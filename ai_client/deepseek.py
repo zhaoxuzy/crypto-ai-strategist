@@ -22,10 +22,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（历史均值约0.01%）
 - 持仓量（OI）24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
 - 主动吃单量比率（Taker Buy/Sell）：{coinglass_data.get('taker_ratio', 'N/A')}
-- 多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
+- 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
+- **顶级交易员多空比**：{coinglass_data.get('top_long_short_ratio', 'N/A')}（注意：顶级交易员数据比全局数据更具参考价值，其反向信号强度更高）
 
 **期权市场信号**
-- 25-Delta偏度：{coinglass_data.get('skew', 'N/A')}（负值=看跌期权偏贵/机构对冲需求强）
+- 期权最大痛点：{coinglass_data.get('skew', 'N/A')} USDT
+- **期权看跌/看涨比率（PCR）**：{coinglass_data.get('put_call_ratio', 'N/A')}（高于0.7代表市场偏恐慌/对冲需求强，低于0.5代表市场偏乐观）
+- **隐含波动率（IV）**：{coinglass_data.get('implied_volatility', 'N/A')}（若显著高于历史均值，代表市场恐慌溢价高）
 
 **资金流向（CVD斜率）**
 - 5分钟CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率值：{coinglass_data.get('cvd_slope', 'N/A')}）
@@ -54,11 +57,23 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "risk_note": "需要关注的风险点"
 }}
 
-### 胜率评估原则（重要）
-- 综合考量清算结构、资金费率、多空比、CVD方向、期权偏度、宏观情绪的一致性。
-- 多个信号同向共振时胜率应较高（70%+），信号矛盾时胜率降低（40%-60%）。
-- 若关键数据缺失（显示N/A），应适度下调胜率并说明原因。
-- 胜率必须基于当前数据客观评估，不可随意填写。
+### 胜率评估框架（必须严格参照）
+请按以下规则为每个信号打分，然后累加得到基础胜率：
+
+**方向信号（各占10%，可累计）**：
+- 清算结构方向明确（上方空头 vs 下方多头差值 >30%）：+10%
+- 资金费率极端（>0.05% 偏空，< -0.02% 偏多）：+10%
+- 顶级交易员多空比极端（>2.0 偏空，<0.7 偏多）：+10%
+- CVD 斜率与价格同向：+10%
+- 恐惧贪婪指数极端（<20 偏多，>80 偏空）：+10%
+
+**风险扣分项（各扣5-10%）**：
+- 清算结构矛盾（上下方清算金额接近，差值<10%）：-10%
+- 期权PCR与清算方向矛盾（如清算偏多但PCR>0.8）：-10%
+- 顶级交易员与全局多空比背离：-5%
+- 数据缺失（每项N/A扣3%，最多扣10%）
+
+**基础胜率 = 50% + 累计得分。最终胜率 = max(40%, min(85%, 基础胜率))。**
 
 ### 其他决策原则
 - 止损必须结合清算密集区与ATR设定，确保有技术依据。
@@ -86,9 +101,8 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 raise ValueError("未找到 JSON")
             json_str = content[json_start:json_end]
             strategy = json.loads(json_str)
-            # 确保 win_rate 存在且为整数
             if "win_rate" not in strategy:
-                strategy["win_rate"] = 50  # 默认值
+                strategy["win_rate"] = 50
             else:
                 strategy["win_rate"] = int(strategy["win_rate"])
             return strategy
