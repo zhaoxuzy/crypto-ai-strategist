@@ -8,7 +8,10 @@ class CoinGlassClient:
         # 使用 KeyStore 代理（请确保您的 API Key 是 KeyStore 提供的格式）
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
 
-    def _request(self, endpoint: str, params: dict = None) -> dict:
+    def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
+        """
+        发送请求，silent_fail=True 时遇到错误只记录 WARNING 并返回空字典
+        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -19,44 +22,54 @@ class CoinGlassClient:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
             data = resp.json()
             if data.get("code") not in (0, "0"):
-                logger.error(f"CoinGlass API 错误: {data.get('msg', data)}")
+                msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                if silent_fail:
+                    logger.warning(msg)
+                else:
+                    logger.error(msg)
                 return {}
             return data.get("data", {})
         except Exception as e:
-            logger.error(f"CoinGlass 请求失败: {e}")
+            msg = f"CoinGlass 请求失败: {e}"
+            if silent_fail:
+                logger.warning(msg)
+            else:
+                logger.error(msg)
             return {}
 
-    # ---------- 清算热力图 ----------
+    # ---------- 核心接口（已验证可用）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        """获取清算热力图 (模型2) - 官方文档端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
             "range": "24h"
         }
-        return self._request("api/futures/liquidation/heatmap/model2", params)
+        # 此接口需要 Professional 或更高套餐，权限不足时会静默失败
+        return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    # ---------- 持仓量历史 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
+        """获取持仓量 OHLC 历史 - 官方文档端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
             "interval": "1h",
             "limit": 24
         }
-        return self._request("api/futures/open-interest/history", params)
+        return self._request("api/futures/openInterest/ohlc-history", params)
 
-    # ---------- 资金费率历史 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
+        """获取资金费率 OHLC 历史 - 官方文档端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
             "interval": "1h",
             "limit": 1
         }
-        return self._request("api/futures/funding-rate/history", params)
+        return self._request("api/futures/fundingRate/ohlc-history", params)
 
-    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
+        """获取全局多空比历史 - 官方文档端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -65,37 +78,39 @@ class CoinGlassClient:
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
+        """获取主动买卖量历史 - 官方文档端点 (V4 中无 /v2)"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
             "interval": "1h",
             "limit": 24
         }
-        return self._request("api/futures/v2/taker-buy-sell-volume/history", params)
+        return self._request("api/futures/taker-buy-sell-volume/history", params)
 
-    # ---------- 期权偏度（CoinGlass 原生）----------
-    def get_options_skew(self, symbol: str = "BTC"):
+    def get_option_max_pain(self, symbol: str = "BTC"):
+        """获取期权最大痛点 - 官方文档端点，用于替代偏度"""
         params = {
             "exchange": "All",
             "symbol": f"{symbol}USDT"
         }
-        return self._request("api/option/skew", params)
+        # 此接口可能需要特定权限，权限不足时静默失败
+        return self._request("api/option/max-pain", params, silent_fail=True)
 
-    # ---------- CVD 累积成交量增量（用于资金流向）----------
     def get_cvd_history(self, symbol: str = "BTC"):
+        """获取现货聚合 CVD 历史 - 官方文档端点"""
         params = {
-            "exchange": "Binance",
+            "exchange": "All",
             "symbol": f"{symbol}USDT",
             "interval": "5m",
             "limit": 24
         }
-        return self._request("api/futures/cvd/history", params)
+        return self._request("api/spot/aggregated-cvd/history", params, silent_fail=True)
 
-    # ---------- 辅助解析 ----------
+    # ---------- 辅助解析函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
+        """从 OHLC 数据中提取收盘价，兼容列表和字典格式"""
         if isinstance(candle, list) and len(candle) >= 5:
             return float(candle[4])
         elif isinstance(candle, dict):
@@ -104,6 +119,7 @@ class CoinGlassClient:
 
     @staticmethod
     def _get_buy_sell_volumes(candle):
+        """从主动买卖量数据中提取买卖量"""
         if isinstance(candle, list):
             buy = float(candle[4]) if len(candle) > 4 else 0.0
             sell = float(candle[5]) if len(candle) > 5 else 0.0
@@ -114,7 +130,7 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    # ---------- 数据聚合（供主程序调用）----------
+    # ---------- 数据聚合主函数 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
@@ -164,18 +180,14 @@ class CoinGlassClient:
                 taker_ratio = f"{(buy_vol / total):.2f}"
         data["taker_ratio"] = taker_ratio
 
-        # 6. 期权偏度（CoinGlass 原生）
-        skew_data = self.get_options_skew(symbol)
+        # 6. 期权最大痛点（替代偏度）
+        max_pain_data = self.get_option_max_pain(symbol)
         skew_value = "N/A"
-        if isinstance(skew_data, dict):
-            skew_value = skew_data.get("skew", skew_data.get("value", "N/A"))
-        elif isinstance(skew_data, list) and len(skew_data) > 0:
-            latest = skew_data[-1]
-            if isinstance(latest, dict):
-                skew_value = latest.get("skew", latest.get("value", "N/A"))
+        if isinstance(max_pain_data, dict):
+            skew_value = max_pain_data.get("maxPain", "N/A")
         data["skew"] = skew_value
 
-        # 7. CVD 斜率信号（基于最近12根5分钟K线线性回归）
+        # 7. CVD 斜率信号（基于现货聚合 CVD）
         cvd_signal = "N/A"
         cvd_slope = "N/A"
         cvd_history = self.get_cvd_history(symbol)
