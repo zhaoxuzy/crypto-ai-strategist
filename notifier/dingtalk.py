@@ -1,8 +1,55 @@
+import os
+import time
+import hmac
+import hashlib
+import base64
+import urllib.parse
+import requests
+from utils.logger import logger
+
+def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
+    webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
+    secret = os.getenv("DINGTALK_SECRET", "")
+
+    if not webhook:
+        logger.error("未配置钉钉 Webhook")
+        return False
+
+    timestamp = str(round(time.time() * 1000))
+    if secret and secret.lower() != "none":
+        string_to_sign = f"{timestamp}\n{secret}"
+        hmac_code = hmac.new(
+            secret.encode(), string_to_sign.encode(), digestmod=hashlib.sha256
+        ).digest()
+        sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
+        webhook = f"{webhook}&timestamp={timestamp}&sign={sign}"
+
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": title,
+            "text": markdown_content
+        }
+    }
+
+    try:
+        resp = requests.post(webhook, json=payload, timeout=10)
+        result = resp.json()
+        if result.get("errcode") == 0:
+            logger.info("钉钉推送成功")
+            return True
+        else:
+            logger.error(f"钉钉推送失败: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"钉钉请求异常: {e}")
+        return False
+
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
     now_str = time.strftime("%Y-%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
-    win_rate = strategy.get("win_rate", 50)  # 胜率
+    win_rate = strategy.get("win_rate", 50)
 
     if direction == "neutral":
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
