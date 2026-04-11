@@ -144,17 +144,15 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 顶级交易员多空比（新增）----------
+    # ---------- 顶级交易员多空比 ----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
-        """顶级交易员多空比 - 官方端点 /api/futures/top-long-short-account-ratio/history"""
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, silent_fail=True)
 
-    # ---------- 期权信息（新增，包含 PCR 和 IV）----------
+    # ---------- 期权信息（PCR 和 IV）----------
     def get_options_info(self, symbol: str = "BTC"):
-    """获取期权详细信息 - 官方端点 /api/option/info，包含 PCR 和隐含波动率"""
-    params = {"exchange": "Deribit", "symbol": symbol.upper()}  # 只需币种代码，如 BTC
-    return self._request("api/option/info", params, silent_fail=True)
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+        return self._request("api/option/info", params, silent_fail=True)
 
     # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
@@ -221,14 +219,12 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 顶级交易员多空比（新增）
         top_ls_history = self.get_top_long_short_ratio_history(symbol)
         top_ls_ratio = "N/A"
         if isinstance(top_ls_history, list) and len(top_ls_history) > 0:
             top_ls_ratio = self._get_close_from_candle(top_ls_history[-1])
         data["top_long_short_ratio"] = top_ls_ratio
 
-        # 期权信息（新增：PCR 和 IV）
         options_info = self.get_options_info(symbol)
         pcr = "N/A"
         iv = "N/A"
