@@ -7,9 +7,9 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
+        self.delay = 6.0  # 免费版请求间隔6秒
 
     def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
-        """发送 GET 请求，每次请求后强制延迟 0.6 秒以避免速率限制（10 req/min）"""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -18,7 +18,7 @@ class CoinGlassClient:
         params = params or {}
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
-            time.sleep(0.6)  # 确保每分钟不超过10次请求
+            time.sleep(self.delay)
             data = resp.json()
             if data.get("code") not in (0, "0"):
                 msg = f"CoinGlass API 错误: {data.get('msg', data)}"
@@ -36,9 +36,7 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 1. 清算热力图（官方端点）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
-        """Pair Liquidation Heatmap Model2 - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -46,9 +44,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    # ---------- 2. 持仓量历史（官方端点）----------
     def get_open_interest_history(self, symbol: str = "BTC"):
-        """Open Interest OHLC history - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -57,9 +53,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/open-interest/history", params)
 
-    # ---------- 3. 资金费率历史（官方端点）----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
-        """Funding Rate OHLC History - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -68,9 +62,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/funding-rate/history", params)
 
-    # ---------- 4. 多空比（官方端点）----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
-        """Global Long/Short Account Ratio - 官方端点"""
         params = {
             "exchange": "Binance",
             "symbol": f"{symbol}USDT",
@@ -79,38 +71,16 @@ class CoinGlassClient:
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 5. 主动买卖量（官方端点 v2）----------
-    def get_taker_volume_history(self, symbol: str = "BTC"):
-        """Pair Taker Buy/Sell History (v2) - 官方端点"""
-        params = {
-            "exchange": "Binance",
-            "symbol": f"{symbol}USDT",
-            "interval": "1h",
-            "limit": 24
-        }
-        return self._request("api/futures/v2/taker-buy-sell-volume/history", params)
+    # 如需主动买卖量，可取消注释（注意增加一次请求）
+    # def get_taker_volume_history(self, symbol: str = "BTC"):
+    #     params = {
+    #         "exchange": "Binance",
+    #         "symbol": f"{symbol}USDT",
+    #         "interval": "1h",
+    #         "limit": 24
+    #     }
+    #     return self._request("api/futures/v2/taker-buy-sell-volume/history", params)
 
-    # ---------- 6. 期权最大痛点（替代偏度，官方端点）----------
-    def get_option_max_pain(self, symbol: str = "BTC"):
-        """Option Max Pain - 官方端点"""
-        params = {
-            "exchange": "All",
-            "symbol": f"{symbol}USDT"
-        }
-        return self._request("api/option/max-pain", params, silent_fail=True)
-
-    # ---------- 7. 期货 CVD（官方端点，用于资金流向）----------
-    def get_cvd_history(self, symbol: str = "BTC"):
-        """Cumulative Volume Delta (CVD) - 官方端点"""
-        params = {
-            "exchange": "Binance",
-            "symbol": f"{symbol}USDT",
-            "interval": "5m",
-            "limit": 24
-        }
-        return self._request("api/futures/cvd/history", params, silent_fail=True)
-
-    # ---------- 辅助解析函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -119,19 +89,6 @@ class CoinGlassClient:
             return float(candle.get("close", 0))
         return 0.0
 
-    @staticmethod
-    def _get_buy_sell_volumes(candle):
-        if isinstance(candle, list):
-            buy = float(candle[4]) if len(candle) > 4 else 0.0
-            sell = float(candle[5]) if len(candle) > 5 else 0.0
-            return buy, sell
-        elif isinstance(candle, dict):
-            buy = float(candle.get("buyVolume", 0))
-            sell = float(candle.get("sellVolume", 0))
-            return buy, sell
-        return 0.0, 0.0
-
-    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
@@ -171,55 +128,10 @@ class CoinGlassClient:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 5. 主动吃单比率
-        taker_history = self.get_taker_volume_history(symbol)
-        taker_ratio = "N/A"
-        if isinstance(taker_history, list) and len(taker_history) > 0:
-            buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
-            total = buy_vol + sell_vol
-            if total > 0:
-                taker_ratio = f"{(buy_vol / total):.2f}"
-        data["taker_ratio"] = taker_ratio
-
-        # 6. 期权最大痛点（替代偏度）
-        max_pain_data = self.get_option_max_pain(symbol)
-        skew_value = "N/A"
-        if isinstance(max_pain_data, dict):
-            skew_value = max_pain_data.get("maxPain", "N/A")
-        data["skew"] = skew_value
-
-        # 7. CVD 斜率信号（基于期货 CVD）
-        cvd_signal = "N/A"
-        cvd_slope = "N/A"
-        cvd_history = self.get_cvd_history(symbol)
-        if isinstance(cvd_history, list) and len(cvd_history) >= 12:
-            recent = cvd_history[-12:]
-            values = []
-            for item in recent:
-                if isinstance(item, list) and len(item) >= 5:
-                    values.append(float(item[4]))
-                elif isinstance(item, dict):
-                    values.append(float(item.get("close", 0)))
-            if len(values) >= 2:
-                n = len(values)
-                x_mean = (n - 1) / 2
-                y_mean = sum(values) / n
-                numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
-                denominator = sum((i - x_mean) ** 2 for i in range(n))
-                if denominator != 0:
-                    slope = numerator / denominator
-                    cvd_slope = round(slope, 4)
-                    if slope > 10:
-                        cvd_signal = "bullish"
-                    elif slope > 2:
-                        cvd_signal = "slightly_bullish"
-                    elif slope < -10:
-                        cvd_signal = "bearish"
-                    elif slope < -2:
-                        cvd_signal = "slightly_bearish"
-                    else:
-                        cvd_signal = "neutral"
-        data["cvd_signal"] = cvd_signal
-        data["cvd_slope"] = cvd_slope
+        # 主动买卖量、期权、CVD 暂用占位符（避免超限）
+        data["taker_ratio"] = "N/A"
+        data["skew"] = "N/A"
+        data["cvd_signal"] = "N/A"
+        data["cvd_slope"] = "N/A"
 
         return data
