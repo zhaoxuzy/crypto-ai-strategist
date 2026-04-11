@@ -37,7 +37,7 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 清算热力图（model2，官方文档确认）----------
+    # ---------- 清算热力图 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -65,14 +65,13 @@ class CoinGlassClient:
             logger.warning("清算矩阵缺少 y_axis 或 liquidation_leverage_data")
             return result
 
-        # model2 返回的是稀疏矩阵：[x_index, y_index, intensity] 三元组列表
         if not isinstance(liq_data, list):
             logger.warning("liquidation_leverage_data 不是列表")
             return result
 
         total_long = 0.0
         total_short = 0.0
-        pain_map = {}  # 价格 -> 清算强度累计
+        pain_map = {}
 
         for item in liq_data:
             if not isinstance(item, list) or len(item) < 3:
@@ -86,7 +85,6 @@ class CoinGlassClient:
 
             price = float(y_axis[y_idx])
 
-            # 根据 x_idx 区分多空清算（通常 0=多头清算，1=空头清算）
             if x_idx == 0:
                 if price < current_price:
                     total_long += intensity
@@ -96,10 +94,8 @@ class CoinGlassClient:
             else:
                 continue
 
-            # 累计该价格的清算强度
             pain_map[price] = pain_map.get(price, 0.0) + intensity
 
-        # 找出最大痛点价格
         max_pain_price = None
         max_pain_value = 0.0
         for price, val in pain_map.items():
@@ -107,7 +103,6 @@ class CoinGlassClient:
                 max_pain_value = val
                 max_pain_price = price
 
-        # 找最近清算密集区
         nearest_cluster_price = None
         nearest_cluster_distance = float('inf')
         for price, val in pain_map.items():
@@ -134,27 +129,44 @@ class CoinGlassClient:
         logger.info(f"清算解析: 上方空头={result['above_short_liquidation']}, 下方多头={result['below_long_liquidation']}, 痛点={result['max_pain_price']}")
         return result
 
-    # ---------- 其他接口 ----------
+    # ---------- 持仓量 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params)
 
+    # ---------- 资金费率 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params)
 
+    # ---------- 全局多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
+    # ---------- 顶级交易员多空比（新增）----------
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
+        """顶级交易员多空比 - 官方端点 /api/futures/top-long-short-account-ratio/history"""
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/top-long-short-account-ratio/history", params, silent_fail=True)
+
+    # ---------- 期权信息（新增，包含 PCR 和 IV）----------
+    def get_options_info(self, symbol: str = "BTC"):
+        """获取期权详细信息 - 官方端点 /api/option/info，包含 PCR 和隐含波动率"""
+        params = {"exchange": "Deribit", "symbol": f"{symbol}-USDT"}
+        return self._request("api/option/info", params, silent_fail=True)
+
+    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, silent_fail=True)
 
+    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, silent_fail=True)
 
+    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
@@ -208,6 +220,23 @@ class CoinGlassClient:
         if isinstance(ls_history, list) and len(ls_history) > 0:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
+
+        # 顶级交易员多空比（新增）
+        top_ls_history = self.get_top_long_short_ratio_history(symbol)
+        top_ls_ratio = "N/A"
+        if isinstance(top_ls_history, list) and len(top_ls_history) > 0:
+            top_ls_ratio = self._get_close_from_candle(top_ls_history[-1])
+        data["top_long_short_ratio"] = top_ls_ratio
+
+        # 期权信息（新增：PCR 和 IV）
+        options_info = self.get_options_info(symbol)
+        pcr = "N/A"
+        iv = "N/A"
+        if isinstance(options_info, dict):
+            pcr = options_info.get("putCallRatio", options_info.get("pcr", "N/A"))
+            iv = options_info.get("impliedVolatility", options_info.get("iv", "N/A"))
+        data["put_call_ratio"] = pcr
+        data["implied_volatility"] = iv
 
         taker_history = self.get_taker_volume_history(symbol)
         taker_ratio = "N/A"
