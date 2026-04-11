@@ -6,9 +6,8 @@ from utils.logger import logger
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 使用 KeyStore 代理
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 6.0
+        self.delay = 6.0  # 请求间隔，避免限频
 
     def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -38,74 +37,64 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 清算热力图 (使用 OKX) ----------
+    # ---------- 清算热力图 (改用 Binance，格式 BTC-USDT) ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
-            "exchange": "OKX",                 # 改为 OKX，全大写
-            "symbol": f"{symbol}USDT",
+            "exchange": "Binance",          # 该接口 Binance 支持最完整
+            "symbol": f"{symbol}-USDT",     # 标准格式：BTC-USDT
             "range": "24h"
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    def _parse_liquidation_data(self, raw_data: dict) -> dict:
-        if not isinstance(raw_data, dict):
-            return {}
-        summary = raw_data.get("summary")
-        if isinstance(summary, dict):
-            return summary
-        if "shortLiquidationTotal" in raw_data:
-            return raw_data
-        # 尝试从 data 数组中提取聚合值（某些版本）
-        data_list = raw_data.get("data", [])
-        if isinstance(data_list, list):
-            total_short = 0
-            total_long = 0
-            for item in data_list:
-                if isinstance(item, dict):
-                    total_short += item.get("shortLiquidation", 0) or 0
-                    total_long += item.get("longLiquidation", 0) or 0
-            if total_short or total_long:
-                return {
-                    "shortLiquidationTotal": total_short,
-                    "longLiquidationTotal": total_long
-                }
-        return {}
-
-    # ---------- 其他接口改用 OKX 以保证一致性 ----------
+    # ---------- 持仓量历史 (OKX 可用，格式 BTC-USDT-SWAP) ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
-            "symbol": f"{symbol}USDT",
+            "symbol": f"{symbol}-USDT-SWAP",
             "interval": "1h",
             "limit": 24
         }
         return self._request("api/futures/open-interest/history", params)
 
+    # ---------- 资金费率历史 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
-            "symbol": f"{symbol}USDT",
+            "symbol": f"{symbol}-USDT-SWAP",
             "interval": "1h",
             "limit": 1
         }
         return self._request("api/futures/funding-rate/history", params)
 
+    # ---------- 多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
-            "symbol": f"{symbol}USDT",
+            "symbol": f"{symbol}-USDT-SWAP",
             "interval": "1h",
             "limit": 24
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
+    # ---------- 主动买卖量 (暂不调用) ----------
+    # def get_taker_volume_history(self, symbol: str = "BTC"):
+    #     params = {
+    #         "exchange": "OKX",
+    #         "symbol": f"{symbol}-USDT-SWAP",
+    #         "interval": "1h",
+    #         "limit": 24
+    #     }
+    #     return self._request("api/futures/v2/taker-buy-sell-volume/history", params)
+
+    # ---------- 期权最大痛点 (Deribit 数据，格式 BTC-USDT) ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {
-            "exchange": "All",
-            "symbol": f"{symbol}USDT"
+            "exchange": "Deribit",          # 期权数据主要来自 Deribit
+            "symbol": f"{symbol}-USDT"
         }
         return self._request("api/option/max-pain", params, silent_fail=True)
 
+    # ---------- 辅助解析 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -114,6 +103,20 @@ class CoinGlassClient:
             return float(candle.get("close", 0))
         return 0.0
 
+    @staticmethod
+    def _parse_liquidation_data(raw_data: dict) -> dict:
+        """兼容多种清算数据返回格式"""
+        if not isinstance(raw_data, dict):
+            return {}
+        summary = raw_data.get("summary")
+        if isinstance(summary, dict):
+            return summary
+        # 直接返回包含关键字段的原始数据
+        if any(k in raw_data for k in ["shortLiquidationTotal", "longLiquidationTotal"]):
+            return raw_data
+        return {}
+
+    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
@@ -129,7 +132,7 @@ class CoinGlassClient:
             "intensity": summary.get("nearestClusterIntensity", "N/A")
         }
 
-        # 2. 持仓量
+        # 2. 持仓量24h变化
         oi_history = self.get_open_interest_history(symbol)
         oi_change = "N/A"
         if isinstance(oi_history, list) and len(oi_history) >= 2:
@@ -139,23 +142,24 @@ class CoinGlassClient:
                 oi_change = f"{((last_close - prev_close) / prev_close * 100):.2f}%"
         data["oi_change_24h"] = oi_change
 
-        # 3. 资金费率
+        # 3. 最新资金费率
         funding_history = self.get_funding_rate_history(symbol)
         funding_rate = "N/A"
         if isinstance(funding_history, list) and len(funding_history) > 0:
             funding_rate = self._get_close_from_candle(funding_history[-1])
         data["funding_rate"] = funding_rate
 
-        # 4. 多空比
+        # 4. 最新多空比
         ls_history = self.get_long_short_ratio_history(symbol)
         ls_ratio = "N/A"
         if isinstance(ls_history, list) and len(ls_history) > 0:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
+        # 5. 主动吃单比率（占位）
         data["taker_ratio"] = "N/A"
 
-        # 5. 期权最大痛点
+        # 6. 期权最大痛点
         max_pain_data = self.get_option_max_pain(symbol)
         skew_value = "N/A"
         if isinstance(max_pain_data, dict):
@@ -163,9 +167,10 @@ class CoinGlassClient:
         elif isinstance(max_pain_data, list) and max_pain_data:
             latest = max_pain_data[-1]
             if isinstance(latest, dict):
-                skew_value = latest.get("maxPain", "N/A")
+                skew_value = latest.get("maxPain", latest.get("max_pain", "N/A"))
         data["skew"] = skew_value
 
+        # 7. CVD 占位
         data["cvd_signal"] = "N/A"
         data["cvd_slope"] = "N/A"
 
