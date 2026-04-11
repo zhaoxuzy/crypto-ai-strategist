@@ -1,14 +1,13 @@
 import os
 import time
 import requests
+import json
 from utils.logger import logger
 
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 使用 KeyStore 代理（直连可改为 https://open-api-v4.coinglass.com）
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        # Professional 套餐建议 2~3 秒，若仍限频可适当增加
         self.delay = 2.5
 
     def _request(self, endpoint: str, params: dict = None, silent_fail: bool = False) -> dict:
@@ -21,7 +20,7 @@ class CoinGlassClient:
         logger.info(f"请求 CoinGlass: {endpoint} | params={params}")
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=15)
-            time.sleep(self.delay)   # 控制请求频率
+            time.sleep(self.delay)
             data = resp.json()
             if data.get("code") not in (0, "0"):
                 msg = f"CoinGlass API 错误: {data.get('msg', data)}"
@@ -39,7 +38,6 @@ class CoinGlassClient:
                 logger.error(msg)
             return {}
 
-    # ---------- 1. 清算热力图 (model2) ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -48,7 +46,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    # ---------- 2. 持仓量历史 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -58,7 +55,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/open-interest/history", params)
 
-    # ---------- 3. 资金费率历史 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -68,7 +64,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/funding-rate/history", params)
 
-    # ---------- 4. 多空比（全局账户）----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -78,7 +73,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/global-long-short-account-ratio/history", params)
 
-    # ---------- 5. 主动买卖量（v2）----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -88,7 +82,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, silent_fail=True)
 
-    # ---------- 6. 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {
             "exchange": "Deribit",
@@ -96,7 +89,6 @@ class CoinGlassClient:
         }
         return self._request("api/option/max-pain", params, silent_fail=True)
 
-    # ---------- 7. 期货 CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -106,7 +98,6 @@ class CoinGlassClient:
         }
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
-    # ---------- 辅助解析函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -127,24 +118,35 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    @staticmethod
-    def _parse_liquidation_data(raw_data: dict) -> dict:
-        if not isinstance(raw_data, dict):
-            return {}
-        summary = raw_data.get("summary")
-        if isinstance(summary, dict):
-            return summary
-        if any(k in raw_data for k in ["shortLiquidationTotal", "longLiquidationTotal"]):
-            return raw_data
-        return {}
-
-    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         data = {}
 
-        # 1. 清算热力图
+        # 1. 清算热力图 (含调试打印)
         heatmap_raw = self.get_liquidation_heatmap(symbol)
-        summary = self._parse_liquidation_data(heatmap_raw)
+        logger.info(f"[DEBUG] 清算热力图原始数据类型: {type(heatmap_raw)}")
+        if isinstance(heatmap_raw, dict):
+            logger.info(f"[DEBUG] 清算热力图顶层 keys: {list(heatmap_raw.keys())}")
+            # 打印前 500 字符供参考
+            logger.info(f"[DEBUG] 原始数据片段: {json.dumps(heatmap_raw, ensure_ascii=False)[:500]}")
+        elif isinstance(heatmap_raw, list):
+            logger.info(f"[DEBUG] 返回列表，长度: {len(heatmap_raw)}")
+            if len(heatmap_raw) > 0:
+                logger.info(f"[DEBUG] 列表第一个元素: {json.dumps(heatmap_raw[0], ensure_ascii=False)[:300]}")
+
+        # 尝试多种解析方式
+        summary = {}
+        if isinstance(heatmap_raw, dict):
+            summary = heatmap_raw.get("summary", {})
+            if not summary:
+                # 可能直接在顶层
+                if "shortLiquidationTotal" in heatmap_raw:
+                    summary = heatmap_raw
+        elif isinstance(heatmap_raw, list) and len(heatmap_raw) > 0:
+            # 可能是数组，取第一个元素或聚合计算
+            first = heatmap_raw[0]
+            if isinstance(first, dict):
+                summary = first
+
         data["above_short_liquidation"] = summary.get("shortLiquidationTotal", "N/A")
         data["below_long_liquidation"] = summary.get("longLiquidationTotal", "N/A")
         data["max_pain_price"] = summary.get("maxPain", "N/A")
