@@ -46,7 +46,7 @@ class CoinGlassClient:
         }
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
+       def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
         result = {
             "above_short_liquidation": "0",
             "below_long_liquidation": "0",
@@ -59,11 +59,21 @@ class CoinGlassClient:
             return result
 
         y_axis = raw_data.get("y_axis")
-        matrix = raw_data.get("liquidation_leverage_data")
+        flat_matrix = raw_data.get("liquidation_leverage_data")
 
-        if not y_axis or not matrix or len(y_axis) != len(matrix):
-            logger.warning(f"清算矩阵格式异常: y_axis={len(y_axis) if y_axis else 0}, matrix={len(matrix) if matrix else 0}")
+        if not y_axis or not flat_matrix:
+            logger.warning("清算矩阵缺少 y_axis 或 liquidation_leverage_data")
             return result
+
+        y_len = len(y_axis)
+        m_len = len(flat_matrix)
+
+        if m_len % y_len != 0:
+            logger.warning(f"清算矩阵长度不匹配: y_axis={y_len}, matrix={m_len}, 无法整除")
+            return result
+
+        stride = m_len // y_len
+        logger.info(f"清算矩阵分组: {y_len} 个价格档位, 每个档位 {stride} 个数据点")
 
         total_long = 0.0
         total_short = 0.0
@@ -73,19 +83,28 @@ class CoinGlassClient:
         nearest_cluster_distance = float('inf')
 
         for i, price in enumerate(y_axis):
-            row = matrix[i]
-            if not isinstance(row, list) or len(row) < 2:
-                continue
-            long_liq = float(row[0]) if row[0] is not None else 0.0
-            short_liq = float(row[1]) if row[1] is not None else 0.0
-
             price_f = float(price)
-            if price_f > current_price:
-                total_short += short_liq
-            elif price_f < current_price:
-                total_long += long_liq
+            start = i * stride
+            end = start + stride
+            group = flat_matrix[start:end]
 
-            total_liq = long_liq + short_liq
+            # 聚合该价格档位的多空清算总量
+            group_long = 0.0
+            group_short = 0.0
+            for item in group:
+                if isinstance(item, list) and len(item) >= 2:
+                    group_long += float(item[0]) if item[0] is not None else 0.0
+                    group_short += float(item[1]) if item[1] is not None else 0.0
+                elif isinstance(item, dict):
+                    group_long += float(item.get("longLiquidation", item.get("long", 0)))
+                    group_short += float(item.get("shortLiquidation", item.get("short", 0)))
+
+            if price_f > current_price:
+                total_short += group_short
+            elif price_f < current_price:
+                total_long += group_long
+
+            total_liq = group_long + group_short
             if total_liq > max_pain_value:
                 max_pain_value = total_liq
                 max_pain_price = price_f
@@ -103,11 +122,20 @@ class CoinGlassClient:
 
         if nearest_cluster_idx is not None:
             price = float(y_axis[nearest_cluster_idx])
-            row = matrix[nearest_cluster_idx]
-            long_liq = float(row[0]) if row[0] else 0.0
-            short_liq = float(row[1]) if row[1] else 0.0
+            start = nearest_cluster_idx * stride
+            end = start + stride
+            group = flat_matrix[start:end]
+            group_long = 0.0
+            group_short = 0.0
+            for item in group:
+                if isinstance(item, list) and len(item) >= 2:
+                    group_long += float(item[0]) if item[0] else 0.0
+                    group_short += float(item[1]) if item[1] else 0.0
+                elif isinstance(item, dict):
+                    group_long += float(item.get("long", 0))
+                    group_short += float(item.get("short", 0))
             direction = "上" if price > current_price else "下"
-            intensity = min(5, int((long_liq + short_liq) / 5000000) + 1)
+            intensity = min(5, int((group_long + group_short) / 5000000) + 1)
             result["nearest_cluster"] = {
                 "direction": direction,
                 "price": f"{price:.1f}",
