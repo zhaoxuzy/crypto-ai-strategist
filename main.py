@@ -36,9 +36,9 @@ def main():
         atr = calculate_atr(okx_inst_id)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}")
 
-        # 2. 获取 CoinGlass 数据
+        # 2. 获取 CoinGlass 数据（传入当前价格用于清算矩阵解析）
         cg = CoinGlassClient()
-       cg_data = cg.get_all_data(symbol, current_price=price)
+        cg_data = cg.get_all_data(symbol, current_price=price)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
 
         # 3. 获取宏观数据
