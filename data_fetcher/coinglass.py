@@ -152,9 +152,9 @@ class CoinGlassClient:
 
     # ---------- 期权信息（新增，包含 PCR 和 IV）----------
     def get_options_info(self, symbol: str = "BTC"):
-        """获取期权详细信息 - 官方端点 /api/option/info，包含 PCR 和隐含波动率"""
-        params = {"exchange": "Deribit", "symbol": f"{symbol}-USDT"}
-        return self._request("api/option/info", params, silent_fail=True)
+    """获取期权详细信息 - 官方端点 /api/option/info，包含 PCR 和隐含波动率"""
+    params = {"exchange": "Deribit", "symbol": symbol.upper()}  # 只需币种代码，如 BTC
+    return self._request("api/option/info", params, silent_fail=True)
 
     # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
