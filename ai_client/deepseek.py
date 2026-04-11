@@ -5,80 +5,89 @@ from utils.logger import logger
 
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict) -> str:
     fg = macro_data.get("fear_greed", {})
-    return f"""你是一位专业的加密货币短线合约交易员。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**以及**图表技术分析**。你的交易周期为4-24小时。
 
-### 当前市场数据
-**基础信息**
+请根据以下实时市场数据，为{symbol}永续合约制定一份具体的、可执行的短线交易策略。
+
+### 一、 市场实时数据
+
+**1. 基础信息**
 - 当前价格：{price} USDT
-- 1小时ATR(14)：{atr} USDT（波动率参考）
+- 1小时ATR(14)：{atr} USDT（用于设定止损宽度）
 
-**清算压力数据**（CoinGlass）
+**2. 清算动力学数据（核心）**
 - 上方空头清算累计金额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算累计金额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
-- 清算最大痛点：{coinglass_data.get('max_pain_price', 'N/A')} USDT
+- 清算最大痛点（清算强度最高价格）：{coinglass_data.get('max_pain_price', 'N/A')} USDT
 - 最近清算密集区：{coinglass_data.get('nearest_cluster', {}).get('direction', 'N/A')}方，价格{coinglass_data.get('nearest_cluster', {}).get('price', 'N/A')} USDT，强度{coinglass_data.get('nearest_cluster', {}).get('intensity', 'N/A')}/5
 
-**衍生品情绪**
-- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（历史均值约0.01%）
-- 持仓量（OI）24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单量比率（Taker Buy/Sell）：{coinglass_data.get('taker_ratio', 'N/A')}
-- 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
-- **顶级交易员多空比**：{coinglass_data.get('top_long_short_ratio', 'N/A')}（注意：顶级交易员数据比全局数据更具参考价值，其反向信号强度更高）
+**3. 多空博弈数据**
+- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（历史均值约0.01%，>0.05%为空头信号，< -0.02%为多头信号）
+- 持仓量（OI）24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%（OI与价格同向为趋势确认，背离为反转预警）
+- 主动吃单量比率（Taker Buy/Sell）：{coinglass_data.get('taker_ratio', 'N/A')}（>0.55为主动买盘强劲）
+- 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}（散户情绪参考）
+- **顶级交易员多空比**：{coinglass_data.get('top_long_short_ratio', 'N/A')}（>2.0为多头拥挤，<0.7为空头拥挤，此为反向指标）
 
-**期权市场信号**
-- 期权最大痛点：{coinglass_data.get('skew', 'N/A')} USDT
-- **期权看跌/看涨比率（PCR）**：{coinglass_data.get('put_call_ratio', 'N/A')}（高于0.7代表市场偏恐慌/对冲需求强，低于0.5代表市场偏乐观）
-- **隐含波动率（IV）**：{coinglass_data.get('implied_volatility', 'N/A')}（若显著高于历史均值，代表市场恐慌溢价高）
-
-**资金流向（CVD斜率）**
+**4. 资金流向与期权数据**
 - 5分钟CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率值：{coinglass_data.get('cvd_slope', 'N/A')}）
-  * bullish/slightly_bullish：主动买盘持续流入
-  * bearish/slightly_bearish：主动卖盘持续流出
-  * neutral：买卖均衡
+- 期权最大痛点：{coinglass_data.get('skew', 'N/A')} USDT（机构博弈核心价位）
+- 期权持仓价值：{coinglass_data.get('option_oi_usd', 'N/A')} USD
 
-**宏观背景**
+**5. 宏观背景**
 - 恐惧贪婪指数：{fg.get('value', '50')}（{fg.get('classification', 'Neutral')}，较前日变化{fg.get('change', '0')}）
-- 交易所BTC余额趋势：{macro_data.get('exchange_balance_trend', 'N/A')}
 
-### 策略输出要求
-请严格按照以下JSON格式输出策略，不要添加任何额外文字或解释：
+### 二、 策略输出要求
+
+请严格按照以下JSON格式输出，不要添加任何额外文字。
 
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
-  "win_rate": 综合评估的胜率百分比（整数，如58，范围0-100），
+  "win_rate": 50-85之间的整数,
   "entry_price_low": 入场区间下限,
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
   "take_profit_1": 第一止盈价,
   "take_profit_2": 第二止盈价,
-  "position_size_ratio": 建议仓位比例（0.0-1.0）,
-  "reasoning": "简要分析逻辑（1-2句话）",
+  "position_size_ratio": 0.1-0.5之间的仓位比例,
+  "reasoning": "1-2句话的核心逻辑，必须结合清算动力学或多空博弈",
   "risk_note": "需要关注的风险点"
 }}
 
-### 胜率评估框架（必须严格参照）
-请按以下规则为每个信号打分，然后累加得到基础胜率：
+### 三、 决策框架（你必须内化此思维过程）
 
-**方向信号（各占10%，可累计）**：
-- 清算结构方向明确（上方空头 vs 下方多头差值 >30%）：+10%
-- 资金费率极端（>0.05% 偏空，< -0.02% 偏多）：+10%
-- 顶级交易员多空比极端（>2.0 偏空，<0.7 偏多）：+10%
-- CVD 斜率与价格同向：+10%
-- 恐惧贪婪指数极端（<20 偏多，>80 偏空）：+10%
+1.  **清算图谱定方向**：
+    - 比较上下方清算金额。若上方空头清算堆积远大于下方多头，价格易被“磁吸”向上猎杀空头 → **偏多**。反之偏空。
+    - 若当前价紧贴某一侧清算密集区，且强度≥3/5，则反向突破该区域前，顺势操作。
 
-**风险扣分项（各扣5-10%）**：
-- 清算结构矛盾（上下方清算金额接近，差值<10%）：-10%
-- 期权PCR与清算方向矛盾（如清算偏多但PCR>0.8）：-10%
-- 顶级交易员与全局多空比背离：-5%
-- 数据缺失（每项N/A扣3%，最多扣10%）
+2.  **多空博弈选时机**：
+    - **寻找“犯错”的一方**：若资金费率极高（>0.05%）且顶级交易员多空比>2.0，说明散户疯狂做多，而聪明钱可能在派发。此时若价格接近上方清算区，是做空的绝佳时机。
+    - **CVD确认**：若计划做多，需看到CVD信号为bullish或slightly_bullish；若背离（价格横盘但CVD下降），则为危险信号。
 
-**基础胜率 = 50% + 累计得分。最终胜率 = max(40%, min(85%, 基础胜率))。**
+3.  **风控与入场**：
+    - **止损**：必须设置在关键清算区之外。做多时，止损设在下方多头清算区下沿 - 0.5倍ATR处；做空时，止损设在上方空头清算区上沿 + 0.5倍ATR处。
+    - **仓位**：若顶级交易员与清算方向共振，仓位可增至0.3-0.4；若信号矛盾，仓位降至0.1-0.2。
+    - **价格**：所有价格保留1位小数。
 
-### 其他决策原则
-- 止损必须结合清算密集区与ATR设定，确保有技术依据。
-- 仓位比例建议在0.1-0.5之间，信心越高、波动率越低时仓位可越大。
-- 所有价格保留1位小数。
+### 四、 胜率评估框架
+
+请按以下规则为当前机会打分（累加得出胜率）：
+
+| 加分项（每个+10%） | 是否满足 |
+| :--- | :--- |
+| 清算结构明确（上下方金额差>30%） | |
+| 资金费率极端（>0.05%或<-0.02%）且与方向一致 | |
+| 顶级交易员多空比极端（>2.0或<0.7）且与方向一致 | |
+| CVD斜率与交易方向同向 | |
+| 恐惧贪婪指数极端（<20偏多，>80偏空）且与方向一致 | |
+
+| 扣分项 | 扣分 |
+| :--- | :--- |
+| 清算结构矛盾（上下方金额接近，差值<10%） | -10% |
+| 顶级交易员与全局多空比严重背离 | -5% |
+| 关键数据缺失（每项N/A扣3%，最多扣10%） | 最多-10% |
+
+**基础胜率 = 50% + 累计加分 - 累计扣分。最终胜率 = max(40%, min(85%, 基础胜率))。**
 """
 
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
