@@ -2,10 +2,20 @@ name: Crypto Strategy Bot - BTC Only
 
 on:
   schedule:
-    # 北京时间每天 8:00-24:00 每小时执行一次
+    # 北京时间每天 8:00-24:00 每小时执行一次（默认分析 BTC）
     # UTC 时间：0:00 - 16:00 每小时整点执行
     - cron: '0 0-16 * * *'
-  workflow_dispatch:   # 保留手动触发，方便测试
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: '选择要分析的币种'
+        required: true
+        default: 'BTC'
+        type: choice
+        options:
+          - BTC
+          - ETH
+          - SOL
 
 jobs:
   generate-strategy:
@@ -26,12 +36,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 运行策略生成 (BTC)
+      - name: 运行策略生成
         env:
           COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
           GLASSNODE_API_KEY: ${{ secrets.GLASSNODE_API_KEY }}
-          STRATEGY_SYMBOL: BTC
+          # 手动触发时使用选择的币种，定时触发时默认 BTC
+          STRATEGY_SYMBOL: ${{ github.event.inputs.symbol || 'BTC' }}
         run: python main.py
