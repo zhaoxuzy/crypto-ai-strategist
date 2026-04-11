@@ -5,6 +5,7 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
 def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
@@ -46,7 +47,11 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
         return False
 
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
-    now_str = time.strftime("%Y-%m-%d %H:%M")
+    # 获取北京时间（UTC+8）
+    beijing_tz = timezone(timedelta(hours=8))
+    now_beijing = datetime.now(beijing_tz)
+    now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
+
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
     win_rate = strategy.get("win_rate", 50)
