@@ -7,7 +7,7 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 2.5
+        self.delay = 4.5  # 增加到4.5秒，确保每分钟不超过10次请求
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
 
@@ -214,21 +214,18 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, allow_backup=True)
 
-    # ---------- 【新增】净多净空持仓 v2 ----------
+    # ---------- 净多净空持仓 v2 ----------
     def get_net_position_history(self, symbol: str = "BTC"):
-        """净多持仓与净空持仓(v2) - /api/futures/v2/net-position/history"""
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/net-position/history", params, allow_backup=True)
 
-    # ---------- 【新增】累计资金费率 ----------
+    # ---------- 累计资金费率 ----------
     def get_accumulated_funding_rate(self, symbol: str = "BTC"):
-        """累计资金费率-交易所列表 - /api/futures/funding-rate/accumulated-exchange-list"""
-        params = {"symbol": symbol.upper()}
+        params = {"symbol": symbol.upper(), "range": "24h"}
         return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False)
 
-    # ---------- 【新增】聚合主动买卖历史 ----------
+    # ---------- 聚合主动买卖历史 ----------
     def get_aggregated_taker_volume(self, symbol: str = "BTC"):
-        """币种主动买卖历史 - /api/futures/aggregated-taker-buy-sell-volume/history"""
         params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24}
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False)
 
@@ -250,7 +247,6 @@ class CoinGlassClient:
 
     @staticmethod
     def _get_aggregated_buy_sell_volumes(candle):
-        """解析聚合主动买卖量"""
         if isinstance(candle, dict):
             buy = float(candle.get("aggregated_buy_volume_usd", 0))
             sell = float(candle.get("aggregated_sell_volume_usd", 0))
@@ -400,7 +396,7 @@ class CoinGlassClient:
         data["cvd_signal"] = cvd_signal
         data["cvd_slope"] = cvd_slope
 
-        # 10. 【新增】净多净空持仓
+        # 10. 净多净空持仓
         try:
             net_pos_history = self.get_net_position_history(symbol)
             if not isinstance(net_pos_history, list) or len(net_pos_history) == 0:
@@ -420,7 +416,7 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 11. 【新增】累计资金费率（取 OKX 的稳定币保证金累计费率）
+        # 11. 累计资金费率
         try:
             acc_funding = self.get_accumulated_funding_rate(symbol)
             okx_funding = "N/A"
@@ -438,7 +434,7 @@ class CoinGlassClient:
             logger.warning(f"累计资金费率获取失败: {e}")
             data["accumulated_funding_rate"] = "N/A"
 
-        # 12. 【新增】聚合主动买卖比率
+        # 12. 聚合主动买卖比率
         try:
             agg_taker = self.get_aggregated_taker_volume(symbol)
             if not isinstance(agg_taker, list) or len(agg_taker) == 0:
