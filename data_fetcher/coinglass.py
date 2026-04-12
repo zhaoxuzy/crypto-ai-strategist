@@ -7,7 +7,7 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 4.5  # 增加到4.5秒，确保每分钟不超过10次请求
+        self.delay = 6.0  # 增加到6秒，确保每分钟不超过10次请求
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
 
@@ -226,7 +226,7 @@ class CoinGlassClient:
 
     # ---------- 聚合主动买卖历史 ----------
     def get_aggregated_taker_volume(self, symbol: str = "BTC"):
-        params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24}
+        params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24, "exchange_list": "OKX"}
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False)
 
     @staticmethod
