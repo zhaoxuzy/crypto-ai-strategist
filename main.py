@@ -10,19 +10,75 @@ from data_fetcher.macro_cache import get_macro_data
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
-# 币种与 OKX 永续合约 ID 映射
 SYMBOL_MAP = {
     "BTC": "BTC-USDT-SWAP",
     "ETH": "ETH-USDT-SWAP",
     "SOL": "SOL-USDT-SWAP",
 }
 
+# 币种差异化配置
+STRATEGY_PROFILES = {
+    "BTC": {
+        "base_win_rate": 50,
+        "max_win_rate": 85,
+        "base_position": 0.25,
+        "max_position": 0.50,
+        "stop_multiplier": 1.5,
+        "tp1_ratio": 1.5,
+        "tp2_ratio": 2.5,
+        "volatility_discount": 0.8,
+        "signals": {
+            "liquidation": {"weight": 10, "reliable": True},
+            "funding_rate": {"weight": 10, "reliable": True},
+            "top_trader": {"weight": 10, "reliable": True},
+            "cvd": {"weight": 10, "reliable": True},
+            "fear_greed": {"weight": 10, "reliable": True},
+            "option_pain": {"weight": 0, "reliable": True},  # 用于矛盾检测
+        }
+    },
+    "ETH": {
+        "base_win_rate": 48,
+        "max_win_rate": 80,
+        "base_position": 0.20,
+        "max_position": 0.40,
+        "stop_multiplier": 1.8,
+        "tp1_ratio": 1.8,
+        "tp2_ratio": 3.0,
+        "volatility_discount": 0.7,
+        "signals": {
+            "liquidation": {"weight": 12, "reliable": True},
+            "funding_rate": {"weight": 10, "reliable": True},
+            "top_trader": {"weight": 10, "reliable": True},
+            "cvd": {"weight": 12, "reliable": True},
+            "fear_greed": {"weight": 8, "reliable": True},
+            "option_pain": {"weight": 0, "reliable": True},
+        }
+    },
+    "SOL": {
+        "base_win_rate": 45,
+        "max_win_rate": 75,
+        "base_position": 0.15,
+        "max_position": 0.30,
+        "stop_multiplier": 2.2,
+        "tp1_ratio": 2.0,
+        "tp2_ratio": 3.5,
+        "volatility_discount": 0.6,
+        "signals": {
+            "liquidation": {"weight": 20, "reliable": True},
+            "funding_rate": {"weight": 10, "reliable": True},
+            "top_trader": {"weight": 0, "reliable": False},   # 不可用
+            "cvd": {"weight": 15, "reliable": True},
+            "fear_greed": {"weight": 10, "reliable": True},
+            "option_pain": {"weight": 0, "reliable": False},  # 不可用
+        }
+    }
+}
+
 def send_error_notification(symbol: str, error_msg: str):
-    """发送错误通知到钉钉"""
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
     
-    markdown = f"""## ❌ [{symbol}] 策略生成失败 🕒 {now_str}
+    markdown = f"""## ❌ DeepSeek 策略生成失败 [{symbol}] 🕒 {now_str}
 
 ### 错误详情
 > {error_msg}
@@ -34,15 +90,15 @@ def send_error_notification(symbol: str, error_msg: str):
 ---
 *系统将在下次定时任务时自动重试。*
 """
-    send_dingtalk_message(markdown, f"{symbol}策略生成异常")
+    send_dingtalk_message(markdown, f"DeepSeek策略异常-{symbol}")
 
 def main():
-    # 从环境变量读取币种，默认为 BTC
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
     if symbol not in SYMBOL_MAP:
         logger.error(f"不支持的币种: {symbol}，将使用 BTC")
         symbol = "BTC"
 
+    profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"])
     okx_inst_id = SYMBOL_MAP[symbol]
 
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
@@ -53,24 +109,33 @@ def main():
     macro = {}
 
     try:
-        # 1. 获取价格与 ATR
         price = get_current_price(okx_inst_id)
         if price <= 0:
             raise Exception("无法获取当前价格")
         atr = calculate_atr(okx_inst_id)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}")
 
-        # 2. 获取 CoinGlass 数据（传入当前价格用于清算矩阵解析）
         cg = CoinGlassClient()
         cg_data = cg.get_all_data(symbol, current_price=price)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
 
-        # 3. 获取宏观数据
+        # 计算波动率因子（当前版本返回默认值1.0）
+        volatility_factor = cg.calculate_volatility_factor(symbol)
+        logger.info(f"{symbol} 波动率因子: {volatility_factor:.2f}")
+
         macro = get_macro_data()
         logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
 
-        # 4. 构造 Prompt 并调用 DeepSeek
-        prompt = build_prompt(symbol, price, atr, cg_data, macro)
+        # 传递差异化配置和波动率因子
+        prompt = build_prompt(
+            symbol=symbol,
+            price=price,
+            atr=atr,
+            coinglass_data=cg_data,
+            macro_data=macro,
+            profile=profile,
+            volatility_factor=volatility_factor
+        )
         strategy = call_deepseek(prompt)
 
         if not strategy:
@@ -79,7 +144,6 @@ def main():
         if not validate_strategy(strategy, price):
             logger.warning("策略校验未通过，但仍尝试推送")
 
-        # 5. 准备额外数据用于推送
         extra = {
             "atr": atr,
             "funding_rate": cg_data.get("funding_rate", "N/A"),
@@ -90,24 +154,18 @@ def main():
             "fear_greed": macro["fear_greed"]["value"],
         }
 
-        # 6. 格式化为钉钉消息并推送
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
-        success = send_dingtalk_message(markdown_msg, f"{symbol}策略推送")
+        success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
         if success:
             logger.info(f"{symbol} 策略推送成功")
         else:
             logger.error(f"{symbol} 推送失败")
 
     except Exception as e:
-        # 捕获所有异常，记录日志并发送钉钉通知
         error_detail = f"{str(e)}\n{traceback.format_exc()}"
         logger.error(f"{symbol} 策略生成失败: {e}")
         logger.error(traceback.format_exc())
-        
-        # 发送错误通知到钉钉
         send_error_notification(symbol, str(e))
-        
-        # 返回非零退出码，标记 Actions 任务失败
         sys.exit(1)
 
     logger.info(f"===== {symbol} 流程结束 =====\n")
