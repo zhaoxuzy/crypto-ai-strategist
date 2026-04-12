@@ -12,10 +12,6 @@ class CoinGlassClient:
         self.backup_exchanges = ["Bybit"]
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True) -> dict:
-        """
-        发送 GET 请求，支持自动重试和备用交易所切换。
-        若 allow_backup=False，则仅使用主交易所，不切换备用。
-        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -23,7 +19,6 @@ class CoinGlassClient:
         }
         base_params = params.copy() if params else {}
         
-        # 确定要尝试的交易所列表
         if allow_backup:
             exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
         else:
@@ -33,7 +28,6 @@ class CoinGlassClient:
 
         for exchange in exchanges_to_try:
             current_params = base_params.copy()
-            # 只有当参数中包含 exchange 且 allow_backup=True 时才覆盖
             if "exchange" in current_params and allow_backup:
                 current_params["exchange"] = exchange
             elif "exchange" not in current_params and allow_backup:
@@ -82,7 +76,6 @@ class CoinGlassClient:
 
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    # ---------- 清算热力图 Model2（官方端点）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -134,10 +127,10 @@ class CoinGlassClient:
 
             price = float(y_axis[y_idx])
 
-            if x_idx == 0:  # 多头清算
+            if x_idx == 0:
                 if price < current_price:
                     total_long += intensity
-            elif x_idx == 1:  # 空头清算
+            elif x_idx == 1:
                 if price > current_price:
                     total_short += intensity
 
@@ -180,42 +173,34 @@ class CoinGlassClient:
 
         return result
 
-    # ---------- 持仓量历史（官方端点）----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params, allow_backup=True)
 
-    # ---------- 资金费率历史（官方端点）----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
-    # ---------- 全局多空比（官方端点）----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
 
-    # ---------- 顶级交易员多空比（官方端点，仅支持 BTC/ETH）----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
 
-    # ---------- 期权信息（官方端点，仅 Deribit）----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, allow_backup=False)
 
-    # ---------- 主动买卖量历史（官方端点）----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
 
-    # ---------- 期权最大痛点（官方端点，仅 Deribit）----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False)
 
-    # ---------- CVD 历史（官方端点）----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, allow_backup=True)
@@ -328,12 +313,10 @@ class CoinGlassClient:
         try:
             max_pain_data = self.get_option_max_pain(symbol)
             skew_value = None
-            if isinstance(max_pain_data, dict):
-                skew_value = max_pain_data.get("maxPain", max_pain_data.get("max_pain"))
-            elif isinstance(max_pain_data, list) and len(max_pain_data) > 0:
+            if isinstance(max_pain_data, list) and len(max_pain_data) > 0:
                 latest = max_pain_data[-1]
                 if isinstance(latest, dict):
-                    skew_value = latest.get("maxPain", latest.get("max_pain"))
+                    skew_value = latest.get("max_pain_price")
             if skew_value is None:
                 raise RuntimeError("期权最大痛点数据缺失")
             data["skew"] = skew_value
