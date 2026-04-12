@@ -271,18 +271,22 @@ class CoinGlassClient:
         ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
 
-        # 5. 顶级交易员多空比
-        top_ls_history = self.get_top_long_short_ratio_history(symbol)
-        if not isinstance(top_ls_history, list) or len(top_ls_history) == 0:
-            raise RuntimeError("顶级交易员多空比数据为空")
-        latest = top_ls_history[-1]
-        if isinstance(latest, dict):
-            top_ls_ratio = latest.get("top_account_long_short_ratio")
-            if top_ls_ratio is None:
-                raise RuntimeError("顶级交易员多空比字段缺失")
+        # 5. 顶级交易员多空比（仅 BTC 和 ETH 强制要求，其他币种跳过）
+        if symbol.upper() in ("BTC", "ETH"):
+            top_ls_history = self.get_top_long_short_ratio_history(symbol)
+            if not isinstance(top_ls_history, list) or len(top_ls_history) == 0:
+                raise RuntimeError("顶级交易员多空比数据为空")
+            latest = top_ls_history[-1]
+            if isinstance(latest, dict):
+                top_ls_ratio = latest.get("top_account_long_short_ratio")
+                if top_ls_ratio is None:
+                    raise RuntimeError("顶级交易员多空比字段缺失")
+            else:
+                raise RuntimeError("顶级交易员多空比数据格式异常")
+            data["top_long_short_ratio"] = top_ls_ratio
         else:
-            raise RuntimeError("顶级交易员多空比数据格式异常")
-        data["top_long_short_ratio"] = top_ls_ratio
+            logger.info(f"顶级交易员多空比接口不支持 {symbol}，将跳过此数据项")
+            data["top_long_short_ratio"] = "N/A"
 
         # 6. 期权信息
         options_info = self.get_options_info(symbol)
