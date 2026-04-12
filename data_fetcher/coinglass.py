@@ -191,7 +191,6 @@ class CoinGlassClient:
 
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        # 修正：使用正确的端点，去掉 /v2
         return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
@@ -212,13 +211,15 @@ class CoinGlassClient:
 
     @staticmethod
     def _get_buy_sell_volumes(candle):
-        if isinstance(candle, list):
+        """根据官方文档解析主动买卖量，字段为 taker_buy_volume_usd 和 taker_sell_volume_usd"""
+        if isinstance(candle, dict):
+            buy = float(candle.get("taker_buy_volume_usd", 0))
+            sell = float(candle.get("taker_sell_volume_usd", 0))
+            return buy, sell
+        elif isinstance(candle, list) and len(candle) >= 5:
+            # 兼容某些旧格式
             buy = float(candle[4]) if len(candle) > 4 else 0.0
             sell = float(candle[5]) if len(candle) > 5 else 0.0
-            return buy, sell
-        elif isinstance(candle, dict):
-            buy = float(candle.get("buyVolume", 0))
-            sell = float(candle.get("sellVolume", 0))
             return buy, sell
         return 0.0, 0.0
 
@@ -300,7 +301,7 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率（所有币种强制要求，失败即报错）
+        # 7. 主动吃单比率（所有币种强制要求）
         taker_history = self.get_taker_volume_history(symbol)
         if not isinstance(taker_history, list) or len(taker_history) == 0:
             raise RuntimeError("主动买卖量数据为空")
