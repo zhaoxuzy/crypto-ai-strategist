@@ -76,6 +76,7 @@ class CoinGlassClient:
 
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
+    # ---------- 清算热力图 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -173,37 +174,63 @@ class CoinGlassClient:
 
         return result
 
+    # ---------- 持仓量 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params, allow_backup=True)
 
+    # ---------- 资金费率 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
+    # ---------- 全局多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
 
+    # ---------- 顶级交易员多空比 ----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
 
+    # ---------- 期权信息 ----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, allow_backup=False)
 
+    # ---------- 主动买卖量（单交易所）----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
 
+    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False)
 
+    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, allow_backup=True)
+
+    # ---------- 【新增】净多净空持仓 v2 ----------
+    def get_net_position_history(self, symbol: str = "BTC"):
+        """净多持仓与净空持仓(v2) - /api/futures/v2/net-position/history"""
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/v2/net-position/history", params, allow_backup=True)
+
+    # ---------- 【新增】累计资金费率 ----------
+    def get_accumulated_funding_rate(self, symbol: str = "BTC"):
+        """累计资金费率-交易所列表 - /api/futures/funding-rate/accumulated-exchange-list"""
+        params = {"symbol": symbol.upper()}
+        return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False)
+
+    # ---------- 【新增】聚合主动买卖历史 ----------
+    def get_aggregated_taker_volume(self, symbol: str = "BTC"):
+        """币种主动买卖历史 - /api/futures/aggregated-taker-buy-sell-volume/history"""
+        params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24}
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False)
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -218,6 +245,15 @@ class CoinGlassClient:
         if isinstance(candle, dict):
             buy = float(candle.get("taker_buy_volume_usd", 0))
             sell = float(candle.get("taker_sell_volume_usd", 0))
+            return buy, sell
+        return 0.0, 0.0
+
+    @staticmethod
+    def _get_aggregated_buy_sell_volumes(candle):
+        """解析聚合主动买卖量"""
+        if isinstance(candle, dict):
+            buy = float(candle.get("aggregated_buy_volume_usd", 0))
+            sell = float(candle.get("aggregated_sell_volume_usd", 0))
             return buy, sell
         return 0.0, 0.0
 
@@ -298,7 +334,7 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率
+        # 7. 主动吃单比率（单交易所）
         taker_history = self.get_taker_volume_history(symbol)
         if not isinstance(taker_history, list) or len(taker_history) == 0:
             raise RuntimeError("主动买卖量数据为空")
@@ -363,5 +399,65 @@ class CoinGlassClient:
             cvd_signal = "neutral"
         data["cvd_signal"] = cvd_signal
         data["cvd_slope"] = cvd_slope
+
+        # 10. 【新增】净多净空持仓
+        try:
+            net_pos_history = self.get_net_position_history(symbol)
+            if not isinstance(net_pos_history, list) or len(net_pos_history) == 0:
+                raise RuntimeError("净持仓数据为空")
+            latest = net_pos_history[-1]
+            if isinstance(latest, dict):
+                net_position_cum = latest.get("net_position_change_cum")
+                if net_position_cum is None:
+                    raise RuntimeError("净持仓累积字段缺失")
+                data["net_position_cum"] = round(float(net_position_cum), 2)
+            else:
+                raise RuntimeError("净持仓数据格式异常")
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 净持仓数据获取失败: {e}，将跳过")
+                data["net_position_cum"] = "N/A"
+            else:
+                raise
+
+        # 11. 【新增】累计资金费率（取 OKX 的稳定币保证金累计费率）
+        try:
+            acc_funding = self.get_accumulated_funding_rate(symbol)
+            okx_funding = "N/A"
+            if isinstance(acc_funding, list) and len(acc_funding) > 0:
+                for item in acc_funding:
+                    if isinstance(item, dict) and item.get("symbol") == symbol.upper():
+                        stable_list = item.get("stablecoin_margin_list", [])
+                        for ex in stable_list:
+                            if ex.get("exchange") == "OKX":
+                                okx_funding = ex.get("funding_rate")
+                                break
+                        break
+            data["accumulated_funding_rate"] = okx_funding if okx_funding is not None else "N/A"
+        except Exception as e:
+            logger.warning(f"累计资金费率获取失败: {e}")
+            data["accumulated_funding_rate"] = "N/A"
+
+        # 12. 【新增】聚合主动买卖比率
+        try:
+            agg_taker = self.get_aggregated_taker_volume(symbol)
+            if not isinstance(agg_taker, list) or len(agg_taker) == 0:
+                raise RuntimeError("聚合主动买卖数据为空")
+            latest_agg = agg_taker[-1]
+            if isinstance(latest_agg, dict):
+                buy_agg, sell_agg = self._get_aggregated_buy_sell_volumes(latest_agg)
+                total_agg = buy_agg + sell_agg
+                if total_agg <= 0:
+                    raise RuntimeError("聚合主动买卖数据无效")
+                agg_taker_ratio = f"{(buy_agg / total_agg):.2f}"
+                data["aggregated_taker_ratio"] = agg_taker_ratio
+            else:
+                raise RuntimeError("聚合主动买卖数据格式异常")
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 聚合主动买卖数据获取失败: {e}，将跳过")
+                data["aggregated_taker_ratio"] = "N/A"
+            else:
+                raise
 
         return data
