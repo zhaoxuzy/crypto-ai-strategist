@@ -9,13 +9,9 @@ class CoinGlassClient:
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.delay = 2.5
         self.primary_exchange = "OKX"
-        self.backup_exchanges = ["Bybit"]  # 不使用币安
+        self.backup_exchanges = ["Bybit"]
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True) -> dict:
-        """
-        发送 GET 请求，支持自动重试和备用交易所切换。
-        若所有尝试均失败，抛出 RuntimeError。
-        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -74,7 +70,6 @@ class CoinGlassClient:
 
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    # ---------- 清算热力图 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": self.primary_exchange,
@@ -174,42 +169,34 @@ class CoinGlassClient:
 
         return result
 
-    # ---------- 持仓量 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/open-interest/history", params, allow_backup=True)
 
-    # ---------- 资金费率 ----------
     def get_funding_rate_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
-    # ---------- 全局多空比 ----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
 
-    # ---------- 顶级交易员多空比 ----------
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
 
-    # ---------- 期权信息 ----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, allow_backup=False)
 
-    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/taker-buy-sell-volume/history", params, allow_backup=True)
 
-    # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False)
 
-    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 24}
         return self._request("api/futures/cvd/history", params, allow_backup=True)
@@ -234,7 +221,6 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-    # ---------- 数据聚合 ----------
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
             current_price = 70000.0
@@ -288,45 +274,66 @@ class CoinGlassClient:
             logger.info(f"顶级交易员多空比接口不支持 {symbol}，将跳过此数据项")
             data["top_long_short_ratio"] = "N/A"
 
-        # 6. 期权信息
-        options_info = self.get_options_info(symbol)
-        if not isinstance(options_info, list) or len(options_info) == 0:
-            raise RuntimeError("期权信息数据为空")
-        first = options_info[0]
-        if not isinstance(first, dict):
-            raise RuntimeError("期权信息数据格式异常")
-        oi_usd = first.get("open_interest_usd")
-        if oi_usd is None:
-            raise RuntimeError("期权持仓价值字段缺失")
+        # 6. 期权信息（SOL 容错）
+        try:
+            options_info = self.get_options_info(symbol)
+            if not isinstance(options_info, list) or len(options_info) == 0:
+                raise RuntimeError("期权信息数据为空")
+            first = options_info[0]
+            if not isinstance(first, dict):
+                raise RuntimeError("期权信息数据格式异常")
+            oi_usd = first.get("open_interest_usd")
+            if oi_usd is None:
+                raise RuntimeError("期权持仓价值字段缺失")
+            data["option_oi_usd"] = oi_usd
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 期权信息获取失败: {e}，将跳过此数据项")
+                data["option_oi_usd"] = "N/A"
+            else:
+                raise
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
-        data["option_oi_usd"] = oi_usd
 
-        # 7. 主动吃单比率
-        taker_history = self.get_taker_volume_history(symbol)
-        if not isinstance(taker_history, list) or len(taker_history) == 0:
-            raise RuntimeError("主动买卖量数据为空")
-        buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
-        total = buy_vol + sell_vol
-        if total <= 0:
-            raise RuntimeError("主动买卖量数据无效")
-        taker_ratio = f"{(buy_vol / total):.2f}"
-        data["taker_ratio"] = taker_ratio
+        # 7. 主动吃单比率（SOL 容错）
+        try:
+            taker_history = self.get_taker_volume_history(symbol)
+            if not isinstance(taker_history, list) or len(taker_history) == 0:
+                raise RuntimeError("主动买卖量数据为空")
+            buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
+            total = buy_vol + sell_vol
+            if total <= 0:
+                raise RuntimeError("主动买卖量数据无效")
+            taker_ratio = f"{(buy_vol / total):.2f}"
+            data["taker_ratio"] = taker_ratio
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 主动买卖量数据获取失败: {e}，将跳过此数据项")
+                data["taker_ratio"] = "N/A"
+            else:
+                raise
 
-        # 8. 期权最大痛点
-        max_pain_data = self.get_option_max_pain(symbol)
-        skew_value = None
-        if isinstance(max_pain_data, dict):
-            skew_value = max_pain_data.get("maxPain", max_pain_data.get("max_pain"))
-        elif isinstance(max_pain_data, list) and len(max_pain_data) > 0:
-            latest = max_pain_data[-1]
-            if isinstance(latest, dict):
-                skew_value = latest.get("maxPain", latest.get("max_pain"))
-        if skew_value is None:
-            raise RuntimeError("期权最大痛点数据缺失")
-        data["skew"] = skew_value
+        # 8. 期权最大痛点（SOL 容错）
+        try:
+            max_pain_data = self.get_option_max_pain(symbol)
+            skew_value = None
+            if isinstance(max_pain_data, dict):
+                skew_value = max_pain_data.get("maxPain", max_pain_data.get("max_pain"))
+            elif isinstance(max_pain_data, list) and len(max_pain_data) > 0:
+                latest = max_pain_data[-1]
+                if isinstance(latest, dict):
+                    skew_value = latest.get("maxPain", latest.get("max_pain"))
+            if skew_value is None:
+                raise RuntimeError("期权最大痛点数据缺失")
+            data["skew"] = skew_value
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 期权最大痛点获取失败: {e}，将跳过此数据项")
+                data["skew"] = "N/A"
+            else:
+                raise
 
-        # 9. CVD 斜率信号
+        # 9. CVD 斜率信号（所有币种均要求成功）
         cvd_history = self.get_cvd_history(symbol)
         if not isinstance(cvd_history, list) or len(cvd_history) < 12:
             raise RuntimeError("CVD 数据不足，无法计算斜率")
