@@ -1,7 +1,7 @@
 import os
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
@@ -10,35 +10,66 @@ from data_fetcher.macro_cache import get_macro_data
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
+# 币种与 OKX 永续合约 ID 映射
 SYMBOL_MAP = {
     "BTC": "BTC-USDT-SWAP",
     "ETH": "ETH-USDT-SWAP",
     "SOL": "SOL-USDT-SWAP",
 }
 
+def send_error_notification(symbol: str, error_msg: str):
+    """发送错误通知到钉钉"""
+    beijing_tz = timezone(timedelta(hours=8))
+    now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
+    
+    markdown = f"""## ❌ [{symbol}] 策略生成失败 🕒 {now_str}
+
+### 错误详情
+> {error_msg}
+
+### 处理建议
+- 请检查数据源（CoinGlass、OKX）是否正常
+- 可稍后手动重试或查看 Actions 日志排查
+
+---
+*系统将在下次定时任务时自动重试。*
+"""
+    send_dingtalk_message(markdown, f"{symbol}策略生成异常")
+
 def main():
+    # 从环境变量读取币种，默认为 BTC
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
     if symbol not in SYMBOL_MAP:
         logger.error(f"不支持的币种: {symbol}，将使用 BTC")
         symbol = "BTC"
 
     okx_inst_id = SYMBOL_MAP[symbol]
+
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
 
+    price = 0.0
+    atr = 0.0
+    cg_data = {}
+    macro = {}
+
     try:
+        # 1. 获取价格与 ATR
         price = get_current_price(okx_inst_id)
         if price <= 0:
             raise Exception("无法获取当前价格")
         atr = calculate_atr(okx_inst_id)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}")
 
+        # 2. 获取 CoinGlass 数据（传入当前价格用于清算矩阵解析）
         cg = CoinGlassClient()
         cg_data = cg.get_all_data(symbol, current_price=price)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
 
+        # 3. 获取宏观数据
         macro = get_macro_data()
         logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
 
+        # 4. 构造 Prompt 并调用 DeepSeek
         prompt = build_prompt(symbol, price, atr, cg_data, macro)
         strategy = call_deepseek(prompt)
 
@@ -48,6 +79,7 @@ def main():
         if not validate_strategy(strategy, price):
             logger.warning("策略校验未通过，但仍尝试推送")
 
+        # 5. 准备额外数据用于推送
         extra = {
             "atr": atr,
             "funding_rate": cg_data.get("funding_rate", "N/A"),
@@ -58,6 +90,7 @@ def main():
             "fear_greed": macro["fear_greed"]["value"],
         }
 
+        # 6. 格式化为钉钉消息并推送
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"{symbol}策略推送")
         if success:
@@ -66,10 +99,15 @@ def main():
             logger.error(f"{symbol} 推送失败")
 
     except Exception as e:
+        # 捕获所有异常，记录日志并发送钉钉通知
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
         logger.error(f"{symbol} 策略生成失败: {e}")
         logger.error(traceback.format_exc())
-        error_msg = f"## ❌ [{symbol}] 策略生成失败 🕒 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n> 错误信息：{str(e)}\n\n请检查数据源或稍后重试。"
-        send_dingtalk_message(error_msg, f"{symbol}策略生成异常")
+        
+        # 发送错误通知到钉钉
+        send_error_notification(symbol, str(e))
+        
+        # 返回非零退出码，标记 Actions 任务失败
         sys.exit(1)
 
     logger.info(f"===== {symbol} 流程结束 =====\n")
