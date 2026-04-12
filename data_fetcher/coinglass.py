@@ -191,7 +191,8 @@ class CoinGlassClient:
 
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": self.primary_exchange, "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        return self._request("api/futures/v2/taker-buy-sell-volume/history", params, allow_backup=True)
+        # 修正：使用正确的端点，去掉 /v2
+        return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
@@ -222,17 +223,8 @@ class CoinGlassClient:
         return 0.0, 0.0
 
     def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
-        """
-        计算当前波动率因子：当前 ATR / 近7日 ATR 均值。
-        由于 CoinGlass 不直接提供 ATR 历史，此处返回默认值 1.0。
-        您可以根据需要接入其他数据源实现真实计算。
-        """
-        try:
-            # 此处可扩展：获取近7日 OHLC 计算平均 ATR
-            return 1.0
-        except Exception as e:
-            logger.warning(f"计算波动率因子失败: {e}，使用默认值 1.0")
-            return 1.0
+        """计算波动率因子，当前返回默认值1.0，可根据需要扩展"""
+        return 1.0
 
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
@@ -308,23 +300,16 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率（SOL 容错）
-        try:
-            taker_history = self.get_taker_volume_history(symbol)
-            if not isinstance(taker_history, list) or len(taker_history) == 0:
-                raise RuntimeError("主动买卖量数据为空")
-            buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
-            total = buy_vol + sell_vol
-            if total <= 0:
-                raise RuntimeError("主动买卖量数据无效")
-            taker_ratio = f"{(buy_vol / total):.2f}"
-            data["taker_ratio"] = taker_ratio
-        except RuntimeError as e:
-            if symbol.upper() == "SOL":
-                logger.warning(f"SOL 主动买卖量数据获取失败: {e}，将跳过此数据项")
-                data["taker_ratio"] = "N/A"
-            else:
-                raise
+        # 7. 主动吃单比率（所有币种强制要求，失败即报错）
+        taker_history = self.get_taker_volume_history(symbol)
+        if not isinstance(taker_history, list) or len(taker_history) == 0:
+            raise RuntimeError("主动买卖量数据为空")
+        buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
+        total = buy_vol + sell_vol
+        if total <= 0:
+            raise RuntimeError("主动买卖量数据无效")
+        taker_ratio = f"{(buy_vol / total):.2f}"
+        data["taker_ratio"] = taker_ratio
 
         # 8. 期权最大痛点（SOL 容错）
         try:
