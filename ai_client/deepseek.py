@@ -7,7 +7,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     fg = macro_data.get("fear_greed", {})
     signals = profile["signals"]
 
-    # 动态生成信号可用性说明
     signal_desc = ""
     for name, cfg in signals.items():
         if cfg["reliable"]:
@@ -15,7 +14,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         else:
             signal_desc += f"- {name}: 不可用，不计入评分\n"
 
-    # 动态生成胜率评分表
     scoring_table = "| 加分项 | 权重 | 是否满足 |\n|--------|------|----------|\n"
     for name, cfg in signals.items():
         if cfg["reliable"] and cfg["weight"] > 0:
@@ -24,12 +22,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     scoring_table += "| 清算结构矛盾（上下方金额接近） | -10% | |\n"
     scoring_table += "| 信号缺失（每项 N/A） | -3% | |\n"
 
-    # 止损止盈规则
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     tp1_rule = f"止盈1 盈亏比 ≥ {profile['tp1_ratio']}:1"
     tp2_rule = f"止盈2 盈亏比 ≥ {profile['tp2_ratio']}:1"
 
-    # 仓位规则
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     if volatility_factor > 1.5:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} > 1.5，仓位需乘以 {profile['volatility_discount']}。"
@@ -51,12 +47,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **多空博弈数据**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
 - 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单量比率：{coinglass_data.get('taker_ratio', 'N/A')}
+- 主动吃单量比率（OKX）：{coinglass_data.get('taker_ratio', 'N/A')}
 - 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
 - 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
+- **净持仓累积变化**：{coinglass_data.get('net_position_cum', 'N/A')}（正值表示净多头累积，负值表示净空头累积）
 
-**资金流向**
+**资金流向与情绪**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率：{coinglass_data.get('cvd_slope', 'N/A')}）
+- **聚合主动买卖比率（全市场）**：{coinglass_data.get('aggregated_taker_ratio', 'N/A')}（>0.55为主动买盘强劲）
+- **累计资金费率（OKX）**：{coinglass_data.get('accumulated_funding_rate', 'N/A')}（极高正值表示多头持续支付高额费用，存在踩踏风险）
 
 **期权参考**
 - 期权最大痛点：{coinglass_data.get('skew', 'N/A')} USDT
@@ -98,8 +97,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 最终胜率 = 基础胜率 + 加分 - 扣分，并限制在 {profile['base_win_rate']}%-{profile['max_win_rate']}% 之间。
 
 ### 特别提醒
-- 若清算数据为零或 N/A，说明当前价格附近无显著清算堆积，此时应更依赖 CVD 和资金费率判断方向。
-- 若顶级交易员多空比显示为 N/A（{symbol}不可用），请忽略该信号，不参与评分。
+- 若净持仓累积与价格走势背离，是强力的反转信号。
+- 若累计资金费率极高（>0.1%），多头成本沉重，偏向做空；若极低（<-0.05%），空头成本沉重，偏向做多。
+- 聚合主动买卖比率比单交易所数据更能反映全局买卖压力。
 """
 
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
