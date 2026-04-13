@@ -4,7 +4,6 @@ from openai import OpenAI
 from utils.logger import logger
 
 def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict) -> int:
-    """基于可量化指标严格计算胜率"""
     base_win_rate = profile["base_win_rate"]
     signals = profile["signals"]
     fg = macro_data.get("fear_greed", {})
@@ -61,7 +60,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     elif fg_value > 80 and direction == "short":
         score += signals.get("fear_greed", {}).get("weight", 10)
 
-    # 扣分项：数据缺失
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
@@ -72,10 +70,8 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
 
 
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
-    """计算信号共振数量，返回强度等级和详情"""
     signals = []
     
-    # 清算方向
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
@@ -88,7 +84,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     except:
         pass
 
-    # 顶级交易员
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -99,12 +94,10 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     except:
         pass
 
-    # CVD
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bullish", "bearish", "slightly_bullish", "slightly_bearish"]:
         signals.append(f"CVD:{cvd}")
 
-    # 恐惧贪婪
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
@@ -145,7 +138,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     cluster_intensity = cluster.get("intensity", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
 
-    min_profit_distance = max(0.5 * atr, price * 0.003)
+    min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
+    tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
+
+    # SOL 特殊提示
+    sol_extra = ""
+    if symbol.upper() == "SOL":
+        sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
 
     return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
 
@@ -154,14 +153,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 当前价格：{price} USDT
 - 1小时ATR(14)：{atr} USDT
 - 波动率因子：{volatility_factor}（>1.5 为高波动，<0.8 为低波动）
-- **最小盈利空间阈值**：{min_profit_distance:.1f} USDT（止盈锚点与当前价的距离必须 ≥ 此值）
+- **最小盈利空间阈值**：{min_profit_distance:.1f} USDT
+- **TP2 分层最小距离**：{tp2_layer_distance:.1f} USDT
 
 **清算压力数据**
 - 上方空头清算累计金额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算累计金额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{coinglass_data.get('max_pain_price', 'N/A')} USDT
 - **最近清算密集区**：{cluster_direction}方，价格 {cluster_price_raw} USDT，强度 {cluster_intensity}/5
-  * 强度≥3/5 的区域是强力磁吸位，价格大概率会触及。
 
 **多空博弈数据**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
@@ -169,7 +168,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 主动吃单量比率（OKX）：{coinglass_data.get('taker_ratio', 'N/A')}
 - 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
 - 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积变化：{coinglass_data.get('net_position_cum', 'N/A')}（正值=净多头累积）
+- 净持仓累积变化：{coinglass_data.get('net_position_cum', 'N/A')}
 
 **资金流向与情绪**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率：{coinglass_data.get('cvd_slope', 'N/A')}）
@@ -177,7 +176,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 累计资金费率（OKX）：{coinglass_data.get('accumulated_funding_rate', 'N/A')}
 
 **期权参考**
-- 期权最大痛点：{option_pain} USDT（机构博弈核心价位）
+- 期权最大痛点：{option_pain} USDT
 - 期权持仓价值：{coinglass_data.get('option_oi_usd', 'N/A')} USD
 
 **宏观背景**
@@ -185,6 +184,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### {symbol} 专属信号配置
 {signal_desc}
+{sol_extra}
 
 ### 策略输出要求
 请严格按照以下JSON格式输出：
@@ -200,50 +200,41 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2的锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
-  "reasoning": "1-2句话核心逻辑，必须提及止盈锚定依据",
+  "reasoning": "1-2句话核心逻辑",
   "risk_note": "风险提示"
 }}
 
-### 止盈方向强制校验（最高优先级，违反即视为无效策略）
-
-- **做多时**：TP1 和 TP2 必须 **严格大于** 入场价（取入场区间上限）。
-- **做空时**：TP1 和 TP2 必须 **严格小于** 入场价（取入场区间下限）。
-- 若某个锚点不满足方向要求，**绝对不得**将其作为止盈目标。必须跳过该锚点，寻找下一个同向锚点。
-- 若找不到任何同向锚点满足方向与盈利空间要求，则输出 `direction: "neutral"`，并在 reasoning 中说明：“无有效止盈目标”。
+### 止盈方向强制校验（最高优先级）
+- 做多时：TP1 和 TP2 必须 > 入场价（取入场区间上限）。
+- 做空时：TP1 和 TP2 必须 < 入场价（取入场区间下限）。
+- 若锚点不满足方向要求，跳过并寻找下一个同向锚点。
+- 若无有效锚点，输出 `direction: "neutral"`。
 
 ### 止盈锚点选择与盈利空间校验
-
-**1. 盈利空间校验（入场窗口过滤）**
-- 做多时，TP1 锚点价格 - 当前价 必须 ≥ {min_profit_distance:.1f} USDT。
-- 做空时，当前价 - TP1 锚点价格 必须 ≥ {min_profit_distance:.1f} USDT。
-- **若不满足**，必须跳过该锚点，寻找下一个有效锚点。
+**1. 盈利空间校验**
+- 做多时：TP1 锚点价格 - 当前价 ≥ {min_profit_distance:.1f} USDT。
+- 做空时：当前价 - TP1 锚点价格 ≥ {min_profit_distance:.1f} USDT。
+- 若不满足，跳过该锚点。
 
 **2. TP1 锚点选择**
-- 优先选择满足盈利空间要求的**最近清算密集区**（强度≥3/5）。
-- 若无，选择**期权最大痛点**（若满足盈利空间且方向正确）。
-- 若以上均无，使用 **1.5×ATR** 作为替代，并在 tp1_anchor 中注明“ATR估算”。
+- 优先：满足盈利空间的**最近清算密集区**（强度≥3/5）。
+- 其次：**期权最大痛点**（若方向正确且满足盈利空间）。
+- 最后：使用 **{profile['tp1_ratio']}×ATR** 估算。
 
 **3. TP2 锚点选择与分层**
-- TP2 必须选择距离 TP1 ≥ 0.3×ATR 的同向锚点。
-- 优先选择：下一个清算密集区 > 期权最大痛点 > 前高/前低。
-- 若无法找到满足分层要求的 TP2，可仅输出 TP1，并将 TP2 设为与 TP1 相同，并在 reasoning 中说明。
+- TP2 必须选择距离 TP1 ≥ {tp2_layer_distance:.1f} USDT 的同向锚点。
+- 优先：下一个清算密集区 > 期权最大痛点 > 前高/前低。
+- 若无，可仅输出 TP1，将 TP2 设为与 TP1 相同并在 reasoning 中说明。
 
-### 信号稳定性约束（防止频繁翻转）
-- 若当前分析的方向与近期市场惯性相悖，且信号共振强度不足，应优先输出 `direction: "neutral"`。
-- 在 reasoning 中说明：“市场方向不明，建议等待确认”。
+### 信号稳定性约束
+- 若当前方向与近期惯性相悖且信号共振弱，优先输出 `neutral`。
 
-### 止损设定规则
+### 止损与仓位
 - {stop_rule}
-- 做多时止损必须低于入场价，做空时止损必须高于入场价。
-
-### 仓位设定规则
 - {position_rule}
-
-### 特别提醒
-- 清算密集区是价格最可能被吸引到达的位置，但若距离过近则盈利空间不足，必须跳过。
-- 若净持仓累积与价格走势背离，是强力的反转信号。
+- 做多时止损低于入场价，做空时止损高于入场价。
 - 所有价格保留1位小数。
-- **胜率由系统自动计算，你无需填写，请将 win_rate 设为 0。**
+- **胜率由系统自动计算，你无需填写，将 win_rate 设为 0。**
 """
 
 
