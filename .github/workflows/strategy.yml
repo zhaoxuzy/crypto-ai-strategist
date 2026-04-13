@@ -4,7 +4,7 @@ on:
   schedule:
     # 北京时间每天 8:00-24:00 每小时执行一次（默认分析 BTC）
     # UTC 时间：0:00 - 16:00 每小时整点执行
-    - cron: '0 0-16 * * *'
+    - cron: '0,30 0-16 * * *'
   workflow_dispatch:
     inputs:
       symbol:
