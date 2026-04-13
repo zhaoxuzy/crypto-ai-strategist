@@ -71,12 +71,15 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
 
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
     """
-    计算信号共振数量，统一采用与胜率计算一致的纳入标准。
-    信号等级：≥4=极强，3=强，2=中，≤1=弱。
+    计算加权信号强度得分，并映射为等级。
+    权重配置：清算35%，顶级交易员25%，CVD20%，恐惧贪婪12%，资金费率8%。
+    等级：≥75=极强，55-74=强，35-54=中，15-34=弱，<15=极弱。
     """
-    signals = []
-    
-    # 1. 清算方向（差值 >20% 即计数，与胜率一致）
+    total_score = 0
+    max_score = 35 + 25 + 20 + 12 + 8  # 100
+    signals_detail = []
+
+    # 1. 清算方向（权重35%）
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
@@ -86,58 +89,87 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
             diff = abs(above_val - below_val) / max(above_val, below_val)
             if diff > 0.2:
                 if above_val > below_val:
-                    signals.append("清算偏多")
+                    signals_detail.append("清算偏多")
+                    if direction == "long":
+                        total_score += 35
                 else:
-                    signals.append("清算偏空")
+                    signals_detail.append("清算偏空")
+                    if direction == "short":
+                        total_score += 35
     except:
         pass
 
-    # 2. 顶级交易员
+    # 2. 顶级交易员（权重25%）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
         if tls > 2.0:
-            signals.append("顶级偏空")
+            signals_detail.append("顶级偏空")
+            if direction == "short":
+                total_score += 25
         elif tls < 0.7:
-            signals.append("顶级偏多")
+            signals_detail.append("顶级偏多")
+            if direction == "long":
+                total_score += 25
     except:
         pass
 
-    # 3. CVD
+    # 3. CVD（权重20%）
     cvd = coinglass_data.get("cvd_signal", "N/A")
-    if cvd in ["bullish", "bearish", "slightly_bullish", "slightly_bearish"]:
-        signals.append(f"CVD:{cvd}")
+    if cvd in ["bullish", "slightly_bullish"]:
+        signals_detail.append(f"CVD:{cvd}")
+        if direction == "long":
+            total_score += 20
+    elif cvd in ["bearish", "slightly_bearish"]:
+        signals_detail.append(f"CVD:{cvd}")
+        if direction == "short":
+            total_score += 20
 
-    # 4. 恐惧贪婪
+    # 4. 恐惧贪婪（权重12%）
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
-        signals.append("极度恐惧(偏多)")
+        signals_detail.append("极度恐惧(偏多)")
+        if direction == "long":
+            total_score += 12
     elif fg_val > 80:
-        signals.append("极度贪婪(偏空)")
+        signals_detail.append("极度贪婪(偏空)")
+        if direction == "short":
+            total_score += 12
 
-    # 5. 资金费率（新增）
+    # 5. 资金费率（权重8%）
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
         if fr > 0.05:
-            signals.append("费率偏空")
+            signals_detail.append("费率偏空")
+            if direction == "short":
+                total_score += 8
         elif fr < -0.02:
-            signals.append("费率偏多")
+            signals_detail.append("费率偏多")
+            if direction == "long":
+                total_score += 8
     except:
         pass
 
-    strength = len(signals)
-    if strength >= 4:
+    # 计算等级
+    if total_score >= 75:
         level = "极强"
-    elif strength == 3:
+    elif total_score >= 55:
         level = "强"
-    elif strength == 2:
+    elif total_score >= 35:
         level = "中"
-    else:
+    elif total_score >= 15:
         level = "弱"
+    else:
+        level = "极弱"
 
-    return {"level": level, "count": strength, "details": signals}
+    return {
+        "level": level,
+        "score": total_score,
+        "max_score": max_score,
+        "details": signals_detail
+    }
 
 
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0) -> str:
