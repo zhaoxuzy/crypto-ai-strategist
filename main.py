@@ -7,7 +7,7 @@ from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr
 from data_fetcher.macro_cache import get_macro_data
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy
+from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_win_rate, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {
@@ -16,7 +16,6 @@ SYMBOL_MAP = {
     "SOL": "SOL-USDT-SWAP",
 }
 
-# 币种差异化配置
 STRATEGY_PROFILES = {
     "BTC": {
         "base_win_rate": 50,
@@ -33,7 +32,7 @@ STRATEGY_PROFILES = {
             "top_trader": {"weight": 10, "reliable": True},
             "cvd": {"weight": 10, "reliable": True},
             "fear_greed": {"weight": 10, "reliable": True},
-            "option_pain": {"weight": 0, "reliable": True},  # 用于矛盾检测
+            "option_pain": {"weight": 0, "reliable": True},
         }
     },
     "ETH": {
@@ -66,10 +65,10 @@ STRATEGY_PROFILES = {
         "signals": {
             "liquidation": {"weight": 20, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
-            "top_trader": {"weight": 0, "reliable": False},   # 不可用
+            "top_trader": {"weight": 0, "reliable": False},
             "cvd": {"weight": 15, "reliable": True},
             "fear_greed": {"weight": 10, "reliable": True},
-            "option_pain": {"weight": 0, "reliable": False},  # 不可用
+            "option_pain": {"weight": 0, "reliable": False},
         }
     }
 }
@@ -119,14 +118,12 @@ def main():
         cg_data = cg.get_all_data(symbol, current_price=price)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
 
-        # 计算波动率因子（当前版本返回默认值1.0）
         volatility_factor = cg.calculate_volatility_factor(symbol)
         logger.info(f"{symbol} 波动率因子: {volatility_factor:.2f}")
 
         macro = get_macro_data()
         logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
 
-        # 传递差异化配置和波动率因子
         prompt = build_prompt(
             symbol=symbol,
             price=price,
@@ -141,6 +138,15 @@ def main():
         if not strategy:
             raise Exception("DeepSeek 返回为空")
 
+        # 如果方向非中性，用代码计算准确胜率
+        if strategy.get("direction") != "neutral":
+            strategy["win_rate"] = calculate_win_rate(strategy["direction"], cg_data, macro, profile)
+        else:
+            strategy["win_rate"] = 0
+
+        # 计算信号强度
+        signal_strength = calculate_signal_strength(strategy.get("direction", "neutral"), cg_data, macro)
+
         if not validate_strategy(strategy, price):
             logger.warning("策略校验未通过，但仍尝试推送")
 
@@ -152,6 +158,7 @@ def main():
             "cvd_signal": cg_data.get("cvd_signal", "N/A"),
             "skew": cg_data.get("skew", "N/A"),
             "fear_greed": macro["fear_greed"]["value"],
+            "signal_strength": signal_strength,  # 新增
         }
 
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
@@ -162,7 +169,6 @@ def main():
             logger.error(f"{symbol} 推送失败")
 
     except Exception as e:
-        error_detail = f"{str(e)}\n{traceback.format_exc()}"
         logger.error(f"{symbol} 策略生成失败: {e}")
         logger.error(traceback.format_exc())
         send_error_notification(symbol, str(e))
