@@ -7,7 +7,7 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 6.0  # 确保每分钟不超过10次请求
+        self.delay = 3.5  # 从6.0降低至3.5秒，缩短总耗时
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
 
