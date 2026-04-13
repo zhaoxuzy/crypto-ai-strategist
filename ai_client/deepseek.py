@@ -3,6 +3,126 @@ import json
 from openai import OpenAI
 from utils.logger import logger
 
+def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict) -> int:
+    """基于可量化指标严格计算胜率"""
+    base_win_rate = profile["base_win_rate"]
+    signals = profile["signals"]
+    fg = macro_data.get("fear_greed", {})
+    fg_value = int(fg.get("value", 50))
+
+    score = 0
+
+    # 1. 清算结构明确性
+    above = coinglass_data.get("above_short_liquidation", "0")
+    below = coinglass_data.get("below_long_liquidation", "0")
+    try:
+        above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
+        below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
+        if above_val > 0 and below_val > 0:
+            diff = abs(above_val - below_val) / max(above_val, below_val)
+            if diff > 0.3:
+                liq_direction = "long" if above_val > below_val else "short"
+                if liq_direction == direction:
+                    score += signals.get("liquidation", {}).get("weight", 10)
+    except:
+        pass
+
+    # 2. 资金费率极端性
+    funding_rate = coinglass_data.get("funding_rate", "N/A")
+    try:
+        fr = float(funding_rate)
+        if fr > 0.05 and direction == "short":
+            score += signals.get("funding_rate", {}).get("weight", 10)
+        elif fr < -0.02 and direction == "long":
+            score += signals.get("funding_rate", {}).get("weight", 10)
+    except:
+        pass
+
+    # 3. 顶级交易员极端性
+    top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
+    try:
+        tls = float(top_ls)
+        if tls > 2.0 and direction == "short":
+            score += signals.get("top_trader", {}).get("weight", 10)
+        elif tls < 0.7 and direction == "long":
+            score += signals.get("top_trader", {}).get("weight", 10)
+    except:
+        pass
+
+    # 4. CVD 同向性
+    cvd_signal = coinglass_data.get("cvd_signal", "N/A")
+    if (direction == "long" and cvd_signal in ["bullish", "slightly_bullish"]) or \
+       (direction == "short" and cvd_signal in ["bearish", "slightly_bearish"]):
+        score += signals.get("cvd", {}).get("weight", 10)
+
+    # 5. 恐惧贪婪极端性
+    if fg_value < 20 and direction == "long":
+        score += signals.get("fear_greed", {}).get("weight", 10)
+    elif fg_value > 80 and direction == "short":
+        score += signals.get("fear_greed", {}).get("weight", 10)
+
+    # 扣分项：数据缺失
+    na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
+                               coinglass_data.get("top_long_short_ratio"),
+                               coinglass_data.get("cvd_signal")] if v == "N/A")
+    score -= min(10, na_count * 3)
+
+    win_rate = base_win_rate + score
+    return max(40, min(profile["max_win_rate"], win_rate))
+
+
+def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
+    """计算信号共振数量，返回强度等级和详情"""
+    signals = []
+    
+    # 清算方向
+    above = coinglass_data.get("above_short_liquidation", "0")
+    below = coinglass_data.get("below_long_liquidation", "0")
+    try:
+        above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
+        below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
+        if above_val > below_val * 1.3:
+            signals.append("清算偏多")
+        elif below_val > above_val * 1.3:
+            signals.append("清算偏空")
+    except:
+        pass
+
+    # 顶级交易员
+    top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
+    try:
+        tls = float(top_ls)
+        if tls > 2.0:
+            signals.append("顶级偏空")
+        elif tls < 0.7:
+            signals.append("顶级偏多")
+    except:
+        pass
+
+    # CVD
+    cvd = coinglass_data.get("cvd_signal", "N/A")
+    if cvd in ["bullish", "bearish", "slightly_bullish", "slightly_bearish"]:
+        signals.append(f"CVD:{cvd}")
+
+    # 恐惧贪婪
+    fg = macro_data.get("fear_greed", {})
+    fg_val = int(fg.get("value", 50))
+    if fg_val < 20:
+        signals.append("极度恐惧(偏多)")
+    elif fg_val > 80:
+        signals.append("极度贪婪(偏空)")
+
+    strength = len(signals)
+    if strength >= 3:
+        level = "强"
+    elif strength >= 2:
+        level = "中"
+    else:
+        level = "弱"
+
+    return {"level": level, "count": strength, "details": signals}
+
+
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0) -> str:
     fg = macro_data.get("fear_greed", {})
     signals = profile["signals"]
@@ -13,16 +133,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             signal_desc += f"- {name}: 可信，权重 {cfg['weight']}%\n"
         else:
             signal_desc += f"- {name}: 不可用，不计入评分\n"
-
-    scoring_table = "| 加分项 | 权重 | 是否满足 |\n|--------|------|----------|\n"
-    for name, cfg in signals.items():
-        if cfg["reliable"] and cfg["weight"] > 0:
-            scoring_table += f"| {name}信号明确且与方向一致 | +{cfg['weight']}% | |\n"
-    scoring_table += "\n| 扣分项 | 扣分 | 是否触发 |\n|--------|------|----------|\n"
-    scoring_table += "| 清算结构矛盾（上下方金额接近） | -10% | |\n"
-    scoring_table += "| 信号缺失（每项 N/A） | -3% | |\n"
-    scoring_table += "| TP1 盈利空间不足（< 0.5×ATR） | -10% | |\n"
-    scoring_table += "| TP2 方向错误或低于 TP1（做多） | -10% | |\n"
 
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
@@ -81,7 +191,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
-  "win_rate": {profile['base_win_rate']}-{profile['max_win_rate']}之间的整数,
+  "win_rate": 0,
   "entry_price_low": 入场区间下限,
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
@@ -118,6 +228,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 优先选择：下一个清算密集区 > 期权最大痛点 > 前高/前低。
 - 若无法找到满足分层要求的 TP2，可仅输出 TP1，并将 TP2 设为与 TP1 相同，并在 reasoning 中说明。
 
+### 信号稳定性约束（防止频繁翻转）
+- 若当前分析的方向与近期市场惯性相悖，且信号共振强度不足，应优先输出 `direction: "neutral"`。
+- 在 reasoning 中说明：“市场方向不明，建议等待确认”。
+
 ### 止损设定规则
 - {stop_rule}
 - 做多时止损必须低于入场价，做空时止损必须高于入场价。
@@ -125,16 +239,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ### 仓位设定规则
 - {position_rule}
 
-### 胜率评估框架
-基础胜率 = {profile['base_win_rate']}%。请按以下规则打分：
-{scoring_table}
-最终胜率 = 基础胜率 + 加分 - 扣分，并限制在 {profile['base_win_rate']}%-{profile['max_win_rate']}% 之间。
-
 ### 特别提醒
 - 清算密集区是价格最可能被吸引到达的位置，但若距离过近则盈利空间不足，必须跳过。
 - 若净持仓累积与价格走势背离，是强力的反转信号。
 - 所有价格保留1位小数。
+- **胜率由系统自动计算，你无需填写，请将 win_rate 设为 0。**
 """
+
 
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
     client = OpenAI(
@@ -157,9 +268,7 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
             json_str = content[json_start:json_end]
             strategy = json.loads(json_str)
             if "win_rate" not in strategy:
-                strategy["win_rate"] = 50
-            else:
-                strategy["win_rate"] = int(strategy["win_rate"])
+                strategy["win_rate"] = 0
             if "tp1_anchor" not in strategy:
                 strategy["tp1_anchor"] = "未提供"
             if "tp2_anchor" not in strategy:
@@ -170,6 +279,7 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
             if attempt == max_retries - 1:
                 raise
     return {}
+
 
 def validate_strategy(strategy: dict, current_price: float) -> bool:
     if "direction" not in strategy:
@@ -193,7 +303,6 @@ def validate_strategy(strategy: dict, current_price: float) -> bool:
     entry_high = float(strategy["entry_price_high"])
     stop = float(strategy["stop_loss"])
 
-    # 止损方向校验
     if direction == "long" and stop >= entry_low:
         logger.warning("做多时止损必须低于入场价")
         return False
@@ -201,23 +310,20 @@ def validate_strategy(strategy: dict, current_price: float) -> bool:
         logger.warning("做空时止损必须高于入场价")
         return False
 
-    # 止盈字段存在性检查
     tp1 = strategy.get("take_profit_1")
     tp2 = strategy.get("take_profit_2")
-    if tp1 is None or tp1 == "":
-        return True  # 允许无 TP1（如 neutral 已处理，此处防御）
-    try:
-        tp1_val = float(tp1)
-        entry_ref = entry_low if direction == "long" else entry_high
-        # 止盈方向强制校验（兜底）
-        if direction == "long" and tp1_val <= entry_ref:
-            logger.warning(f"做多时 TP1({tp1_val}) 必须大于入场价({entry_ref})")
-            return False
-        if direction == "short" and tp1_val >= entry_ref:
-            logger.warning(f"做空时 TP1({tp1_val}) 必须小于入场价({entry_ref})")
-            return False
-    except:
-        pass
+    if tp1 is not None and tp1 != "":
+        try:
+            tp1_val = float(tp1)
+            entry_ref = entry_low if direction == "long" else entry_high
+            if direction == "long" and tp1_val <= entry_ref:
+                logger.warning(f"做多时 TP1({tp1_val}) 必须大于入场价({entry_ref})")
+                return False
+            if direction == "short" and tp1_val >= entry_ref:
+                logger.warning(f"做空时 TP1({tp1_val}) 必须小于入场价({entry_ref})")
+                return False
+        except:
+            pass
 
     if tp2 is not None and tp2 != "":
         try:
@@ -229,7 +335,6 @@ def validate_strategy(strategy: dict, current_price: float) -> bool:
             if direction == "short" and tp2_val >= entry_ref:
                 logger.warning(f"做空时 TP2({tp2_val}) 必须小于入场价({entry_ref})")
                 return False
-            # TP2 应比 TP1 更远（可选校验，不强制）
         except:
             pass
 
