@@ -22,6 +22,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     scoring_table += "| 清算结构矛盾（上下方金额接近） | -10% | |\n"
     scoring_table += "| 信号缺失（每项 N/A） | -3% | |\n"
     scoring_table += "| TP1 盈利空间不足（< 0.5×ATR） | -10% | |\n"
+    scoring_table += "| TP2 方向错误或低于 TP1（做多） | -10% | |\n"
 
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
@@ -34,8 +35,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     cluster_intensity = cluster.get("intensity", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
 
-    # 计算最小盈利空间阈值
-    min_profit_distance = max(0.5 * atr, price * 0.003)  # 0.5倍ATR 或 0.3%，取较大值
+    min_profit_distance = max(0.5 * atr, price * 0.003)
 
     return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
 
@@ -86,7 +86,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
   "take_profit_1": 第一止盈价,
-  "tp1_anchor": "TP1的锚定来源（如：上方清算密集区/期权最大痛点/ATR估算）",
+  "tp1_anchor": "TP1的锚定来源",
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2的锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
@@ -94,27 +94,29 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "risk_note": "风险提示"
 }}
 
-### 止盈锚点选择与校验规则（必须严格遵守）
+### 止盈方向强制校验（最高优先级，违反即视为无效策略）
+
+- **做多时**：TP1 和 TP2 必须 **严格大于** 入场价（取入场区间上限）。
+- **做空时**：TP1 和 TP2 必须 **严格小于** 入场价（取入场区间下限）。
+- 若某个锚点不满足方向要求，**绝对不得**将其作为止盈目标。必须跳过该锚点，寻找下一个同向锚点。
+- 若找不到任何同向锚点满足方向与盈利空间要求，则输出 `direction: "neutral"`，并在 reasoning 中说明：“无有效止盈目标”。
+
+### 止盈锚点选择与盈利空间校验
 
 **1. 盈利空间校验（入场窗口过滤）**
 - 做多时，TP1 锚点价格 - 当前价 必须 ≥ {min_profit_distance:.1f} USDT。
 - 做空时，当前价 - TP1 锚点价格 必须 ≥ {min_profit_distance:.1f} USDT。
-- **若不满足，则不得以此锚点作为 TP1**。必须跳过该锚点，寻找下一个有效锚点（如下一个清算区、期权痛点、前高/前低）。
-- 若所有锚点均不满足盈利空间要求，则输出 `direction: "neutral"`，并在 reasoning 中说明：“当前价格已过度贴近关键阻力/支撑，安全盈利空间不足”。
+- **若不满足**，必须跳过该锚点，寻找下一个有效锚点。
 
 **2. TP1 锚点选择**
 - 优先选择满足盈利空间要求的**最近清算密集区**（强度≥3/5）。
-- 若无合适清算区，可选择**期权最大痛点**（若满足盈利空间）。
+- 若无，选择**期权最大痛点**（若满足盈利空间且方向正确）。
 - 若以上均无，使用 **1.5×ATR** 作为替代，并在 tp1_anchor 中注明“ATR估算”。
 
 **3. TP2 锚点选择与分层**
-- TP2 必须选择距离 TP1 ≥ 0.3×ATR 的锚点，确保两个止盈位形成有效的利润分层。
+- TP2 必须选择距离 TP1 ≥ 0.3×ATR 的同向锚点。
 - 优先选择：下一个清算密集区 > 期权最大痛点 > 前高/前低。
-- 若无法找到满足分层要求的 TP2，可仅输出 TP1，并将 TP2 设为与 TP1 相同（或留空），并在 reasoning 中说明。
-
-**4. 强制校验**
-- TP1 必须 > 入场价（做多）或 < 入场价（做空）。
-- TP2 必须 ≥ TP1（做多）或 ≤ TP1（做空）。
+- 若无法找到满足分层要求的 TP2，可仅输出 TP1，并将 TP2 设为与 TP1 相同，并在 reasoning 中说明。
 
 ### 止损设定规则
 - {stop_rule}
@@ -177,20 +179,58 @@ def validate_strategy(strategy: dict, current_price: float) -> bool:
         return False
     if direction == "neutral":
         return True
+
     required = ["entry_price_low", "entry_price_high", "stop_loss"]
     for field in required:
         if field not in strategy or strategy[field] in [None, ""]:
             return False
         try:
-            val = float(strategy[field])
-            if abs(val - current_price) / current_price > 0.2:
-                logger.warning(f"{field} 偏离当前价超过20%")
+            float(strategy[field])
         except:
             return False
-    entry = float(strategy["entry_price_low"])
+
+    entry_low = float(strategy["entry_price_low"])
+    entry_high = float(strategy["entry_price_high"])
     stop = float(strategy["stop_loss"])
-    if direction == "long" and stop >= entry:
+
+    # 止损方向校验
+    if direction == "long" and stop >= entry_low:
+        logger.warning("做多时止损必须低于入场价")
         return False
-    if direction == "short" and stop <= entry:
+    if direction == "short" and stop <= entry_high:
+        logger.warning("做空时止损必须高于入场价")
         return False
+
+    # 止盈字段存在性检查
+    tp1 = strategy.get("take_profit_1")
+    tp2 = strategy.get("take_profit_2")
+    if tp1 is None or tp1 == "":
+        return True  # 允许无 TP1（如 neutral 已处理，此处防御）
+    try:
+        tp1_val = float(tp1)
+        entry_ref = entry_low if direction == "long" else entry_high
+        # 止盈方向强制校验（兜底）
+        if direction == "long" and tp1_val <= entry_ref:
+            logger.warning(f"做多时 TP1({tp1_val}) 必须大于入场价({entry_ref})")
+            return False
+        if direction == "short" and tp1_val >= entry_ref:
+            logger.warning(f"做空时 TP1({tp1_val}) 必须小于入场价({entry_ref})")
+            return False
+    except:
+        pass
+
+    if tp2 is not None and tp2 != "":
+        try:
+            tp2_val = float(tp2)
+            entry_ref = entry_low if direction == "long" else entry_high
+            if direction == "long" and tp2_val <= entry_ref:
+                logger.warning(f"做多时 TP2({tp2_val}) 必须大于入场价({entry_ref})")
+                return False
+            if direction == "short" and tp2_val >= entry_ref:
+                logger.warning(f"做空时 TP2({tp2_val}) 必须小于入场价({entry_ref})")
+                return False
+            # TP2 应比 TP1 更远（可选校验，不强制）
+        except:
+            pass
+
     return True
