@@ -19,7 +19,7 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
         below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
         if above_val > 0 and below_val > 0:
             diff = abs(above_val - below_val) / max(above_val, below_val)
-            if diff > 0.3:
+            if diff > 0.2:
                 liq_direction = "long" if above_val > below_val else "short"
                 if liq_direction == direction:
                     score += signals.get("liquidation", {}).get("weight", 10)
@@ -70,20 +70,29 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
 
 
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
+    """
+    计算信号共振数量，统一采用与胜率计算一致的纳入标准。
+    信号等级：≥4=极强，3=强，2=中，≤1=弱。
+    """
     signals = []
     
+    # 1. 清算方向（差值 >20% 即计数，与胜率一致）
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
         above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
         below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
-        if above_val > below_val * 1.3:
-            signals.append("清算偏多")
-        elif below_val > above_val * 1.3:
-            signals.append("清算偏空")
+        if above_val > 0 and below_val > 0:
+            diff = abs(above_val - below_val) / max(above_val, below_val)
+            if diff > 0.2:
+                if above_val > below_val:
+                    signals.append("清算偏多")
+                else:
+                    signals.append("清算偏空")
     except:
         pass
 
+    # 2. 顶级交易员
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -94,10 +103,12 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     except:
         pass
 
+    # 3. CVD
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bullish", "bearish", "slightly_bullish", "slightly_bearish"]:
         signals.append(f"CVD:{cvd}")
 
+    # 4. 恐惧贪婪
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
@@ -105,10 +116,23 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     elif fg_val > 80:
         signals.append("极度贪婪(偏空)")
 
+    # 5. 资金费率（新增）
+    funding_rate = coinglass_data.get("funding_rate", "N/A")
+    try:
+        fr = float(funding_rate)
+        if fr > 0.05:
+            signals.append("费率偏空")
+        elif fr < -0.02:
+            signals.append("费率偏多")
+    except:
+        pass
+
     strength = len(signals)
-    if strength >= 3:
+    if strength >= 4:
+        level = "极强"
+    elif strength == 3:
         level = "强"
-    elif strength >= 2:
+    elif strength == 2:
         level = "中"
     else:
         level = "弱"
@@ -140,9 +164,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
     tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
-    absolute_min_profit = max(0.2 * atr, price * 0.0015)  # 试探性入场的绝对最小盈利空间
+    absolute_min_profit = max(0.2 * atr, price * 0.0015)
 
-    # SOL 特殊提示
     sol_extra = ""
     if symbol.upper() == "SOL":
         sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
@@ -193,7 +216,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
-  "is_probe": false 或 true（是否为试探性策略，见下方规则）,
+  "is_probe": false 或 true,
   "win_rate": 0,
   "entry_price_low": 入场区间下限,
   "entry_price_high": 入场区间上限,
@@ -208,14 +231,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 }}
 
 ### 试探性入场规则（仅在无法满足正常盈利空间时启用）
-
 若满足以下**所有**条件，你**应当**输出一个试探性策略（`is_probe: true`），而非 `neutral`：
 1. 信号共振数量 ≥ 3，且方向一致。
 2. 正常盈利空间不满足阈值，但存在一个绝对最小盈利空间：做多时 TP1 锚点价 - 当前价 ≥ {absolute_min_profit:.1f} USDT（做空时为当前价 - TP1 锚点价 ≥ {absolute_min_profit:.1f} USDT）。
-3. 当前价格未处于极端超买/超卖状态（凭你的市场经验判断）。
+3. 当前价格未处于极端超买/超卖状态。
 
 试探性策略参数：
-- 仓位 = 正常仓位的 40%（即 `position_size_ratio` 应为正常计算的 0.4 倍）
+- 仓位 = 正常仓位的 40%
 - 止损 = 入场价 ± 0.8×ATR（或紧贴最近关键支撑/阻力）
 - 止盈1 = 入场价 ± 1.2×ATR（或最近弱锚点）
 - 置信度 = `low`
