@@ -21,20 +21,21 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     scoring_table += "\n| 扣分项 | 扣分 | 是否触发 |\n|--------|------|----------|\n"
     scoring_table += "| 清算结构矛盾（上下方金额接近） | -10% | |\n"
     scoring_table += "| 信号缺失（每项 N/A） | -3% | |\n"
+    scoring_table += "| TP1 盈利空间不足（< 0.5×ATR） | -10% | |\n"
 
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     if volatility_factor > 1.5:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} > 1.5，仓位需乘以 {profile['volatility_discount']}。"
 
-    # 提取清算密集区信息
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
-    cluster_price = cluster.get("price", "N/A")
+    cluster_price_raw = cluster.get("price", "N/A")
     cluster_intensity = cluster.get("intensity", "N/A")
-
-    # 期权最大痛点
     option_pain = coinglass_data.get("skew", "N/A")
+
+    # 计算最小盈利空间阈值
+    min_profit_distance = max(0.5 * atr, price * 0.003)  # 0.5倍ATR 或 0.3%，取较大值
 
     return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
 
@@ -43,13 +44,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 当前价格：{price} USDT
 - 1小时ATR(14)：{atr} USDT
 - 波动率因子：{volatility_factor}（>1.5 为高波动，<0.8 为低波动）
+- **最小盈利空间阈值**：{min_profit_distance:.1f} USDT（止盈锚点与当前价的距离必须 ≥ 此值）
 
-**清算压力数据（止盈的核心锚点）**
+**清算压力数据**
 - 上方空头清算累计金额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算累计金额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{coinglass_data.get('max_pain_price', 'N/A')} USDT
-- **最近清算密集区**：{cluster_direction}方，价格 {cluster_price} USDT，强度 {cluster_intensity}/5
-  * 强度≥3/5 的区域是强力磁吸位，价格大概率会在本周期内触及。
+- **最近清算密集区**：{cluster_direction}方，价格 {cluster_price_raw} USDT，强度 {cluster_intensity}/5
+  * 强度≥3/5 的区域是强力磁吸位，价格大概率会触及。
 
 **多空博弈数据**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
@@ -65,7 +67,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 累计资金费率（OKX）：{coinglass_data.get('accumulated_funding_rate', 'N/A')}
 
 **期权参考**
-- 期权最大痛点：{option_pain} USDT（机构博弈核心价位，可作为止盈锚点）
+- 期权最大痛点：{option_pain} USDT（机构博弈核心价位）
 - 期权持仓价值：{coinglass_data.get('option_oi_usd', 'N/A')} USD
 
 **宏观背景**
@@ -92,22 +94,27 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "risk_note": "风险提示"
 }}
 
-### 止盈目标设定规则（必须严格遵守）
+### 止盈锚点选择与校验规则（必须严格遵守）
 
-**止盈1（TP1）**：
-- 做多时，必须设定为 **上方最近清算密集区的下沿价格**（取自「最近清算密集区」的 price 字段）。
-- 做空时，必须设定为 **下方最近清算密集区的上沿价格**。
-- 若无清算密集区数据（N/A 或强度为0），则使用 **1.5×ATR** 作为替代，但必须在 tp1_anchor 中注明“ATR估算”。
+**1. 盈利空间校验（入场窗口过滤）**
+- 做多时，TP1 锚点价格 - 当前价 必须 ≥ {min_profit_distance:.1f} USDT。
+- 做空时，当前价 - TP1 锚点价格 必须 ≥ {min_profit_distance:.1f} USDT。
+- **若不满足，则不得以此锚点作为 TP1**。必须跳过该锚点，寻找下一个有效锚点（如下一个清算区、期权痛点、前高/前低）。
+- 若所有锚点均不满足盈利空间要求，则输出 `direction: "neutral"`，并在 reasoning 中说明：“当前价格已过度贴近关键阻力/支撑，安全盈利空间不足”。
 
-**止盈2（TP2）**：
-- 做多时，优先选择 **期权最大痛点**（若 > TP1 且与当前价距离合理），其次选择 **下一个清算密集区**。
-- 做空时，优先选择 **期权最大痛点**（若 < TP1 且距离合理），其次选择 **下一个清算密集区**。
-- 若无上述数据，则使用 **2.5×ATR** 作为替代，并在 tp2_anchor 中注明。
+**2. TP1 锚点选择**
+- 优先选择满足盈利空间要求的**最近清算密集区**（强度≥3/5）。
+- 若无合适清算区，可选择**期权最大痛点**（若满足盈利空间）。
+- 若以上均无，使用 **1.5×ATR** 作为替代，并在 tp1_anchor 中注明“ATR估算”。
 
-**强制校验**：
+**3. TP2 锚点选择与分层**
+- TP2 必须选择距离 TP1 ≥ 0.3×ATR 的锚点，确保两个止盈位形成有效的利润分层。
+- 优先选择：下一个清算密集区 > 期权最大痛点 > 前高/前低。
+- 若无法找到满足分层要求的 TP2，可仅输出 TP1，并将 TP2 设为与 TP1 相同（或留空），并在 reasoning 中说明。
+
+**4. 强制校验**
 - TP1 必须 > 入场价（做多）或 < 入场价（做空）。
-- TP2 必须 > TP1（做多）或 < TP1（做空）。
-- 若无法找到符合规则的止盈位，应将置信度降为 low，并在 reasoning 中说明。
+- TP2 必须 ≥ TP1（做多）或 ≤ TP1（做空）。
 
 ### 止损设定规则
 - {stop_rule}
@@ -122,7 +129,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 最终胜率 = 基础胜率 + 加分 - 扣分，并限制在 {profile['base_win_rate']}%-{profile['max_win_rate']}% 之间。
 
 ### 特别提醒
-- 清算密集区是价格最可能被吸引到达的位置，务必将其作为首要止盈参考。
+- 清算密集区是价格最可能被吸引到达的位置，但若距离过近则盈利空间不足，必须跳过。
 - 若净持仓累积与价格走势背离，是强力的反转信号。
 - 所有价格保留1位小数。
 """
@@ -151,7 +158,6 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 strategy["win_rate"] = 50
             else:
                 strategy["win_rate"] = int(strategy["win_rate"])
-            # 确保新字段存在
             if "tp1_anchor" not in strategy:
                 strategy["tp1_anchor"] = "未提供"
             if "tp2_anchor" not in strategy:
