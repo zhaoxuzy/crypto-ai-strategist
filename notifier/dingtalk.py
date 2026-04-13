@@ -55,6 +55,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     conf = strategy.get("confidence", "medium").upper()
     win_rate = strategy.get("win_rate", 50)
 
+    # 信号强度
+    signal_strength = extra.get("signal_strength", {})
+    strength_level = signal_strength.get("level", "未知")
+    strength_count = signal_strength.get("count", 0)
+    strength_details = ", ".join(signal_strength.get("details", []))
+
     if direction == "neutral":
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
 
@@ -63,6 +69,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
+- 信号强度：{strength_level}（{strength_count}/5）| {strength_details}
 """
 
     dir_text = "做多" if direction == "long" else "做空"
@@ -96,6 +103,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
+- **信号强度**：{strength_level}（{strength_count}/5）| {strength_details}
 
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
