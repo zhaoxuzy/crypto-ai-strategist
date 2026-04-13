@@ -140,6 +140,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
     tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
+    absolute_min_profit = max(0.2 * atr, price * 0.0015)  # 试探性入场的绝对最小盈利空间
 
     # SOL 特殊提示
     sol_extra = ""
@@ -153,7 +154,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 当前价格：{price} USDT
 - 1小时ATR(14)：{atr} USDT
 - 波动率因子：{volatility_factor}（>1.5 为高波动，<0.8 为低波动）
-- **最小盈利空间阈值**：{min_profit_distance:.1f} USDT
+- **正常最小盈利空间阈值**：{min_profit_distance:.1f} USDT
+- **试探性最小盈利空间**：{absolute_min_profit:.1f} USDT（仅用于强信号共振时）
 - **TP2 分层最小距离**：{tp2_layer_distance:.1f} USDT
 
 **清算压力数据**
@@ -191,6 +193,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
+  "is_probe": false 或 true（是否为试探性策略，见下方规则）,
   "win_rate": 0,
   "entry_price_low": 入场区间下限,
   "entry_price_high": 入场区间上限,
@@ -204,16 +207,30 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "risk_note": "风险提示"
 }}
 
+### 试探性入场规则（仅在无法满足正常盈利空间时启用）
+
+若满足以下**所有**条件，你**应当**输出一个试探性策略（`is_probe: true`），而非 `neutral`：
+1. 信号共振数量 ≥ 3，且方向一致。
+2. 正常盈利空间不满足阈值，但存在一个绝对最小盈利空间：做多时 TP1 锚点价 - 当前价 ≥ {absolute_min_profit:.1f} USDT（做空时为当前价 - TP1 锚点价 ≥ {absolute_min_profit:.1f} USDT）。
+3. 当前价格未处于极端超买/超卖状态（凭你的市场经验判断）。
+
+试探性策略参数：
+- 仓位 = 正常仓位的 40%（即 `position_size_ratio` 应为正常计算的 0.4 倍）
+- 止损 = 入场价 ± 0.8×ATR（或紧贴最近关键支撑/阻力）
+- 止盈1 = 入场价 ± 1.2×ATR（或最近弱锚点）
+- 置信度 = `low`
+- 在 `reasoning` 中必须说明：“强信号共振但盈利空间不足，试探性轻仓入场，严格止损。”
+
 ### 止盈方向强制校验（最高优先级）
 - 做多时：TP1 和 TP2 必须 > 入场价（取入场区间上限）。
 - 做空时：TP1 和 TP2 必须 < 入场价（取入场区间下限）。
 - 若锚点不满足方向要求，跳过并寻找下一个同向锚点。
-- 若无有效锚点，输出 `direction: "neutral"`。
+- 若无有效锚点且不满足试探性规则，输出 `direction: "neutral"`。
 
 ### 止盈锚点选择与盈利空间校验
 **1. 盈利空间校验**
-- 做多时：TP1 锚点价格 - 当前价 ≥ {min_profit_distance:.1f} USDT。
-- 做空时：当前价 - TP1 锚点价格 ≥ {min_profit_distance:.1f} USDT。
+- 做多时：TP1 锚点价格 - 当前价 ≥ {min_profit_distance:.1f} USDT（试探性策略可放宽至 {absolute_min_profit:.1f} USDT）。
+- 做空时：当前价 - TP1 锚点价格 ≥ {min_profit_distance:.1f} USDT（试探性策略可放宽至 {absolute_min_profit:.1f} USDT）。
 - 若不满足，跳过该锚点。
 
 **2. TP1 锚点选择**
@@ -264,6 +281,8 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 strategy["tp1_anchor"] = "未提供"
             if "tp2_anchor" not in strategy:
                 strategy["tp2_anchor"] = "未提供"
+            if "is_probe" not in strategy:
+                strategy["is_probe"] = False
             return strategy
         except Exception as e:
             logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
