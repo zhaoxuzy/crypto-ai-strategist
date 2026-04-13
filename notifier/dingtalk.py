@@ -54,12 +54,15 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
     win_rate = strategy.get("win_rate", 50)
+    is_probe = strategy.get("is_probe", False)
 
-    # 信号强度
     signal_strength = extra.get("signal_strength", {})
     strength_level = signal_strength.get("level", "未知")
     strength_count = signal_strength.get("count", 0)
     strength_details = ", ".join(signal_strength.get("details", []))
+
+    # 试探性策略特殊标识
+    probe_tag = " 🧪 试探信号" if is_probe else ""
 
     if direction == "neutral":
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
@@ -82,7 +85,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp2_anchor = strategy.get("tp2_anchor", "未提供")
     position = float(strategy.get("position_size_ratio", 0.1))
 
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}% 🕒 {now_str}
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}%{probe_tag} 🕒 {now_str}
 
 ### 📊 策略概要
 - **方向**：{dir_text}
