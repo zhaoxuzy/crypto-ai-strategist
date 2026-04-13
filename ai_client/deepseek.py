@@ -23,12 +23,18 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     scoring_table += "| 信号缺失（每项 N/A） | -3% | |\n"
 
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
-    tp1_rule = f"止盈1 盈亏比 ≥ {profile['tp1_ratio']}:1"
-    tp2_rule = f"止盈2 盈亏比 ≥ {profile['tp2_ratio']}:1"
-
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     if volatility_factor > 1.5:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} > 1.5，仓位需乘以 {profile['volatility_discount']}。"
+
+    # 提取清算密集区信息
+    cluster = coinglass_data.get("nearest_cluster", {})
+    cluster_direction = cluster.get("direction", "N/A")
+    cluster_price = cluster.get("price", "N/A")
+    cluster_intensity = cluster.get("intensity", "N/A")
+
+    # 期权最大痛点
+    option_pain = coinglass_data.get("skew", "N/A")
 
     return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
 
@@ -38,11 +44,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 1小时ATR(14)：{atr} USDT
 - 波动率因子：{volatility_factor}（>1.5 为高波动，<0.8 为低波动）
 
-**清算压力数据**
+**清算压力数据（止盈的核心锚点）**
 - 上方空头清算累计金额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算累计金额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{coinglass_data.get('max_pain_price', 'N/A')} USDT
-- 最近清算密集区：{coinglass_data.get('nearest_cluster', {}).get('direction', 'N/A')}方，价格{coinglass_data.get('nearest_cluster', {}).get('price', 'N/A')} USDT
+- **最近清算密集区**：{cluster_direction}方，价格 {cluster_price} USDT，强度 {cluster_intensity}/5
+  * 强度≥3/5 的区域是强力磁吸位，价格大概率会在本周期内触及。
 
 **多空博弈数据**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
@@ -50,15 +57,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 主动吃单量比率（OKX）：{coinglass_data.get('taker_ratio', 'N/A')}
 - 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
 - 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- **净持仓累积变化**：{coinglass_data.get('net_position_cum', 'N/A')}（正值表示净多头累积，负值表示净空头累积）
+- 净持仓累积变化：{coinglass_data.get('net_position_cum', 'N/A')}（正值=净多头累积）
 
 **资金流向与情绪**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率：{coinglass_data.get('cvd_slope', 'N/A')}）
-- **聚合主动买卖比率（全市场）**：{coinglass_data.get('aggregated_taker_ratio', 'N/A')}（>0.55为主动买盘强劲）
-- **累计资金费率（OKX）**：{coinglass_data.get('accumulated_funding_rate', 'N/A')}（极高正值表示多头持续支付高额费用，存在踩踏风险）
+- 聚合主动买卖比率：{coinglass_data.get('aggregated_taker_ratio', 'N/A')}
+- 累计资金费率（OKX）：{coinglass_data.get('accumulated_funding_rate', 'N/A')}
 
 **期权参考**
-- 期权最大痛点：{coinglass_data.get('skew', 'N/A')} USDT
+- 期权最大痛点：{option_pain} USDT（机构博弈核心价位，可作为止盈锚点）
 - 期权持仓价值：{coinglass_data.get('option_oi_usd', 'N/A')} USD
 
 **宏观背景**
@@ -77,19 +84,37 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
   "take_profit_1": 第一止盈价,
+  "tp1_anchor": "TP1的锚定来源（如：上方清算密集区/期权最大痛点/ATR估算）",
   "take_profit_2": 第二止盈价,
+  "tp2_anchor": "TP2的锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
-  "reasoning": "1-2句话核心逻辑",
+  "reasoning": "1-2句话核心逻辑，必须提及止盈锚定依据",
   "risk_note": "风险提示"
 }}
 
-### 决策规则
+### 止盈目标设定规则（必须严格遵守）
+
+**止盈1（TP1）**：
+- 做多时，必须设定为 **上方最近清算密集区的下沿价格**（取自「最近清算密集区」的 price 字段）。
+- 做空时，必须设定为 **下方最近清算密集区的上沿价格**。
+- 若无清算密集区数据（N/A 或强度为0），则使用 **1.5×ATR** 作为替代，但必须在 tp1_anchor 中注明“ATR估算”。
+
+**止盈2（TP2）**：
+- 做多时，优先选择 **期权最大痛点**（若 > TP1 且与当前价距离合理），其次选择 **下一个清算密集区**。
+- 做空时，优先选择 **期权最大痛点**（若 < TP1 且距离合理），其次选择 **下一个清算密集区**。
+- 若无上述数据，则使用 **2.5×ATR** 作为替代，并在 tp2_anchor 中注明。
+
+**强制校验**：
+- TP1 必须 > 入场价（做多）或 < 入场价（做空）。
+- TP2 必须 > TP1（做多）或 < TP1（做空）。
+- 若无法找到符合规则的止盈位，应将置信度降为 low，并在 reasoning 中说明。
+
+### 止损设定规则
 - {stop_rule}
-- {tp1_rule}
-- {tp2_rule}
-- {position_rule}
 - 做多时止损必须低于入场价，做空时止损必须高于入场价。
-- 所有价格保留1位小数。
+
+### 仓位设定规则
+- {position_rule}
 
 ### 胜率评估框架
 基础胜率 = {profile['base_win_rate']}%。请按以下规则打分：
@@ -97,9 +122,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 最终胜率 = 基础胜率 + 加分 - 扣分，并限制在 {profile['base_win_rate']}%-{profile['max_win_rate']}% 之间。
 
 ### 特别提醒
+- 清算密集区是价格最可能被吸引到达的位置，务必将其作为首要止盈参考。
 - 若净持仓累积与价格走势背离，是强力的反转信号。
-- 若累计资金费率极高（>0.1%），多头成本沉重，偏向做空；若极低（<-0.05%），空头成本沉重，偏向做多。
-- 聚合主动买卖比率比单交易所数据更能反映全局买卖压力。
+- 所有价格保留1位小数。
 """
 
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
@@ -113,7 +138,7 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=900
+                max_tokens=1000
             )
             content = response.choices[0].message.content
             json_start = content.find('{')
@@ -126,6 +151,11 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 strategy["win_rate"] = 50
             else:
                 strategy["win_rate"] = int(strategy["win_rate"])
+            # 确保新字段存在
+            if "tp1_anchor" not in strategy:
+                strategy["tp1_anchor"] = "未提供"
+            if "tp2_anchor" not in strategy:
+                strategy["tp2_anchor"] = "未提供"
             return strategy
         except Exception as e:
             logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
