@@ -47,7 +47,6 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
         return False
 
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
-    # 获取北京时间（UTC+8）
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
     now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
@@ -72,6 +71,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     stop = float(strategy.get("stop_loss", 0))
     tp1 = float(strategy.get("take_profit_1", 0))
     tp2 = float(strategy.get("take_profit_2", 0))
+    tp1_anchor = strategy.get("tp1_anchor", "未提供")
+    tp2_anchor = strategy.get("tp2_anchor", "未提供")
     position = float(strategy.get("position_size_ratio", 0.1))
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}% 🕒 {now_str}
@@ -81,8 +82,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **当前价**：${current_price:,.1f}
 - **入场区间**：${entry_low:,.1f} - ${entry_high:,.1f}
 - **止损**：${stop:,.1f}
-- **止盈1**：${tp1:,.1f}
-- **止盈2**：${tp2:,.1f}
+- **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
+- **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
 - **建议仓位**：{int(position*100)}%
 
 ### 📈 AI 分析逻辑
