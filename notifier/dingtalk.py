@@ -58,10 +58,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     signal_strength = extra.get("signal_strength", {})
     strength_level = signal_strength.get("level", "未知")
-    strength_count = signal_strength.get("count", 0)
+    strength_score = signal_strength.get("score", 0)
+    strength_max = signal_strength.get("max_score", 100)
     strength_details = ", ".join(signal_strength.get("details", []))
 
-    # 试探性策略特殊标识
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
     if direction == "neutral":
@@ -72,7 +72,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 信号强度：{strength_level}（{strength_count}/5）| {strength_details}
+- 信号强度：{strength_level}（{strength_score}/{strength_max}分）| {strength_details}
 """
 
     dir_text = "做多" if direction == "long" else "做空"
@@ -106,7 +106,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- **信号强度**：{strength_level}（{strength_count}/5）| {strength_details}
+- **信号强度**：{strength_level}（{strength_score}/{strength_max}分）| {strength_details}
 
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
