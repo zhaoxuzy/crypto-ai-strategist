@@ -26,6 +26,9 @@ STRATEGY_PROFILES = {
         "tp1_ratio": 1.5,
         "tp2_ratio": 2.5,
         "volatility_discount": 0.8,
+        "min_profit_pct": 0.0025,       # 0.25%
+        "min_profit_atr_mult": 0.4,     # 0.4×ATR
+        "tp2_layer_atr_mult": 0.2,      # TP2 与 TP1 的最小距离
         "signals": {
             "liquidation": {"weight": 10, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -44,6 +47,9 @@ STRATEGY_PROFILES = {
         "tp1_ratio": 1.8,
         "tp2_ratio": 3.0,
         "volatility_discount": 0.7,
+        "min_profit_pct": 0.003,        # 0.3%
+        "min_profit_atr_mult": 0.5,     # 0.5×ATR
+        "tp2_layer_atr_mult": 0.3,      # TP2 与 TP1 的最小距离
         "signals": {
             "liquidation": {"weight": 12, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -58,10 +64,13 @@ STRATEGY_PROFILES = {
         "max_win_rate": 75,
         "base_position": 0.15,
         "max_position": 0.30,
-        "stop_multiplier": 2.2,
+        "stop_multiplier": 2.5,         # 从 2.2 增加到 2.5，降低扫损概率
         "tp1_ratio": 2.0,
         "tp2_ratio": 3.5,
         "volatility_discount": 0.6,
+        "min_profit_pct": 0.005,        # 0.5%
+        "min_profit_atr_mult": 0.8,     # 0.8×ATR
+        "tp2_layer_atr_mult": 0.5,      # TP2 与 TP1 的最小距离
         "signals": {
             "liquidation": {"weight": 20, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -138,13 +147,11 @@ def main():
         if not strategy:
             raise Exception("DeepSeek 返回为空")
 
-        # 如果方向非中性，用代码计算准确胜率
         if strategy.get("direction") != "neutral":
             strategy["win_rate"] = calculate_win_rate(strategy["direction"], cg_data, macro, profile)
         else:
             strategy["win_rate"] = 0
 
-        # 计算信号强度
         signal_strength = calculate_signal_strength(strategy.get("direction", "neutral"), cg_data, macro)
 
         if not validate_strategy(strategy, price):
@@ -158,7 +165,7 @@ def main():
             "cvd_signal": cg_data.get("cvd_signal", "N/A"),
             "skew": cg_data.get("skew", "N/A"),
             "fear_greed": macro["fear_greed"]["value"],
-            "signal_strength": signal_strength,  # 新增
+            "signal_strength": signal_strength,
         }
 
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
