@@ -60,24 +60,24 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     elif fg_value > 80 and direction == "short":
         score += signals.get("fear_greed", {}).get("weight", 10)
 
-    # 6. 【新增】主动买盘比率
+    # 6. 主动买盘比率
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
         if tr > 0.55 and direction == "long":
-            score += 8  # 权重 8%
+            score += 8
         elif tr < 0.45 and direction == "short":
             score += 8
     except:
         pass
 
-    # 7. 【新增】净持仓累积变化
+    # 7. 净持仓累积变化
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
-        if np > 1000 and direction == "long":  # 净多头累积
-            score += 10  # 权重 10%
-        elif np < -1000 and direction == "short":  # 净空头累积
+        if np > 1000 and direction == "long":
+            score += 10
+        elif np < -1000 and direction == "short":
             score += 10
     except:
         pass
@@ -93,12 +93,11 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
 
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
     """
-    计算加权信号强度得分，并映射为等级。
-    权重配置：清算35%，顶级交易员25%，CVD20%，恐惧贪婪12%，资金费率8%，
-    新增：主动买盘8%，净持仓10%（合计118%，归一化展示）。
+    计算加权信号强度得分（满分100分）。
+    权重配置：清算35%，顶级交易员20%，CVD15%，恐惧贪婪8%，资金费率5%，主动买盘10%，净持仓7%。
     """
     total_score = 0
-    max_score = 35 + 25 + 20 + 12 + 8 + 8 + 10  # 118
+    max_score = 100
     signals_detail = []
 
     # 1. 清算方向（权重35%）
@@ -121,98 +120,97 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     except:
         pass
 
-    # 2. 顶级交易员（权重25%）
+    # 2. 顶级交易员（权重20%）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
         if tls > 2.0:
             signals_detail.append("顶级偏空")
             if direction == "short":
-                total_score += 25
+                total_score += 20
         elif tls < 0.7:
             signals_detail.append("顶级偏多")
             if direction == "long":
-                total_score += 25
+                total_score += 20
     except:
         pass
 
-    # 3. CVD（权重20%）
+    # 3. CVD（权重15%）
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         signals_detail.append(f"CVD:{cvd}")
         if direction == "long":
-            total_score += 20
+            total_score += 15
     elif cvd in ["bearish", "slightly_bearish"]:
         signals_detail.append(f"CVD:{cvd}")
         if direction == "short":
-            total_score += 20
+            total_score += 15
 
-    # 4. 恐惧贪婪（权重12%）
+    # 4. 恐惧贪婪（权重8%）
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
         signals_detail.append("极度恐惧(偏多)")
         if direction == "long":
-            total_score += 12
+            total_score += 8
     elif fg_val > 80:
         signals_detail.append("极度贪婪(偏空)")
         if direction == "short":
-            total_score += 12
+            total_score += 8
 
-    # 5. 资金费率（权重8%）
+    # 5. 资金费率（权重5%）
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
         if fr > 0.05:
             signals_detail.append("费率偏空")
             if direction == "short":
-                total_score += 8
+                total_score += 5
         elif fr < -0.02:
             signals_detail.append("费率偏多")
             if direction == "long":
-                total_score += 8
+                total_score += 5
     except:
         pass
 
-    # 6. 【新增】主动买盘比率（权重8%）
+    # 6. 主动买盘比率（权重10%）
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
         if tr > 0.55:
             signals_detail.append("主动买盘偏多")
             if direction == "long":
-                total_score += 8
+                total_score += 10
         elif tr < 0.45:
             signals_detail.append("主动卖盘偏空")
             if direction == "short":
-                total_score += 8
+                total_score += 10
     except:
         pass
 
-    # 7. 【新增】净持仓累积（权重10%）
+    # 7. 净持仓累积（权重7%）
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
         if np > 1000:
             signals_detail.append("净多头累积")
             if direction == "long":
-                total_score += 10
+                total_score += 7
         elif np < -1000:
             signals_detail.append("净空头累积")
             if direction == "short":
-                total_score += 10
+                total_score += 7
     except:
         pass
 
-    # 计算等级（基于得分率）
-    score_rate = total_score / max_score if max_score > 0 else 0
-    if score_rate >= 0.75:
+    # 计算等级
+    if total_score >= 75:
         level = "极强"
-    elif score_rate >= 0.55:
+    elif total_score >= 55:
         level = "强"
-    elif score_rate >= 0.35:
+    elif total_score >= 35:
         level = "中"
-    elif score_rate >= 0.15:
+    elif total_score >= 15:
         level = "弱"
     else:
         level = "极弱"
@@ -252,13 +250,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
     tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
     absolute_min_profit = max(0.2 * atr, price * 0.0015)
-    max_profit_distance = 3.0 * atr  # 【新增】最大盈利空间约束
+    max_profit_distance = 3.0 * atr
 
     sol_extra = ""
     if symbol.upper() == "SOL":
         sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
 
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须严格根据要求执行，不得简化。
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
 
 ### 当前市场数据
 **基础信息**
