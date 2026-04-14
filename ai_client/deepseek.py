@@ -60,6 +60,28 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     elif fg_value > 80 and direction == "short":
         score += signals.get("fear_greed", {}).get("weight", 10)
 
+    # 6. 【新增】主动买盘比率
+    taker_ratio = coinglass_data.get("taker_ratio", "N/A")
+    try:
+        tr = float(taker_ratio)
+        if tr > 0.55 and direction == "long":
+            score += 8  # 权重 8%
+        elif tr < 0.45 and direction == "short":
+            score += 8
+    except:
+        pass
+
+    # 7. 【新增】净持仓累积变化
+    net_pos = coinglass_data.get("net_position_cum", "N/A")
+    try:
+        np = float(net_pos)
+        if np > 1000 and direction == "long":  # 净多头累积
+            score += 10  # 权重 10%
+        elif np < -1000 and direction == "short":  # 净空头累积
+            score += 10
+    except:
+        pass
+
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
@@ -72,11 +94,11 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
     """
     计算加权信号强度得分，并映射为等级。
-    权重配置：清算35%，顶级交易员25%，CVD20%，恐惧贪婪12%，资金费率8%。
-    等级：≥75=极强，55-74=强，35-54=中，15-34=弱，<15=极弱。
+    权重配置：清算35%，顶级交易员25%，CVD20%，恐惧贪婪12%，资金费率8%，
+    新增：主动买盘8%，净持仓10%（合计118%，归一化展示）。
     """
     total_score = 0
-    max_score = 35 + 25 + 20 + 12 + 8  # 100
+    max_score = 35 + 25 + 20 + 12 + 8 + 8 + 10  # 118
     signals_detail = []
 
     # 1. 清算方向（权重35%）
@@ -152,14 +174,45 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     except:
         pass
 
-    # 计算等级
-    if total_score >= 75:
+    # 6. 【新增】主动买盘比率（权重8%）
+    taker_ratio = coinglass_data.get("taker_ratio", "N/A")
+    try:
+        tr = float(taker_ratio)
+        if tr > 0.55:
+            signals_detail.append("主动买盘偏多")
+            if direction == "long":
+                total_score += 8
+        elif tr < 0.45:
+            signals_detail.append("主动卖盘偏空")
+            if direction == "short":
+                total_score += 8
+    except:
+        pass
+
+    # 7. 【新增】净持仓累积（权重10%）
+    net_pos = coinglass_data.get("net_position_cum", "N/A")
+    try:
+        np = float(net_pos)
+        if np > 1000:
+            signals_detail.append("净多头累积")
+            if direction == "long":
+                total_score += 10
+        elif np < -1000:
+            signals_detail.append("净空头累积")
+            if direction == "short":
+                total_score += 10
+    except:
+        pass
+
+    # 计算等级（基于得分率）
+    score_rate = total_score / max_score if max_score > 0 else 0
+    if score_rate >= 0.75:
         level = "极强"
-    elif total_score >= 55:
+    elif score_rate >= 0.55:
         level = "强"
-    elif total_score >= 35:
+    elif score_rate >= 0.35:
         level = "中"
-    elif total_score >= 15:
+    elif score_rate >= 0.15:
         level = "弱"
     else:
         level = "极弱"
@@ -187,6 +240,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     if volatility_factor > 1.5:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} > 1.5，仓位需乘以 {profile['volatility_discount']}。"
+    elif volatility_factor < 0.7:
+        position_rule += f" 当前波动率因子 {volatility_factor:.2f} < 0.7，可适当放大仓位（最大1.2倍）。"
 
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
@@ -197,20 +252,22 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
     tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
     absolute_min_profit = max(0.2 * atr, price * 0.0015)
+    max_profit_distance = 3.0 * atr  # 【新增】最大盈利空间约束
 
     sol_extra = ""
     if symbol.upper() == "SOL":
         sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
 
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须严格根据要求执行，不得简化。
 
 ### 当前市场数据
 **基础信息**
 - 当前价格：{price} USDT
 - 1小时ATR(14)：{atr} USDT
-- 波动率因子：{volatility_factor}（>1.5 为高波动，<0.8 为低波动）
+- 波动率因子：{volatility_factor:.2f}（>1.5 为高波动，<0.7 为低波动）
 - **正常最小盈利空间阈值**：{min_profit_distance:.1f} USDT
 - **试探性最小盈利空间**：{absolute_min_profit:.1f} USDT（仅用于强信号共振时）
+- **最大盈利空间约束**：{max_profit_distance:.1f} USDT（超过此距离的锚点视为过远，自动放弃）
 - **TP2 分层最小距离**：{tp2_layer_distance:.1f} USDT
 
 **清算压力数据**
@@ -225,7 +282,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 主动吃单量比率（OKX）：{coinglass_data.get('taker_ratio', 'N/A')}
 - 全局多空比：{coinglass_data.get('long_short_ratio', 'N/A')}
 - 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积变化：{coinglass_data.get('net_position_cum', 'N/A')}
+- 净持仓累积变化：{coinglass_data.get('net_position_cum', 'N/A')}（正值=净多头累积，>1000为显著）
 
 **资金流向与情绪**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}（斜率：{coinglass_data.get('cvd_slope', 'N/A')}）
@@ -283,14 +340,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 止盈锚点选择与盈利空间校验
 **1. 盈利空间校验**
-- 做多时：TP1 锚点价格 - 当前价 ≥ {min_profit_distance:.1f} USDT（试探性策略可放宽至 {absolute_min_profit:.1f} USDT）。
-- 做空时：当前价 - TP1 锚点价格 ≥ {min_profit_distance:.1f} USDT（试探性策略可放宽至 {absolute_min_profit:.1f} USDT）。
-- 若不满足，跳过该锚点。
+- 做多时：TP1 锚点价格 - 当前价必须 **≥ {min_profit_distance:.1f}** USDT 且 **≤ {max_profit_distance:.1f}** USDT。
+- 做空时：当前价 - TP1 锚点价格必须 **≥ {min_profit_distance:.1f}** USDT 且 **≤ {max_profit_distance:.1f}** USDT。
+- **若锚点距离超过 {max_profit_distance:.1f} USDT，视为触及概率过低，自动放弃，改用 1.5×ATR 估算，并在 tp1_anchor 中注明“原锚点过远，改用ATR”。**
+- 试探性策略可放宽至 {absolute_min_profit:.1f} USDT。
 
 **2. TP1 锚点选择**
 - 优先：满足盈利空间的**最近清算密集区**（强度≥3/5）。
 - 其次：**期权最大痛点**（若方向正确且满足盈利空间）。
-- 最后：使用 **{profile['tp1_ratio']}×ATR** 估算。
+- 最后：使用 **1.5×ATR** 估算。
 
 **3. TP2 锚点选择与分层**
 - TP2 必须选择距离 TP1 ≥ {tp2_layer_distance:.1f} USDT 的同向锚点。
