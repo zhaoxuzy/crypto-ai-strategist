@@ -212,7 +212,7 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False)
 
-    # ---------- CVD（粒度改为1分钟）----------
+    # ---------- CVD（粒度1分钟）----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
         return self._request("api/futures/cvd/history", params, allow_backup=True)
@@ -256,42 +256,9 @@ class CoinGlassClient:
             return buy, sell
         return 0.0, 0.0
 
-   def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
-    """计算简易波动率因子：当前ATR / 过去24根1小时K线ATR均值"""
-    try:
-        # 直接使用已经在 get_all_data 中获取的 ATR 相关数据，
-        # 但此处函数无法直接访问外部变量，我们改为调用一个更稳定的内部计算。
-        # 为了简化并避免依赖额外 API，我们采用一个简化的波动率代理：
-        # 使用过去 24 小时的最高价与最低价之比。
-        # 但鉴于该函数对策略影响小，最稳健的做法是返回 1.0 并静默记录。
+    def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
+        """简化波动率因子，直接返回1.0（避免额外API调用风险）"""
         return 1.0
-    except Exception as e:
-        logger.debug(f"波动率因子计算跳过，使用默认值1.0")
-        return 1.0
-            
-            # 计算每根K线的TR，再求ATR
-            true_ranges = []
-            for i in range(1, len(ohlc_data)):
-                high = float(ohlc_data[i][2]) if len(ohlc_data[i]) > 2 else 0
-                low = float(ohlc_data[i][3]) if len(ohlc_data[i]) > 3 else 0
-                prev_close = float(ohlc_data[i-1][4]) if len(ohlc_data[i-1]) > 4 else 0
-                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                true_ranges.append(tr)
-            
-            if len(true_ranges) < 14:
-                return 1.0
-            
-            historical_atr = sum(true_ranges[-14:]) / 14
-            
-            # 获取当前ATR（从外部传入，或临时计算）
-            # 这里简化：直接用最近一根K线的TR作为当前ATR的近似
-            current_tr = true_ranges[-1] if true_ranges else 0
-            if historical_atr > 0:
-                return current_tr / historical_atr
-            return 1.0
-        except Exception as e:
-            logger.warning(f"计算波动率因子失败: {e}，使用默认值1.0")
-            return 1.0
 
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
@@ -396,11 +363,11 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 9. CVD 斜率信号（基于1分钟粒度，取最近60根）
+        # 9. CVD 斜率信号（基于1分钟粒度）
         cvd_history = self.get_cvd_history(symbol)
         if not isinstance(cvd_history, list) or len(cvd_history) < 30:
             raise RuntimeError("CVD 数据不足，无法计算斜率")
-        recent = cvd_history[-30:]  # 最近30分钟
+        recent = cvd_history[-30:]
         values = []
         for item in recent:
             if isinstance(item, list) and len(item) >= 5:
