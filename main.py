@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
-from data_fetcher.okx_rest import get_current_price, calculate_atr
+from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines
 from data_fetcher.macro_cache import get_macro_data
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_win_rate, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
@@ -45,27 +45,29 @@ def main():
     try:
         price = get_current_price(okx_inst_id)
         if price <= 0: raise Exception("无法获取当前价格")
+        klines = get_klines(okx_inst_id, "1H", 30)
         atr = calculate_atr(okx_inst_id)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}")
         cg = CoinGlassClient()
-        cg_data = cg.get_all_data(symbol, current_price=price)
+        cg_data = cg.get_all_data(symbol, current_price=price, atr=atr)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
         liq_warning = cg.get_liq_zero_warning()
         if liq_warning: logger.warning(liq_warning)
+        data_source_status = cg.get_data_source_status()
+        logger.info(data_source_status)
         volatility_factor = cg.calculate_volatility_factor(symbol)
-        logger.info(f"{symbol} 波动率因子: {volatility_factor:.2f}")
-        market_regime = cg.get_market_regime(symbol, current_price=price, atr=atr)
+        market_regime = cg.get_market_regime_from_klines(klines, price, atr)
         logger.info(f"{symbol} 市场状态: {market_regime['regime']} ({market_regime['details']['reason']})")
         macro = get_macro_data()
         logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
-        prompt = build_prompt(symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro, profile=profile, volatility_factor=volatility_factor, market_regime=market_regime, liq_warning=liq_warning)
+        prompt = build_prompt(symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro, profile=profile, volatility_factor=volatility_factor, market_regime=market_regime, liq_warning=liq_warning, data_source_status=data_source_status)
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
         if strategy.get("direction") != "neutral": strategy["win_rate"] = calculate_win_rate(strategy["direction"], cg_data, macro, profile, market_regime)
         else: strategy["win_rate"] = 0
         signal_strength = calculate_signal_strength(strategy.get("direction", "neutral"), cg_data, macro)
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过，但仍尝试推送")
-        extra = {"atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"), "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cg_data.get("cvd_signal", "N/A"), "skew": cg_data.get("skew", "N/A"), "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength}
+        extra = {"atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"), "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cg_data.get("cvd_signal", "N/A"), "skew": cg_data.get("skew", "N/A"), "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength, "data_source_status": data_source_status}
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
         if success: logger.info(f"{symbol} 策略推送成功")
