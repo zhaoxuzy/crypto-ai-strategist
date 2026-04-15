@@ -16,8 +16,43 @@ STRATEGY_PROFILES = {
     "SOL": {"base_win_rate": 45, "max_win_rate": 75, "base_position": 0.15, "max_position": 0.30, "stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6, "min_profit_pct": 0.005, "min_profit_atr_mult": 0.8, "tp2_layer_atr_mult": 0.5, "signals": {"liquidation": {"weight": 20, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 0, "reliable": False}, "cvd": {"weight": 15, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": False}}}
 }
 
-# 最低胜率阈值（低于此值强制转为 neutral）
 MIN_WIN_RATE = 50
+
+def get_simple_direction(symbol: str) -> str:
+    """获取指定币种的简化方向（仅用于共振判断）"""
+    try:
+        okx_id = SYMBOL_MAP.get(symbol.upper())
+        if not okx_id:
+            return "neutral"
+        cg = CoinGlassClient()
+        price = get_current_price(okx_id)
+        if price <= 0:
+            return "neutral"
+        cg_data = cg.get_all_data(symbol, current_price=price)
+        above = cg_data.get("above_short_liquidation", "0")
+        below = cg_data.get("below_long_liquidation", "0")
+        try:
+            above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
+            below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
+            if above_val > below_val * 1.2:
+                return "long"
+            elif below_val > above_val * 1.2:
+                return "short"
+        except:
+            pass
+        top_ls = cg_data.get("top_long_short_ratio", "N/A")
+        try:
+            tls = float(top_ls)
+            if tls < 0.7:
+                return "long"
+            elif tls > 2.0:
+                return "short"
+        except:
+            pass
+        return "neutral"
+    except Exception as e:
+        logger.warning(f"获取{symbol}简化方向失败: {e}")
+        return "neutral"
 
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
@@ -37,6 +72,18 @@ def main():
         symbol = "BTC"
     profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"])
     okx_inst_id = SYMBOL_MAP[symbol]
+
+    # 获取 BTC 和 ETH 的简化方向（用于双币共振）
+    btc_direction = "neutral"
+    eth_direction = "neutral"
+    if symbol.upper() in ("BTC", "ETH"):
+        try:
+            btc_direction = get_simple_direction("BTC")
+            eth_direction = get_simple_direction("ETH")
+            logger.info(f"双币共振方向: BTC={btc_direction}, ETH={eth_direction}")
+        except Exception as e:
+            logger.warning(f"获取双币方向失败: {e}")
+
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
     try:
         price = get_current_price(okx_inst_id)
@@ -58,17 +105,14 @@ def main():
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
 
-        # 强制 neutral 逻辑（清算数据连续为零）
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
             strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
 
-        # 计算信号强度和胜率（传入 symbol 以支持币种差异化清算阈值）
-        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count)
+        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, btc_direction, eth_direction)
         strategy["win_rate"] = signal_strength["win_rate"]
 
-        # 胜率低于阈值，强制转为 neutral
         if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
             original_direction = strategy["direction"]
             original_win_rate = strategy["win_rate"]
