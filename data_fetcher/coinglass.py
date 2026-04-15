@@ -7,10 +7,11 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 6.0  # 每分钟最多10次请求
+        self.delay = 6.0
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
-        self._liq_zero_count = 0  # 连续清算为零计数器
+        self._liq_zero_count = 0
+        self._use_model1_fallback = False  # 是否启用 model1 备用
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -83,14 +84,29 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    # ---------- 清算热力图（range=3d）----------
+    # ---------- 清算热力图（主用 model2，备用 model1）----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        # 首先尝试 model2（3d）
         params = {
             "exchange": "OKX",
             "symbol": f"{symbol}-USDT-SWAP",
             "range": "3d"
         }
-        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
+        data = self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
+        if data and data.get("liquidation_leverage_data"):
+            self._use_model1_fallback = False
+            return data
+
+        # model2 失败，尝试 model1（备用）
+        logger.warning("model2 返回空数据，尝试 model1 备用")
+        params["range"] = "24h"  # model1 推荐 range
+        data = self._request("api/futures/liquidation/heatmap/model1", params, allow_backup=True, silent_fail=True)
+        if data and data.get("liquidation_leverage_data"):
+            self._use_model1_fallback = True
+            return data
+
+        # 均失败，返回空
+        return {}
 
     def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
         result = {
@@ -186,8 +202,14 @@ class CoinGlassClient:
 
     def get_liq_zero_warning(self) -> str:
         if self._liq_zero_count >= 2:
-            return "⚠️ 系统告警：连续两次未获取到有效清算数据，请检查数据源或市场状态。"
+            return "⚠️ 系统告警：连续两次未获取到有效清算数据，已启用备用模型。"
         return ""
+
+    def get_data_source_status(self) -> str:
+        """返回当前使用的数据源状态"""
+        if self._use_model1_fallback:
+            return "清算数据源：model1（备用）"
+        return "清算数据源：model2（主用）"
 
     # ---------- 持仓量 ----------
     def get_open_interest_history(self, symbol: str = "BTC"):
@@ -224,12 +246,12 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
-    # ---------- CVD（1分钟粒度）----------
+    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
-    # ---------- 净多净空持仓 v2 ----------
+    # ---------- 净持仓 ----------
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/net-position/history", params, allow_backup=True, silent_fail=True)
@@ -289,81 +311,70 @@ class CoinGlassClient:
     def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
         return 1.0
 
-    def get_market_regime(self, ohlc_data: list = None, current_price: float = None, atr: float = None) -> dict:
-        """基于已获取的1小时K线数据判断市场状态，不再额外请求API"""
-        if ohlc_data is None or current_price is None or atr is None:
-            return {"regime": "range", "details": {"reason": "数据不足，默认震荡市"}}
-        
-        try:
-            if not isinstance(ohlc_data, list) or len(ohlc_data) < 20:
-                return {"regime": "range", "details": {"reason": "K线数据不足"}}
-            
-            closes = []
-            highs = []
-            lows = []
-            for k in ohlc_data:
-                if len(k) >= 5:
-                    closes.append(float(k[4]))
-                    highs.append(float(k[2]))
-                    lows.append(float(k[3]))
-            
-            if len(closes) < 20:
-                return {"regime": "range", "details": {"reason": "有效K线不足"}}
-            
-            ma20 = sum(closes[-20:]) / 20
-            price_deviation = (current_price - ma20) / ma20
-            
-            true_ranges = []
-            for i in range(1, len(highs)):
-                tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-                true_ranges.append(tr)
-            if len(true_ranges) >= 14:
-                historical_atr = sum(true_ranges[-14:]) / 14
-            else:
-                historical_atr = atr
-            
-            volatility_ratio = atr / historical_atr if historical_atr > 0 else 1.0
-            
-            from data_fetcher.macro_cache import get_macro_data
-            macro = get_macro_data()
-            fg_value = int(macro.get("fear_greed", {}).get("value", 50))
-            
-            if fg_value < 25 or fg_value > 75:
-                regine = "extreme"
-                reason = f"恐惧贪婪指数{fg_value}处于极端区域"
-            elif abs(price_deviation) > 0.03 and volatility_ratio > 1.3:
-                regine = "trend"
-                reason = f"价格偏离MA20 {price_deviation*100:.1f}%，波动率比值 {volatility_ratio:.2f}"
-            else:
-                regine = "range"
-                reason = "价格在均线附近，波动率正常"
-            
-            return {
-                "regime": regine,
-                "details": {
-                    "reason": reason,
-                    "price_deviation": round(price_deviation, 4),
-                    "volatility_ratio": round(volatility_ratio, 2),
-                    "fg_value": fg_value
-                }
-            }
-        except Exception as e:
-            logger.warning(f"市场状态判断失败: {e}，使用默认震荡市")
-            return {"regime": "range", "details": {"reason": f"计算异常: {e}"}}
+    def get_market_regime_from_klines(self, klines: list, current_price: float, atr: float) -> dict:
+        """基于已获取的K线数据计算市场状态，无需额外API请求"""
+        if not klines or len(klines) < 20:
+            return {"regime": "range", "details": {"reason": "K线数据不足，默认震荡市"}}
 
-    def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
+        closes = []
+        highs = []
+        lows = []
+        for k in klines:
+            if len(k) >= 5:
+                closes.append(float(k[4]))
+                highs.append(float(k[2]))
+                lows.append(float(k[3]))
+
+        if len(closes) < 20:
+            return {"regime": "range", "details": {"reason": "有效K线不足"}}
+
+        ma20 = sum(closes[-20:]) / 20
+        price_deviation = (current_price - ma20) / ma20
+
+        true_ranges = []
+        for i in range(1, len(highs)):
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+            true_ranges.append(tr)
+        if len(true_ranges) >= 14:
+            historical_atr = sum(true_ranges[-14:]) / 14
+        else:
+            historical_atr = atr
+
+        volatility_ratio = atr / historical_atr if historical_atr > 0 else 1.0
+
+        from data_fetcher.macro_cache import get_macro_data
+        macro = get_macro_data()
+        fg_value = int(macro.get("fear_greed", {}).get("value", 50))
+
+        if fg_value < 25 or fg_value > 75:
+            regine = "extreme"
+            reason = f"恐惧贪婪指数{fg_value}处于极端区域"
+        elif abs(price_deviation) > 0.03 and volatility_ratio > 1.3:
+            regine = "trend"
+            reason = f"价格偏离MA20 {price_deviation*100:.1f}%，波动率比值 {volatility_ratio:.2f}"
+        else:
+            regine = "range"
+            reason = "价格在均线附近，波动率正常"
+
+        return {
+            "regime": regine,
+            "details": {
+                "reason": reason,
+                "price_deviation": round(price_deviation, 4),
+                "volatility_ratio": round(volatility_ratio, 2),
+                "fg_value": fg_value
+            }
+        }
+
+    def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
         if current_price is None:
             current_price = 70000.0
 
         data = {}
-
-        # 1. 清算热力图
         heatmap_raw = self.get_liquidation_heatmap(symbol)
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
-        data["_liq_zero_warning"] = self.get_liq_zero_warning()
 
-        # 2. 持仓量24h变化
         oi_history = self.get_open_interest_history(symbol)
         if not isinstance(oi_history, list) or len(oi_history) < 2:
             raise RuntimeError("持仓量数据不足，无法计算24h变化")
@@ -374,14 +385,12 @@ class CoinGlassClient:
         oi_change = f"{((last_close - prev_close) / prev_close * 100):.2f}%"
         data["oi_change_24h"] = oi_change
 
-        # 3. 资金费率
         funding_history = self.get_funding_rate_history(symbol)
         if not isinstance(funding_history, list) or len(funding_history) == 0:
             raise RuntimeError("资金费率数据为空")
         funding_rate = self._get_close_from_candle(funding_history[-1])
         data["funding_rate"] = funding_rate
 
-        # 4. 全局多空比
         ls_history = self.get_long_short_ratio_history(symbol)
         if not isinstance(ls_history, list) or len(ls_history) == 0:
             raise RuntimeError("全局多空比数据为空")
@@ -389,7 +398,6 @@ class CoinGlassClient:
         data["long_short_ratio"] = ls_ratio
         data["ls_account_ratio"] = ls_ratio
 
-        # 5. 顶级交易员多空比
         if symbol.upper() in ("BTC", "ETH"):
             top_ls_history = self.get_top_long_short_ratio_history(symbol)
             if not isinstance(top_ls_history, list) or len(top_ls_history) == 0:
@@ -406,7 +414,6 @@ class CoinGlassClient:
             logger.info(f"顶级交易员多空比接口不支持 {symbol}，将跳过此数据项")
             data["top_long_short_ratio"] = "N/A"
 
-        # 6. 期权信息
         try:
             options_info = self.get_options_info(symbol)
             if not isinstance(options_info, list) or len(options_info) == 0:
@@ -427,7 +434,6 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率
         taker_history = self.get_taker_volume_history(symbol)
         if not isinstance(taker_history, list) or len(taker_history) == 0:
             raise RuntimeError("主动买卖量数据为空")
@@ -438,7 +444,6 @@ class CoinGlassClient:
         taker_ratio = f"{(buy_vol / total):.2f}"
         data["taker_ratio"] = taker_ratio
 
-        # 8. 期权最大痛点
         try:
             max_pain_data = self.get_option_max_pain(symbol)
             skew_value = None
@@ -456,7 +461,6 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 9. CVD 斜率信号
         cvd_history = self.get_cvd_history(symbol)
         if not isinstance(cvd_history, list) or len(cvd_history) < 30:
             raise RuntimeError("CVD 数据不足，无法计算斜率")
@@ -493,7 +497,6 @@ class CoinGlassClient:
         data["cvd_signal"] = cvd_signal
         data["cvd_slope"] = cvd_slope
 
-        # 10. 净多净空持仓
         try:
             net_pos_history = self.get_net_position_history(symbol)
             if not isinstance(net_pos_history, list) or len(net_pos_history) == 0:
@@ -513,7 +516,6 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 11. 累计资金费率
         try:
             acc_funding = self.get_accumulated_funding_rate(symbol)
             okx_funding = "N/A"
@@ -531,7 +533,6 @@ class CoinGlassClient:
             logger.warning(f"累计资金费率获取失败: {e}")
             data["accumulated_funding_rate"] = "N/A"
 
-        # 12. 聚合主动买卖比率
         try:
             agg_taker = self.get_aggregated_taker_volume(symbol)
             if not isinstance(agg_taker, list) or len(agg_taker) == 0:
@@ -553,13 +554,9 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 13. 订单簿失衡率
         orderbook_data = self.get_orderbook_imbalance(symbol)
         data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
         data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
         data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
-
-        # 14. 返回用于市场状态判断的 K 线数据
-        data["_ohlc_for_regime"] = oi_history  # 复用已获取的1小时K线
 
         return data
