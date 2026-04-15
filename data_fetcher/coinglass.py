@@ -190,7 +190,7 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
-    # ---------- 全局多空比 ----------
+    # ---------- 全局多空比（多空持仓人数比）----------
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
@@ -235,6 +235,31 @@ class CoinGlassClient:
         params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24, "exchange_list": "OKX"}
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
+    # ---------- 【新增】订单簿失衡率 ----------
+    def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
+        """获取订单簿数据并计算失衡率。返回 {"imbalance": float, "bids_usd": float, "asks_usd": float}"""
+        try:
+            params = {
+                "exchange": "OKX",
+                "symbol": f"{symbol}-USDT-SWAP",
+                "interval": "1m",
+                "limit": 1
+            }
+            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
+            
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+                bids_usd = float(latest.get("bids_usd", 0))
+                asks_usd = float(latest.get("asks_usd", 0))
+                total = bids_usd + asks_usd
+                if total > 0:
+                    imbalance = (bids_usd - asks_usd) / total
+                    return {"imbalance": round(imbalance, 4), "bids_usd": bids_usd, "asks_usd": asks_usd}
+            return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
+        except Exception as e:
+            logger.warning(f"获取订单簿失衡率失败: {e}")
+            return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
+
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -260,19 +285,13 @@ class CoinGlassClient:
         return 0.0, 0.0
 
     def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
-        """简化波动率因子，直接返回1.0（避免额外API调用风险）"""
         return 1.0
 
     def get_market_regime(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
-        """
-        判断当前市场状态：强趋势、震荡市、极端情绪。
-        返回 dict：{"regime": "trend"|"range"|"extreme", "details": {...}}
-        """
         if current_price is None or atr is None:
             return {"regime": "range", "details": {"reason": "数据不足，默认震荡市"}}
         
         try:
-            # 获取过去20根1小时K线用于计算MA20和ATR均值
             params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 30}
             klines = self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
             
@@ -361,12 +380,13 @@ class CoinGlassClient:
         funding_rate = self._get_close_from_candle(funding_history[-1])
         data["funding_rate"] = funding_rate
 
-        # 4. 全局多空比
+        # 4. 全局多空比（多空持仓人数比）
         ls_history = self.get_long_short_ratio_history(symbol)
         if not isinstance(ls_history, list) or len(ls_history) == 0:
             raise RuntimeError("全局多空比数据为空")
         ls_ratio = self._get_close_from_candle(ls_history[-1])
         data["long_short_ratio"] = ls_ratio
+        data["ls_account_ratio"] = ls_ratio  # 别名
 
         # 5. 顶级交易员多空比
         if symbol.upper() in ("BTC", "ETH"):
@@ -531,5 +551,11 @@ class CoinGlassClient:
                 data["aggregated_taker_ratio"] = "N/A"
             else:
                 raise
+
+        # 13. 【新增】订单簿失衡率
+        orderbook_data = self.get_orderbook_imbalance(symbol)
+        data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
+        data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
+        data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
 
         return data
