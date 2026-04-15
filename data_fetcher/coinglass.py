@@ -11,7 +11,7 @@ class CoinGlassClient:
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
 
-    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True) -> dict:
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {
             "accept": "application/json",
@@ -77,6 +77,9 @@ class CoinGlassClient:
                         logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
                         break
 
+        if silent_fail:
+            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+            return {}
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
     # ---------- 清算热力图 ----------
@@ -86,7 +89,7 @@ class CoinGlassClient:
             "symbol": f"{symbol}-USDT-SWAP",
             "range": "24h"
         }
-        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True)
+        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
 
     def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
         result = {
@@ -200,7 +203,7 @@ class CoinGlassClient:
     # ---------- 期权信息 ----------
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
-        return self._request("api/option/info", params, allow_backup=False)
+        return self._request("api/option/info", params, allow_backup=False, silent_fail=True)
 
     # ---------- 主动买卖量（单交易所）----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
@@ -210,27 +213,27 @@ class CoinGlassClient:
     # ---------- 期权最大痛点 ----------
     def get_option_max_pain(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
-        return self._request("api/option/max-pain", params, allow_backup=False)
+        return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     # ---------- CVD（粒度1分钟）----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
-        return self._request("api/futures/cvd/history", params, allow_backup=True)
+        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     # ---------- 净多净空持仓 v2 ----------
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        return self._request("api/futures/v2/net-position/history", params, allow_backup=True)
+        return self._request("api/futures/v2/net-position/history", params, allow_backup=True, silent_fail=True)
 
     # ---------- 累计资金费率 ----------
     def get_accumulated_funding_rate(self, symbol: str = "BTC"):
         params = {"symbol": symbol.upper(), "range": "24h"}
-        return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False)
+        return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False, silent_fail=True)
 
     # ---------- 聚合主动买卖历史 ----------
     def get_aggregated_taker_volume(self, symbol: str = "BTC"):
         params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24, "exchange_list": "OKX"}
-        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False)
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -259,6 +262,75 @@ class CoinGlassClient:
     def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
         """简化波动率因子，直接返回1.0（避免额外API调用风险）"""
         return 1.0
+
+    def get_market_regime(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
+        """
+        判断当前市场状态：强趋势、震荡市、极端情绪。
+        返回 dict：{"regime": "trend"|"range"|"extreme", "details": {...}}
+        """
+        if current_price is None or atr is None:
+            return {"regime": "range", "details": {"reason": "数据不足，默认震荡市"}}
+        
+        try:
+            # 获取过去20根1小时K线用于计算MA20和ATR均值
+            params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 30}
+            klines = self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
+            
+            if not isinstance(klines, list) or len(klines) < 20:
+                return {"regime": "range", "details": {"reason": "K线数据不足"}}
+            
+            closes = []
+            highs = []
+            lows = []
+            for k in klines:
+                if len(k) >= 5:
+                    closes.append(float(k[4]))
+                    highs.append(float(k[2]))
+                    lows.append(float(k[3]))
+            
+            if len(closes) < 20:
+                return {"regime": "range", "details": {"reason": "有效K线不足"}}
+            
+            ma20 = sum(closes[-20:]) / 20
+            price_deviation = (current_price - ma20) / ma20
+            
+            true_ranges = []
+            for i in range(1, len(highs)):
+                tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                true_ranges.append(tr)
+            if len(true_ranges) >= 14:
+                historical_atr = sum(true_ranges[-14:]) / 14
+            else:
+                historical_atr = atr
+            
+            volatility_ratio = atr / historical_atr if historical_atr > 0 else 1.0
+            
+            from data_fetcher.macro_cache import get_macro_data
+            macro = get_macro_data()
+            fg_value = int(macro.get("fear_greed", {}).get("value", 50))
+            
+            if fg_value < 25 or fg_value > 75:
+                regine = "extreme"
+                reason = f"恐惧贪婪指数{fg_value}处于极端区域"
+            elif abs(price_deviation) > 0.03 and volatility_ratio > 1.3:
+                regine = "trend"
+                reason = f"价格偏离MA20 {price_deviation*100:.1f}%，波动率比值 {volatility_ratio:.2f}"
+            else:
+                regine = "range"
+                reason = "价格在均线附近，波动率正常"
+            
+            return {
+                "regime": regine,
+                "details": {
+                    "reason": reason,
+                    "price_deviation": round(price_deviation, 4),
+                    "volatility_ratio": round(volatility_ratio, 2),
+                    "fg_value": fg_value
+                }
+            }
+        except Exception as e:
+            logger.warning(f"市场状态判断失败: {e}，使用默认震荡市")
+            return {"regime": "range", "details": {"reason": f"计算异常: {e}"}}
 
     def get_all_data(self, symbol: str = "BTC", current_price: float = None) -> dict:
         if current_price is None:
@@ -363,7 +435,7 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 9. CVD 斜率信号（基于1分钟粒度）
+        # 9. CVD 斜率信号（基于1分钟粒度，取最近30根）
         cvd_history = self.get_cvd_history(symbol)
         if not isinstance(cvd_history, list) or len(cvd_history) < 30:
             raise RuntimeError("CVD 数据不足，无法计算斜率")
