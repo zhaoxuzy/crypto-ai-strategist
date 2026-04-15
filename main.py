@@ -18,42 +18,6 @@ STRATEGY_PROFILES = {
 
 MIN_WIN_RATE = 50
 
-def get_simple_direction(symbol: str) -> str:
-    """获取指定币种的简化方向（仅用于共振判断）"""
-    try:
-        okx_id = SYMBOL_MAP.get(symbol.upper())
-        if not okx_id:
-            return "neutral"
-        cg = CoinGlassClient()
-        price = get_current_price(okx_id)
-        if price <= 0:
-            return "neutral"
-        cg_data = cg.get_all_data(symbol, current_price=price)
-        above = cg_data.get("above_short_liquidation", "0")
-        below = cg_data.get("below_long_liquidation", "0")
-        try:
-            above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
-            below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
-            if above_val > below_val * 1.2:
-                return "long"
-            elif below_val > above_val * 1.2:
-                return "short"
-        except:
-            pass
-        top_ls = cg_data.get("top_long_short_ratio", "N/A")
-        try:
-            tls = float(top_ls)
-            if tls < 0.7:
-                return "long"
-            elif tls > 2.0:
-                return "short"
-        except:
-            pass
-        return "neutral"
-    except Exception as e:
-        logger.warning(f"获取{symbol}简化方向失败: {e}")
-        return "neutral"
-
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
@@ -72,18 +36,6 @@ def main():
         symbol = "BTC"
     profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"])
     okx_inst_id = SYMBOL_MAP[symbol]
-
-    # 获取 BTC 和 ETH 的简化方向（用于双币共振）
-    btc_direction = "neutral"
-    eth_direction = "neutral"
-    if symbol.upper() in ("BTC", "ETH"):
-        try:
-            btc_direction = get_simple_direction("BTC")
-            eth_direction = get_simple_direction("ETH")
-            logger.info(f"双币共振方向: BTC={btc_direction}, ETH={eth_direction}")
-        except Exception as e:
-            logger.warning(f"获取双币方向失败: {e}")
-
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
     try:
         price = get_current_price(okx_inst_id)
@@ -110,7 +62,11 @@ def main():
             strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
 
-        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, btc_direction, eth_direction)
+        # 获取新宏观数据
+        eth_btc_data = cg.get_eth_btc_ratio()
+        balance_data = cg.get_exchange_balances()
+
+        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, eth_btc_data, balance_data)
         strategy["win_rate"] = signal_strength["win_rate"]
 
         if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
