@@ -3,13 +3,46 @@ import json
 from openai import OpenAI
 from utils.logger import logger
 
-def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict) -> int:
+def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None) -> int:
+    """
+    基于方向和各指标共振情况加权计分，支持根据市场状态动态调整权重。
+    """
     base_win_rate = profile["base_win_rate"]
     signals = profile["signals"]
     fg = macro_data.get("fear_greed", {})
     fg_value = int(fg.get("value", 50))
 
+    # 默认权重（与 profile 一致）
+    weights = {
+        "liquidation": signals.get("liquidation", {}).get("weight", 10),
+        "funding_rate": signals.get("funding_rate", {}).get("weight", 10),
+        "top_trader": signals.get("top_trader", {}).get("weight", 10),
+        "cvd": signals.get("cvd", {}).get("weight", 10),
+        "fear_greed": signals.get("fear_greed", {}).get("weight", 10),
+        "taker": 8,      # 主动买盘基础权重
+        "net_position": 10  # 净持仓基础权重
+    }
+
+    # 根据市场状态动态调整权重
+    regine = market_regime.get("regime", "range") if market_regime else "range"
+    if regine == "trend":
+        # 强趋势市：清算、CVD、净持仓权重提升；恐惧贪婪、主动买盘权重降低
+        weights["liquidation"] = int(weights["liquidation"] * 1.3)
+        weights["cvd"] = int(weights["cvd"] * 1.2)
+        weights["net_position"] = int(weights["net_position"] * 1.2)
+        weights["fear_greed"] = int(weights["fear_greed"] * 0.6)
+        weights["taker"] = int(weights["taker"] * 0.6)
+    elif regine == "extreme":
+        # 极端情绪市：恐惧贪婪、资金费率权重提升；趋势类指标权重降低
+        weights["fear_greed"] = int(weights["fear_greed"] * 1.5)
+        weights["funding_rate"] = int(weights["funding_rate"] * 1.3)
+        weights["liquidation"] = int(weights["liquidation"] * 0.7)
+        weights["cvd"] = int(weights["cvd"] * 0.7)
+    # 震荡市保持默认权重
+
     score = 0
+    triggered_count = 0
+    opposite_count = 0
 
     # 1. 清算结构明确性
     above = coinglass_data.get("above_short_liquidation", "0")
@@ -22,7 +55,11 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
             if diff > 0.2:
                 liq_direction = "long" if above_val > below_val else "short"
                 if liq_direction == direction:
-                    score += signals.get("liquidation", {}).get("weight", 10)
+                    score += weights["liquidation"]
+                    triggered_count += 1
+                else:
+                    score -= int(weights["liquidation"] * 0.5)
+                    opposite_count += 1
     except:
         pass
 
@@ -30,10 +67,20 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
-        if fr > 0.05 and direction == "short":
-            score += signals.get("funding_rate", {}).get("weight", 10)
-        elif fr < -0.02 and direction == "long":
-            score += signals.get("funding_rate", {}).get("weight", 10)
+        if fr > 0.05:
+            if direction == "short":
+                score += weights["funding_rate"]
+                triggered_count += 1
+            else:
+                score -= int(weights["funding_rate"] * 0.5)
+                opposite_count += 1
+        elif fr < -0.02:
+            if direction == "long":
+                score += weights["funding_rate"]
+                triggered_count += 1
+            else:
+                score -= int(weights["funding_rate"] * 0.5)
+                opposite_count += 1
     except:
         pass
 
@@ -41,10 +88,20 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
-        if tls > 2.0 and direction == "short":
-            score += signals.get("top_trader", {}).get("weight", 10)
-        elif tls < 0.7 and direction == "long":
-            score += signals.get("top_trader", {}).get("weight", 10)
+        if tls > 2.0:
+            if direction == "short":
+                score += weights["top_trader"]
+                triggered_count += 1
+            else:
+                score -= int(weights["top_trader"] * 0.5)
+                opposite_count += 1
+        elif tls < 0.7:
+            if direction == "long":
+                score += weights["top_trader"]
+                triggered_count += 1
+            else:
+                score -= int(weights["top_trader"] * 0.5)
+                opposite_count += 1
     except:
         pass
 
@@ -52,22 +109,47 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     cvd_signal = coinglass_data.get("cvd_signal", "N/A")
     if (direction == "long" and cvd_signal in ["bullish", "slightly_bullish"]) or \
        (direction == "short" and cvd_signal in ["bearish", "slightly_bearish"]):
-        score += signals.get("cvd", {}).get("weight", 10)
+        score += weights["cvd"]
+        triggered_count += 1
+    elif cvd_signal not in ["N/A", "neutral"]:
+        # 有明确方向但与策略相反
+        score -= int(weights["cvd"] * 0.5)
+        opposite_count += 1
 
     # 5. 恐惧贪婪极端性
-    if fg_value < 20 and direction == "long":
-        score += signals.get("fear_greed", {}).get("weight", 10)
-    elif fg_value > 80 and direction == "short":
-        score += signals.get("fear_greed", {}).get("weight", 10)
+    if fg_value < 20:
+        if direction == "long":
+            score += weights["fear_greed"]
+            triggered_count += 1
+        else:
+            score -= int(weights["fear_greed"] * 0.5)
+            opposite_count += 1
+    elif fg_value > 80:
+        if direction == "short":
+            score += weights["fear_greed"]
+            triggered_count += 1
+        else:
+            score -= int(weights["fear_greed"] * 0.5)
+            opposite_count += 1
 
     # 6. 主动买盘比率
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
-        if tr > 0.55 and direction == "long":
-            score += 8
-        elif tr < 0.45 and direction == "short":
-            score += 8
+        if tr > 0.55:
+            if direction == "long":
+                score += weights["taker"]
+                triggered_count += 1
+            else:
+                score -= int(weights["taker"] * 0.5)
+                opposite_count += 1
+        elif tr < 0.45:
+            if direction == "short":
+                score += weights["taker"]
+                triggered_count += 1
+            else:
+                score -= int(weights["taker"] * 0.5)
+                opposite_count += 1
     except:
         pass
 
@@ -75,17 +157,32 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
-        if np > 1000 and direction == "long":
-            score += 10
-        elif np < -1000 and direction == "short":
-            score += 10
+        if np > 1000:
+            if direction == "long":
+                score += weights["net_position"]
+                triggered_count += 1
+            else:
+                score -= int(weights["net_position"] * 0.5)
+                opposite_count += 1
+        elif np < -1000:
+            if direction == "short":
+                score += weights["net_position"]
+                triggered_count += 1
+            else:
+                score -= int(weights["net_position"] * 0.5)
+                opposite_count += 1
     except:
         pass
 
+    # 数据缺失扣分
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
     score -= min(10, na_count * 3)
+
+    # 信号矛盾额外惩罚
+    if opposite_count >= 2 and triggered_count <= 1:
+        score -= 10
 
     win_rate = base_win_rate + score
     return max(40, min(profile["max_win_rate"], win_rate))
@@ -223,7 +320,7 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     }
 
 
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0) -> str:
+def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None) -> str:
     fg = macro_data.get("fear_greed", {})
     signals = profile["signals"]
 
@@ -256,7 +353,21 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     if symbol.upper() == "SOL":
         sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
 
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
+    # 市场状态描述
+    regine_desc = ""
+    if market_regime:
+        regine = market_regime.get("regime", "range")
+        details = market_regime.get("details", {})
+        if regine == "trend":
+            regine_desc = f"**当前市场状态：强趋势市**（{details.get('reason', '')}）。趋势类指标（清算、CVD、净持仓）权重提升，情绪类指标权重降低。"
+        elif regine == "extreme":
+            regine_desc = f"**当前市场状态：极端情绪市**（{details.get('reason', '')}）。情绪类指标（恐惧贪婪、资金费率）权重提升，趋势类指标权重降低。"
+        else:
+            regine_desc = f"**当前市场状态：震荡市**（{details.get('reason', '')}）。各指标保持默认权重。"
+
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须根据所有数据专业分析研判，不得简化。
+
+{regine_desc}
 
 ### 当前市场数据
 **基础信息**
