@@ -19,20 +19,11 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
     timestamp = str(round(time.time() * 1000))
     if secret and secret.lower() != "none":
         string_to_sign = f"{timestamp}\n{secret}"
-        hmac_code = hmac.new(
-            secret.encode(), string_to_sign.encode(), digestmod=hashlib.sha256
-        ).digest()
+        hmac_code = hmac.new(secret.encode(), string_to_sign.encode(), digestmod=hashlib.sha256).digest()
         sign = urllib.parse.quote_plus(base64.b64encode(hmac_code))
         webhook = f"{webhook}&timestamp={timestamp}&sign={sign}"
 
-    payload = {
-        "msgtype": "markdown",
-        "markdown": {
-            "title": title,
-            "text": markdown_content
-        }
-    }
-
+    payload = {"msgtype": "markdown", "markdown": {"title": title, "text": markdown_content}}
     try:
         resp = requests.post(webhook, json=payload, timeout=10)
         result = resp.json()
@@ -50,29 +41,26 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
     now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
-
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
     win_rate = strategy.get("win_rate", 50)
     is_probe = strategy.get("is_probe", False)
-
     signal_strength = extra.get("signal_strength", {})
     strength_level = signal_strength.get("level", "未知")
     strength_score = signal_strength.get("score", 0)
     strength_max = signal_strength.get("max_score", 100)
     strength_details = ", ".join(signal_strength.get("details", []))
-
+    data_source_status = extra.get("data_source_status", "")
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
     if direction == "neutral":
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
-
 ### 📊 AI 研判
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
-
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 信号强度：{strength_level}（{strength_score}/{strength_max}分）| {strength_details}
+- {data_source_status}
 """
 
     dir_text = "做多" if direction == "long" else "做空"
@@ -86,7 +74,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     position = float(strategy.get("position_size_ratio", 0.1))
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}%{probe_tag} 🕒 {now_str}
-
 ### 📊 策略概要
 - **方向**：{dir_text}
 - **当前价**：${current_price:,.1f}
@@ -95,19 +82,16 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
 - **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
 - **建议仓位**：{int(position*100)}%
-
 ### 📈 AI 分析逻辑
 > {strategy.get('reasoning', '暂无分析')}
-
 ### ⚠️ 风险提示
 - {strategy.get('risk_note', '请严格设置止损')}
-
 ### 🔗 数据快照
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
 - **信号强度**：{strength_level}（{strength_score}/{strength_max}分）| {strength_details}
-
+- **{data_source_status}**
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
 """
