@@ -16,6 +16,9 @@ STRATEGY_PROFILES = {
     "SOL": {"base_win_rate": 45, "max_win_rate": 75, "base_position": 0.15, "max_position": 0.30, "stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6, "min_profit_pct": 0.005, "min_profit_atr_mult": 0.8, "tp2_layer_atr_mult": 0.5, "signals": {"liquidation": {"weight": 20, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 0, "reliable": False}, "cvd": {"weight": 15, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": False}}}
 }
 
+# 最低胜率阈值（低于此值强制转为 neutral）
+MIN_WIN_RATE = 50
+
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
@@ -54,13 +57,27 @@ def main():
         prompt = build_prompt(symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro, profile=profile, volatility_factor=volatility_factor, market_regime=market_regime, liq_warning=liq_warning, data_source_status=data_source_status)
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
-        # 强制 neutral 逻辑
+
+        # 强制 neutral 逻辑（清算数据连续为零）
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
             strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
+
+        # 计算信号强度和胜率
         signal_strength = calculate_signal_strength(strategy["direction"], cg_data, macro, liq_zero_count)
         strategy["win_rate"] = signal_strength["win_rate"]
+
+        # 胜率低于阈值，强制转为 neutral
+        if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
+            original_direction = strategy["direction"]
+            original_win_rate = strategy["win_rate"]
+            strategy["direction"] = "neutral"
+            strategy["confidence"] = "low"
+            strategy["reasoning"] = f"策略胜率({original_win_rate}%)低于最低阈值({MIN_WIN_RATE}%)，自动转为观望。原方向：{original_direction}"
+            strategy["win_rate"] = 0
+            logger.info(f"{symbol} 策略胜率{original_win_rate}%低于{MIN_WIN_RATE}%，已转为neutral")
+
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {"atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"), "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cg_data.get("cvd_signal", "N/A"), "skew": cg_data.get("skew", "N/A"), "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength, "data_source_status": data_source_status}
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
