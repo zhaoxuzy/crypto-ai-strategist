@@ -5,6 +5,10 @@ from utils.logger import logger
 
 # ---------- 连续型评分辅助函数 ----------
 def linear_score(value: float, low: float, high: float, full_score: float, reverse: bool = False) -> float:
+    """
+    分段线性计分：值在 [low, high] 区间内线性映射到 [0, full_score]。
+    reverse=True 表示值越低得分越高（如恐惧贪婪 <20 给满分）。
+    """
     if low == high:
         return 0.0
     if reverse:
@@ -22,8 +26,14 @@ def linear_score(value: float, low: float, high: float, full_score: float, rever
 
 
 def get_position_structure_score(direction: str, coinglass_data: dict, macro_data: dict) -> tuple:
+    """
+    合并后的持仓结构因子：融合顶级交易员多空比和多空持仓人数比。
+    返回 (得分, 详情列表)
+    """
     score = 0.0
     details = []
+    
+    # 顶级交易员多空比（权重更高）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -34,7 +44,7 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
                 s = linear_score(tls, 0.7, 2.0, 20, reverse=True)
             else:
                 s = 0.0
-        else:
+        else:  # short
             if tls >= 2.0:
                 s = 20.0
             elif tls >= 0.7:
@@ -49,6 +59,8 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
             details.append(f"顶级持仓反向({tls:.2f})")
     except:
         pass
+    
+    # 多空持仓人数比（补充权重）
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     try:
         lsa = float(ls_account)
@@ -74,6 +86,7 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
             details.append(f"人数比反向({lsa:.2f})")
     except:
         pass
+    
     return score, details
 
 
@@ -85,11 +98,18 @@ LIQ_MIN_THRESHOLDS = {
 }
 
 
-def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0, btc_direction: str = "neutral", eth_direction: str = "neutral") -> dict:
+def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None) -> dict:
+    """
+    计算加权信号强度得分（满分100分），同时输出胜率。
+    包含连续型评分、反向扣分、共线性合并、清算规模过滤，以及新增的宏观过滤器。
+    """
     total_score = 0.0
+    max_score = 100.0
     signals_detail = []
+    
+    # 获取该币种的清算最低阈值，默认 BTC
     min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
-
+    
     # ---- 1. 清算方向（25分）----
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
@@ -219,33 +239,47 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
         total_score -= 11 * 0.4
         signals_detail.append("订单簿反向")
 
-    # ---- 9. 双币共振（10分）----
-    if symbol.upper() in ("BTC", "ETH"):
-        if direction == "long" and btc_direction == "long" and eth_direction == "long":
-            total_score += 10
-            signals_detail.append("双币强共振(+10)")
-        elif direction == "short" and btc_direction == "short" and eth_direction == "short":
-            total_score += 10
-            signals_detail.append("双币强共振(+10)")
-        elif direction == "long" and (btc_direction == "long" or eth_direction == "long") and btc_direction != "short" and eth_direction != "short":
-            total_score += 5
-            signals_detail.append("双币弱共振(+5)")
-        elif direction == "short" and (btc_direction == "short" or eth_direction == "short") and btc_direction != "long" and eth_direction != "long":
-            total_score += 5
-            signals_detail.append("双币弱共振(+5)")
-        elif (direction == "long" and (btc_direction == "short" or eth_direction == "short")) or \
-             (direction == "short" and (btc_direction == "long" or eth_direction == "long")):
-            total_score -= 5
-            signals_detail.append("双币分歧(-5)")
+    # ---- 9. 新指标：ETH/BTC 汇率趋势（8分）----
+    if eth_btc_data:
+        trend = eth_btc_data.get("trend", "neutral")
+        if direction == "long" and trend == "up":
+            total_score += 8
+            signals_detail.append(f"ETH/BTC上升(+8)")
+        elif direction == "short" and trend == "down":
+            total_score += 8
+            signals_detail.append(f"ETH/BTC下降(+8)")
+        elif (direction == "long" and trend == "down") or (direction == "short" and trend == "up"):
+            total_score -= 4
+            signals_detail.append(f"ETH/BTC逆向(-4)")
 
-    # 数据缺失扣分
+    # ---- 10. 新指标：交易所钱包余额（7分）----
+    if balance_data:
+        btc_flow = balance_data.get("btc_flow", "neutral")
+        stable_flow = balance_data.get("stable_flow", "neutral")
+        # 做多信号：稳定币流入 + BTC流出
+        if direction == "long" and stable_flow == "in" and btc_flow == "out":
+            total_score += 7
+            signals_detail.append(f"余额:稳定币流入&BTC流出(+7)")
+        # 做空信号：稳定币流出 + BTC流入
+        elif direction == "short" and stable_flow == "out" and btc_flow == "in":
+            total_score += 7
+            signals_detail.append(f"余额:稳定币流出&BTC流入(+7)")
+        # 反向扣分
+        elif (direction == "long" and stable_flow == "out" and btc_flow == "in") or \
+             (direction == "short" and stable_flow == "in" and btc_flow == "out"):
+            total_score -= 3
+            signals_detail.append(f"余额逆向(-3)")
+
+    # ---- 数据缺失扣分 ----
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
     total_score -= min(8, na_count * 2)
 
+    # 限制得分范围
     total_score = max(-20, min(100, total_score))
-
+    
+    # 映射等级
     if total_score >= 75:
         level = "极强"
     elif total_score >= 55:
@@ -257,9 +291,11 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     else:
         level = "极弱"
 
+    # 由信号强度映射胜率 (40% ~ 85%)
     win_rate = int(40 + (total_score / 100) * 45)
     win_rate = max(40, min(85, win_rate))
 
+    # 清算数据连续为零强制降低胜率
     if liq_zero_count >= 2:
         level = "极弱"
         total_score = max(0, total_score - 30)
@@ -274,21 +310,29 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     }
 
 
-def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None, liq_zero_count: int = 0, btc_direction: str = "neutral", eth_direction: str = "neutral") -> int:
-    strength = calculate_signal_strength(symbol, direction, coinglass_data, macro_data, liq_zero_count, btc_direction, eth_direction)
+# ---------- 胜率计算直接复用信号强度 ----------
+def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None) -> int:
+    strength = calculate_signal_strength(symbol, direction, coinglass_data, macro_data, liq_zero_count, eth_btc_data, balance_data)
     return strength["win_rate"]
 
 
+# ---------- Prompt 构建 ----------
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None, liq_warning: str = "", data_source_status: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
+    signals = profile["signals"]
+    
+    signal_desc = "各指标权重已由系统动态计算，你只需关注综合方向。"
+    
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
+    
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
     cluster_price_raw = cluster.get("price", "N/A")
     cluster_intensity = cluster.get("intensity", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
+
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
 
