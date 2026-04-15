@@ -64,8 +64,8 @@ def main():
             strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
 
-        # 计算信号强度和胜率
-        signal_strength = calculate_signal_strength(strategy["direction"], cg_data, macro, liq_zero_count)
+        # 计算信号强度和胜率（传入 symbol 以支持币种差异化清算阈值）
+        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count)
         strategy["win_rate"] = signal_strength["win_rate"]
 
         # 胜率低于阈值，强制转为 neutral
