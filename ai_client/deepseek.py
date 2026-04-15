@@ -90,15 +90,26 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
     return score, details
 
 
+# ---------- 币种清算金额最低阈值（单位：USD）----------
+LIQ_MIN_THRESHOLDS = {
+    "BTC": 50_000_000,   # 5000万
+    "ETH": 20_000_000,   # 2000万
+    "SOL": 5_000_000     # 500万
+}
+
+
 # ---------- 信号强度计算（重构版）----------
-def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0) -> dict:
+def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0) -> dict:
     """
     计算加权信号强度得分（满分100分），同时输出胜率。
-    包含连续型评分、反向扣分、共线性合并。
+    包含连续型评分、反向扣分、共线性合并、清算规模过滤。
     """
     total_score = 0.0
     max_score = 100.0
     signals_detail = []
+    
+    # 获取该币种的清算最低阈值，默认 BTC
+    min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
     
     # ---- 1. 清算方向（28分）----
     above = coinglass_data.get("above_short_liquidation", "0")
@@ -106,20 +117,31 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     try:
         above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
         below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
-        if above_val > 0 or below_val > 0:
-            total_liq = above_val + below_val
-            if total_liq > 0:
-                short_ratio = above_val / total_liq
-                if direction == "short":
-                    s = linear_score(short_ratio, 0.5, 0.8, 28, reverse=False)
+        total_liq = above_val + below_val
+        
+        # 清算规模衰减系数：总金额低于阈值时，得分按比例衰减
+        scale_factor = min(1.0, total_liq / min_liq_threshold) if total_liq > 0 else 0.0
+        
+        if total_liq > 0:
+            short_ratio = above_val / total_liq
+            if direction == "short":
+                raw_s = linear_score(short_ratio, 0.5, 0.8, 28, reverse=False)
+            else:
+                raw_s = linear_score(short_ratio, 0.2, 0.5, 28, reverse=True)
+            
+            s = raw_s * scale_factor
+            total_score += s
+            
+            if s > 5:
+                if scale_factor < 0.5:
+                    signals_detail.append(f"清算结构({short_ratio:.1%}, 规模小)")
                 else:
-                    s = linear_score(short_ratio, 0.2, 0.5, 28, reverse=True)
-                total_score += s
-                if s > 5:
                     signals_detail.append(f"清算结构({short_ratio:.1%})")
-                if (direction == "long" and short_ratio > 0.6) or (direction == "short" and short_ratio < 0.4):
-                    total_score -= 28 * 0.4
-                    signals_detail.append("清算结构反向")
+            
+            # 反向扣分（反向扣分不受规模衰减影响，因为矛盾信号即使规模小也有意义）
+            if (direction == "long" and short_ratio > 0.6) or (direction == "short" and short_ratio < 0.4):
+                total_score -= 28 * 0.4
+                signals_detail.append("清算结构反向")
     except:
         pass
 
@@ -130,7 +152,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
 
     # ---- 3. CVD（12分）----
     cvd = coinglass_data.get("cvd_signal", "N/A")
-    cvd_slope = coinglass_data.get("cvd_slope", 0.0)
     if cvd in ["bullish", "slightly_bullish"]:
         if direction == "long":
             s = 12.0 if cvd == "bullish" else 8.0
@@ -251,7 +272,7 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     win_rate = int(40 + (total_score / 100) * 45)
     win_rate = max(40, min(85, win_rate))
 
-    # 清算数据连续为零强制 neutral 和低胜率
+    # 清算数据连续为零强制降低胜率
     if liq_zero_count >= 2:
         level = "极弱"
         total_score = max(0, total_score - 30)
@@ -267,8 +288,8 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
 
 
 # ---------- 胜率计算直接复用信号强度 ----------
-def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None, liq_zero_count: int = 0) -> int:
-    strength = calculate_signal_strength(direction, coinglass_data, macro_data, liq_zero_count)
+def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None, liq_zero_count: int = 0) -> int:
+    strength = calculate_signal_strength(symbol, direction, coinglass_data, macro_data, liq_zero_count)
     return strength["win_rate"]
 
 
@@ -292,7 +313,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
 
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须按照要求执行，不得简化。
+    return f"""你是一位顶尖的加密货币短线合约交易员，精通清算动力学、多空博弈分析及数据分析。请根据以下市场数据，为{symbol}永续合约制定一个短线交易策略（4-24小时），必须按要求执行，不得简化。
 
 {warning_text}
 {data_source_text}
