@@ -6,7 +6,7 @@ from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines
 from data_fetcher.macro_cache import get_macro_data
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_win_rate, calculate_signal_strength
+from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
@@ -25,23 +25,16 @@ def send_error_notification(symbol: str, error_msg: str):
 ### 处理建议
 - 请检查数据源（CoinGlass、OKX）是否正常
 - 可稍后手动重试或查看 Actions 日志排查
----
-*系统将在下次定时任务时自动重试。*
 """
     send_dingtalk_message(markdown, f"DeepSeek策略异常-{symbol}")
 
 def main():
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
     if symbol not in SYMBOL_MAP:
-        logger.error(f"不支持的币种: {symbol}，将使用 BTC")
         symbol = "BTC"
     profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"])
     okx_inst_id = SYMBOL_MAP[symbol]
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
-    price = 0.0
-    atr = 0.0
-    cg_data = {}
-    macro = {}
     try:
         price = get_current_price(okx_inst_id)
         if price <= 0: raise Exception("无法获取当前价格")
@@ -51,22 +44,24 @@ def main():
         cg = CoinGlassClient()
         cg_data = cg.get_all_data(symbol, current_price=price, atr=atr)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
+        liq_zero_count = cg.get_liq_zero_count()
         liq_warning = cg.get_liq_zero_warning()
         if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
-        logger.info(data_source_status)
         volatility_factor = cg.calculate_volatility_factor(symbol)
-        market_regime = cg.get_market_regime_from_klines(klines, price, atr)
-        logger.info(f"{symbol} 市场状态: {market_regime['regime']} ({market_regime['details']['reason']})")
+        market_regime = cg.get_market_regime_from_klines(klines, price, atr) if hasattr(cg, 'get_market_regime_from_klines') else {"regime": "range", "details": {"reason": "默认"}}
         macro = get_macro_data()
-        logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
         prompt = build_prompt(symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro, profile=profile, volatility_factor=volatility_factor, market_regime=market_regime, liq_warning=liq_warning, data_source_status=data_source_status)
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
-        if strategy.get("direction") != "neutral": strategy["win_rate"] = calculate_win_rate(strategy["direction"], cg_data, macro, profile, market_regime)
-        else: strategy["win_rate"] = 0
-        signal_strength = calculate_signal_strength(strategy.get("direction", "neutral"), cg_data, macro)
-        if not validate_strategy(strategy, price): logger.warning("策略校验未通过，但仍尝试推送")
+        # 强制 neutral 逻辑
+        if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
+            strategy["direction"] = "neutral"
+            strategy["confidence"] = "low"
+            strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
+        signal_strength = calculate_signal_strength(strategy["direction"], cg_data, macro, liq_zero_count)
+        strategy["win_rate"] = signal_strength["win_rate"]
+        if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {"atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"), "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cg_data.get("cvd_signal", "N/A"), "skew": cg_data.get("skew", "N/A"), "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength, "data_source_status": data_source_status}
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
