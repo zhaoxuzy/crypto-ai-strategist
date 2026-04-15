@@ -2,8 +2,7 @@ name: Crypto Strategy Bot - BTC Only
 
 on:
   schedule:
-    # 北京时间每天 8:00-24:00 每小时执行一次（默认分析 BTC）
-    # UTC 时间：0:00 - 16:00 每小时整点执行
+    # 北京时间每天 8:00-24:00 每半小时执行一次
     - cron: '0,30 0-16 * * *'
   workflow_dispatch:
     inputs:
@@ -30,6 +29,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'  # 开启依赖缓存
 
       - name: 安装依赖
         run: |
@@ -43,6 +43,5 @@ jobs:
           DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
           GLASSNODE_API_KEY: ${{ secrets.GLASSNODE_API_KEY }}
-          # 手动触发时使用选择的币种，定时触发时默认 BTC
           STRATEGY_SYMBOL: ${{ github.event.inputs.symbol || 'BTC' }}
         run: python main.py
