@@ -6,6 +6,7 @@ from utils.logger import logger
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
+        # 使用 KeyStore 代理，若直连可改为 https://open-api-v4.coinglass.com
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.delay = 6.0
         self.primary_exchange = "OKX"
@@ -84,7 +85,7 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    # ---------- 清算热力图（主用 model2，备用 model1）----------
+    # ---------- 清算热力图 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {
             "exchange": "OKX",
@@ -102,7 +103,6 @@ class CoinGlassClient:
         if data and data.get("liquidation_leverage_data"):
             self._use_model1_fallback = True
             return data
-
         return {}
 
     def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
@@ -235,7 +235,7 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/info", params, allow_backup=False, silent_fail=True)
 
-    # ---------- 主动买卖量（单交易所）----------
+    # ---------- 主动买卖量 ----------
     def get_taker_volume_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
@@ -245,12 +245,12 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
-    # ---------- CVD（粒度1分钟）----------
+    # ---------- CVD ----------
     def get_cvd_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
-    # ---------- 净多净空持仓 v2 ----------
+    # ---------- 净持仓 ----------
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
         return self._request("api/futures/v2/net-position/history", params, allow_backup=True, silent_fail=True)
@@ -260,7 +260,7 @@ class CoinGlassClient:
         params = {"symbol": symbol.upper(), "range": "24h"}
         return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False, silent_fail=True)
 
-    # ---------- 聚合主动买卖历史 ----------
+    # ---------- 聚合主动买卖 ----------
     def get_aggregated_taker_volume(self, symbol: str = "BTC"):
         params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24, "exchange_list": "OKX"}
         return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
@@ -282,6 +282,81 @@ class CoinGlassClient:
         except Exception as e:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
+
+    # ---------- 新指标1：ETH/BTC 汇率 ----------
+    def get_eth_btc_ratio(self) -> dict:
+        """
+        获取 ETH/BTC 汇率及其趋势（基于 V4 接口 /api/spot/price/history）。
+        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"}
+        """
+        try:
+            # 分别获取 ETH/USDT 和 BTC/USDT 的 1H K线，计算最近4根K线的均价，再相除得到4小时均线比率
+            params = {"exchange": "Binance", "symbol": "ETH-USDT", "interval": "1h", "limit": 5}
+            eth_data = self._request("api/spot/price/history", params, allow_backup=True, silent_fail=True)
+            params["symbol"] = "BTC-USDT"
+            btc_data = self._request("api/spot/price/history", params, allow_backup=True, silent_fail=True)
+            
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("获取 ETH/BTC 汇率数据不足")
+                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
+
+            # 计算4小时均线 (取最近4根K线的收盘价均值)
+            eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
+            btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
+            
+            if len(eth_close_4) < 4 or len(btc_close_4) < 4:
+                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
+
+            eth_ma = sum(eth_close_4) / 4
+            btc_ma = sum(btc_close_4) / 4
+            ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
+            
+            # 当前汇率
+            current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
+            
+            # 判断趋势
+            trend = "up" if current_ratio > ma_4h_ratio else "down"
+            
+            logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
+            return {"current_ratio": round(current_ratio, 6), "ma_4h": round(ma_4h_ratio, 6), "trend": trend}
+        except Exception as e:
+            logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
+            return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
+
+    # ---------- 新指标2：交易所钱包余额 ----------
+    def get_exchange_balances(self) -> dict:
+        """
+        获取交易所 BTC 和稳定币余额变化（基于 V4 接口 /api/exchange/balance/list）。
+        返回 dict: {"btc_flow": "in"/"out"/"neutral", "stable_flow": "in"/"out"/"neutral"}
+        """
+        try:
+            # 获取 BTC 余额数据
+            btc_data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
+            if not isinstance(btc_data, list) or len(btc_data) == 0:
+                return {"btc_flow": "neutral", "stable_flow": "neutral"}
+            
+            # 获取稳定币余额数据（以 USDT 为代表）
+            stable_data = self._request("api/exchange/balance/list", {"symbol": "USDT(ETH)"}, allow_backup=False, silent_fail=True)
+            
+            # 聚合所有交易所的24小时变动
+            btc_total_change = 0.0
+            stable_total_change = 0.0
+            
+            for ex in btc_data:
+                btc_total_change += float(ex.get("balance_change_1d", 0))
+            
+            if isinstance(stable_data, list):
+                for ex in stable_data:
+                    stable_total_change += float(ex.get("balance_change_1d", 0))
+            
+            btc_flow = "in" if btc_total_change > 10 else ("out" if btc_total_change < -10 else "neutral")
+            stable_flow = "in" if stable_total_change > 1000000 else ("out" if stable_total_change < -1000000 else "neutral")
+            
+            logger.info(f"交易所余额: BTC净变动={btc_total_change:.0f} ({btc_flow}), 稳定币净变动={stable_total_change:.0f} ({stable_flow})")
+            return {"btc_flow": btc_flow, "stable_flow": stable_flow, "btc_change": btc_total_change, "stable_change": stable_total_change}
+        except Exception as e:
+            logger.warning(f"获取交易所余额失败: {e}")
+            return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -311,7 +386,6 @@ class CoinGlassClient:
         return 1.0
 
     def get_market_regime_from_klines(self, klines: list, current_price: float, atr: float) -> dict:
-        """基于已获取的K线数据计算市场状态，无需额外API请求"""
         if not klines or len(klines) < 20:
             return {"regime": "range", "details": {"reason": "K线数据不足，默认震荡市"}}
 
@@ -440,7 +514,7 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率（单交易所）
+        # 7. 主动吃单比率
         taker_history = self.get_taker_volume_history(symbol)
         if not isinstance(taker_history, list) or len(taker_history) == 0:
             raise RuntimeError("主动买卖量数据为空")
