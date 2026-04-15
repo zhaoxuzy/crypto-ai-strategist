@@ -183,12 +183,9 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     return max(40, min(profile["max_win_rate"], win_rate))
 
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
-    """归一化权重，满分100分：清算28，顶级16，CVD12，恐惧6，费率4，主动买盘8，净持仓6，订单簿12，多空人数比8"""
     total_score = 0
     max_score = 100
     signals_detail = []
-    
-    # 1. 清算方向（28分）
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
@@ -207,8 +204,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                         total_score += 28
     except:
         pass
-
-    # 2. 顶级交易员（16分）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -222,8 +217,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 16
     except:
         pass
-
-    # 3. CVD（12分）
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         signals_detail.append(f"CVD:{cvd}")
@@ -233,8 +226,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         signals_detail.append(f"CVD:{cvd}")
         if direction == "short":
             total_score += 12
-
-    # 4. 恐惧贪婪（6分）
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
@@ -245,8 +236,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         signals_detail.append("极度贪婪(偏空)")
         if direction == "short":
             total_score += 6
-
-    # 5. 资金费率（4分）
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
@@ -260,8 +249,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 4
     except:
         pass
-
-    # 6. 主动买盘（8分）
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
@@ -275,8 +262,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 8
     except:
         pass
-
-    # 7. 净持仓（6分）
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
@@ -290,8 +275,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 6
     except:
         pass
-
-    # 8. 订单簿失衡率（12分）
     imbalance = coinglass_data.get("orderbook_imbalance", 0.0)
     if direction == "long" and imbalance > 0.2:
         signals_detail.append(f"订单簿偏多({imbalance:.2f})")
@@ -299,8 +282,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     elif direction == "short" and imbalance < -0.2:
         signals_detail.append(f"订单簿偏空({imbalance:.2f})")
         total_score += 12
-
-    # 9. 多空人数比（8分）
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     try:
         lsa = float(ls_account)
@@ -312,8 +293,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
             total_score += 8
     except:
         pass
-
-    # 等级映射
     if total_score >= 75:
         level = "极强"
     elif total_score >= 55:
@@ -324,10 +303,9 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         level = "弱"
     else:
         level = "极弱"
-
     return {"level": level, "score": total_score, "max_score": max_score, "details": signals_detail}
 
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None, liq_warning: str = "") -> str:
+def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None, liq_warning: str = "", data_source_status: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
     signals = profile["signals"]
     signal_desc = ""
@@ -369,8 +347,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     ls_account_desc = f"多空持仓人数比：{ls_account:.2f}（<0.7极度恐慌偏多，>2.0极度贪婪偏空）"
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须结合数据以以下命令专业分析，不得简化。
+    data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须结合数据和指令全面分析，不得简化。
 {warning_text}
+{data_source_text}
 {regine_desc}
 
 ### 当前市场数据
