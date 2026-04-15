@@ -5,10 +5,6 @@ from utils.logger import logger
 
 # ---------- 连续型评分辅助函数 ----------
 def linear_score(value: float, low: float, high: float, full_score: float, reverse: bool = False) -> float:
-    """
-    分段线性计分：值在 [low, high] 区间内线性映射到 [0, full_score]。
-    reverse=True 表示值越低得分越高（如恐惧贪婪 <20 给满分）。
-    """
     if low == high:
         return 0.0
     if reverse:
@@ -26,14 +22,8 @@ def linear_score(value: float, low: float, high: float, full_score: float, rever
 
 
 def get_position_structure_score(direction: str, coinglass_data: dict, macro_data: dict) -> tuple:
-    """
-    合并后的持仓结构因子：融合顶级交易员多空比和多空持仓人数比。
-    返回 (得分, 详情列表)
-    """
     score = 0.0
     details = []
-    
-    # 顶级交易员多空比（权重更高）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -44,7 +34,7 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
                 s = linear_score(tls, 0.7, 2.0, 20, reverse=True)
             else:
                 s = 0.0
-        else:  # short
+        else:
             if tls >= 2.0:
                 s = 20.0
             elif tls >= 0.7:
@@ -59,8 +49,6 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
             details.append(f"顶级持仓反向({tls:.2f})")
     except:
         pass
-    
-    # 多空持仓人数比（补充权重）
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     try:
         lsa = float(ls_account)
@@ -86,11 +74,9 @@ def get_position_structure_score(direction: str, coinglass_data: dict, macro_dat
             details.append(f"人数比反向({lsa:.2f})")
     except:
         pass
-    
     return score, details
 
 
-# ---------- 币种清算金额最低阈值 ----------
 LIQ_MIN_THRESHOLDS = {
     "BTC": 50_000_000,
     "ETH": 20_000_000,
@@ -99,17 +85,10 @@ LIQ_MIN_THRESHOLDS = {
 
 
 def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None) -> dict:
-    """
-    计算加权信号强度得分（满分100分），同时输出胜率。
-    包含连续型评分、反向扣分、共线性合并、清算规模过滤，以及新增的宏观过滤器。
-    """
     total_score = 0.0
-    max_score = 100.0
     signals_detail = []
-    
-    # 获取该币种的清算最低阈值，默认 BTC
     min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
-    
+
     # ---- 1. 清算方向（25分）----
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
@@ -239,7 +218,7 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
         total_score -= 11 * 0.4
         signals_detail.append("订单簿反向")
 
-    # ---- 9. 新指标：ETH/BTC 汇率趋势（8分）----
+    # ---- 9. ETH/BTC 汇率趋势（8分）----
     if eth_btc_data:
         trend = eth_btc_data.get("trend", "neutral")
         if direction == "long" and trend == "up":
@@ -252,34 +231,28 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
             total_score -= 4
             signals_detail.append(f"ETH/BTC逆向(-4)")
 
-    # ---- 10. 新指标：交易所钱包余额（7分）----
+    # ---- 10. 交易所钱包余额（7分）----
     if balance_data:
         btc_flow = balance_data.get("btc_flow", "neutral")
         stable_flow = balance_data.get("stable_flow", "neutral")
-        # 做多信号：稳定币流入 + BTC流出
         if direction == "long" and stable_flow == "in" and btc_flow == "out":
             total_score += 7
             signals_detail.append(f"余额:稳定币流入&BTC流出(+7)")
-        # 做空信号：稳定币流出 + BTC流入
         elif direction == "short" and stable_flow == "out" and btc_flow == "in":
             total_score += 7
             signals_detail.append(f"余额:稳定币流出&BTC流入(+7)")
-        # 反向扣分
         elif (direction == "long" and stable_flow == "out" and btc_flow == "in") or \
              (direction == "short" and stable_flow == "in" and btc_flow == "out"):
             total_score -= 3
             signals_detail.append(f"余额逆向(-3)")
 
-    # ---- 数据缺失扣分 ----
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
     total_score -= min(8, na_count * 2)
 
-    # 限制得分范围
     total_score = max(-20, min(100, total_score))
     
-    # 映射等级
     if total_score >= 75:
         level = "极强"
     elif total_score >= 55:
@@ -291,11 +264,9 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     else:
         level = "极弱"
 
-    # 由信号强度映射胜率 (40% ~ 85%)
     win_rate = int(40 + (total_score / 100) * 45)
     win_rate = max(40, min(85, win_rate))
 
-    # 清算数据连续为零强制降低胜率
     if liq_zero_count >= 2:
         level = "极弱"
         total_score = max(0, total_score - 30)
@@ -310,33 +281,27 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     }
 
 
-# ---------- 胜率计算直接复用信号强度 ----------
 def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None) -> int:
     strength = calculate_signal_strength(symbol, direction, coinglass_data, macro_data, liq_zero_count, eth_btc_data, balance_data)
     return strength["win_rate"]
 
 
-# ---------- Prompt 构建 ----------
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None, liq_warning: str = "", data_source_status: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
-    signals = profile["signals"]
-    
-    signal_desc = "各指标权重已由系统动态计算，你只需关注综合方向。"
-    
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
-    
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
     cluster_price_raw = cluster.get("price", "N/A")
     cluster_intensity = cluster.get("intensity", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
-
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
 
-    return f"""你是一位顶尖的加密货币短线合约交易员，精通清算动力学、多空博弈及数据量化分析。请根据以下市场数据，为{symbol}永续合约制定一个短线交易策略（4-24小时），必须执行所有要求，不得简化。
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
+
+⚠️ **特别警告**：如果你在`reasoning`中未能体现对清算数据、费率、宏观过滤器、止盈锚定的明确分析，你的输出将被视为无效。你的目标是给出一个专业交易员级别的、逻辑严密的策略，而不是一个泛泛而谈的建议。
 
 {warning_text}
 {data_source_text}
@@ -368,6 +333,41 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
 
+### 🔒 强制分析流程（必须逐项在reasoning中体现，否则视为无效策略）
+
+在输出最终的JSON前，你必须在内心（并在reasoning字段中）完成以下步骤的确认。每一个步骤的结论都必须明确。
+
+**第一步：清算动力学定锚**
+- 对比上方空头清算总额和下方多头清算总额。
+- 判断结论：价格更易被磁吸向（上方/下方）？该方向的清算墙厚度是否达到对方1.3倍以上？
+- 确认结果：【偏多/偏空/中性】
+
+**第二步：多空博弈找“犯错方”**
+- 分析资金费率：是极端正值（多头拥挤）还是负值（空头拥挤）？
+- 分析顶级交易员仓位：是净多（<0.7）还是净空（>2.0）？
+- 分析净持仓累积：是持续净多头还是净空头？
+- 判断结论：当前市场哪一方（多头/空头）承受的压力更大，更容易成为“踩踏”对象？
+- 确认结果：【偏多/偏空/中性】
+
+**第三步：宏观过滤器定基调**
+- 分析ETH/BTC汇率趋势：是上升（风险偏好回暖）还是下降（避险）？
+- 分析交易所钱包余额：稳定币和BTC的流向组合是（看涨/看跌/中性）？
+- 判断结论：当前宏观资金流向是（支持/反对/中性）第一步和第二步的方向？
+- 确认结果：【支持/反对/中性】
+
+**第四步：信号共振与矛盾裁决**
+- 列举所有支持最终方向的信号。
+- 列举所有与最终方向矛盾的信号。
+- 最终裁决：共振信号的强度是否足以压倒矛盾信号？若矛盾信号≥2个且共振强度<55分，应输出neutral。
+
+**第五步：止盈止损锚定校验**
+- TP1锚定来源：____（清算区/期权痛点/ATR估算），该锚点与当前价的距离是____ USDT。
+- 该距离是否 ≥ 最小盈利空间阈值且 ≤ 最大约束？【是/否】
+- TP2锚定来源：____，与TP1的分层距离是____ USDT，是否满足分层要求？【是/否】
+- 止损锚定来源：____，是否位于关键支撑/阻力下方？【是/否】
+
+**完成以上分析后，再生成最终JSON。你的reasoning字段必须是对上述步骤的简要总结。**
+
 ### 策略输出要求
 请严格按JSON格式输出：
 {{
@@ -381,7 +381,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
-  "reasoning": "核心逻辑（1-2句）",
+  "reasoning": "必须包含强制分析五步骤的简要结论",
   "risk_note": "风险提示"
 }}
 
@@ -401,7 +401,7 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=800)
+            response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1000)
             content = response.choices[0].message.content
             json_start = content.find('{')
             json_end = content.rfind('}') + 1
