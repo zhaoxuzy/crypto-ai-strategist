@@ -4,14 +4,10 @@ from openai import OpenAI
 from utils.logger import logger
 
 def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, profile: dict, market_regime: dict = None) -> int:
-    """
-    基于方向和各指标共振情况加权计分，支持根据市场状态动态调整权重。
-    """
     base_win_rate = profile["base_win_rate"]
     signals = profile["signals"]
     fg = macro_data.get("fear_greed", {})
     fg_value = int(fg.get("value", 50))
-
     weights = {
         "liquidation": signals.get("liquidation", {}).get("weight", 10),
         "funding_rate": signals.get("funding_rate", {}).get("weight", 10),
@@ -23,7 +19,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
         "orderbook": 15,
         "ls_account": 12
     }
-
     regine = market_regime.get("regime", "range") if market_regime else "range"
     if regine == "trend":
         weights["liquidation"] = int(weights["liquidation"] * 1.3)
@@ -36,12 +31,9 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
         weights["funding_rate"] = int(weights["funding_rate"] * 1.3)
         weights["liquidation"] = int(weights["liquidation"] * 0.7)
         weights["cvd"] = int(weights["cvd"] * 0.7)
-
     score = 0
     triggered_count = 0
     opposite_count = 0
-
-    # 1. 清算结构
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
@@ -59,8 +51,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
                     opposite_count += 1
     except:
         pass
-
-    # 2. 资金费率
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
@@ -80,8 +70,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
                 opposite_count += 1
     except:
         pass
-
-    # 3. 顶级交易员
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -101,8 +89,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
                 opposite_count += 1
     except:
         pass
-
-    # 4. CVD
     cvd_signal = coinglass_data.get("cvd_signal", "N/A")
     if (direction == "long" and cvd_signal in ["bullish", "slightly_bullish"]) or \
        (direction == "short" and cvd_signal in ["bearish", "slightly_bearish"]):
@@ -111,8 +97,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     elif cvd_signal not in ["N/A", "neutral"]:
         score -= int(weights["cvd"] * 0.5)
         opposite_count += 1
-
-    # 5. 恐惧贪婪
     if fg_value < 20:
         if direction == "long":
             score += weights["fear_greed"]
@@ -127,8 +111,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
         else:
             score -= int(weights["fear_greed"] * 0.5)
             opposite_count += 1
-
-    # 6. 主动买盘
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
@@ -148,8 +130,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
                 opposite_count += 1
     except:
         pass
-
-    # 7. 净持仓
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
@@ -169,8 +149,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
                 opposite_count += 1
     except:
         pass
-
-    # 8. 【新增】订单簿失衡率
     imbalance = coinglass_data.get("orderbook_imbalance", 0.0)
     if direction == "long" and imbalance > 0.2:
         score += weights["orderbook"]
@@ -181,8 +159,6 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
     elif abs(imbalance) > 0.2:
         score -= int(weights["orderbook"] * 0.5)
         opposite_count += 1
-
-    # 9. 【新增】多空持仓人数比
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     try:
         lsa = float(ls_account)
@@ -197,29 +173,19 @@ def calculate_win_rate(direction: str, coinglass_data: dict, macro_data: dict, p
             opposite_count += 1
     except:
         pass
-
     na_count = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
                                coinglass_data.get("top_long_short_ratio"),
                                coinglass_data.get("cvd_signal")] if v == "N/A")
     score -= min(10, na_count * 3)
-
     if opposite_count >= 2 and triggered_count <= 1:
         score -= 10
-
     win_rate = base_win_rate + score
     return max(40, min(profile["max_win_rate"], win_rate))
 
-
 def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: dict) -> dict:
-    """
-    计算加权信号强度得分（满分100分）。
-    权重配置：清算35%，顶级交易员20%，CVD15%，恐惧贪婪8%，资金费率5%，主动买盘10%，净持仓7%，订单簿15%，多空人数比12%。
-    """
     total_score = 0
-    max_score = 100 + 15 + 12  # 新增两个指标，总分动态计算
+    max_score = 100 + 15 + 12
     signals_detail = []
-
-    # 1. 清算方向（35%）
     above = coinglass_data.get("above_short_liquidation", "0")
     below = coinglass_data.get("below_long_liquidation", "0")
     try:
@@ -238,8 +204,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                         total_score += 35
     except:
         pass
-
-    # 2. 顶级交易员（20%）
     top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
     try:
         tls = float(top_ls)
@@ -253,8 +217,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 20
     except:
         pass
-
-    # 3. CVD（15%）
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         signals_detail.append(f"CVD:{cvd}")
@@ -264,8 +226,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         signals_detail.append(f"CVD:{cvd}")
         if direction == "short":
             total_score += 15
-
-    # 4. 恐惧贪婪（8%）
     fg = macro_data.get("fear_greed", {})
     fg_val = int(fg.get("value", 50))
     if fg_val < 20:
@@ -276,8 +236,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         signals_detail.append("极度贪婪(偏空)")
         if direction == "short":
             total_score += 8
-
-    # 5. 资金费率（5%）
     funding_rate = coinglass_data.get("funding_rate", "N/A")
     try:
         fr = float(funding_rate)
@@ -291,8 +249,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 5
     except:
         pass
-
-    # 6. 主动买盘（10%）
     taker_ratio = coinglass_data.get("taker_ratio", "N/A")
     try:
         tr = float(taker_ratio)
@@ -306,8 +262,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 10
     except:
         pass
-
-    # 7. 净持仓（7%）
     net_pos = coinglass_data.get("net_position_cum", "N/A")
     try:
         np = float(net_pos)
@@ -321,8 +275,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
                 total_score += 7
     except:
         pass
-
-    # 8. 【新增】订单簿失衡率（15%）
     imbalance = coinglass_data.get("orderbook_imbalance", 0.0)
     if direction == "long" and imbalance > 0.2:
         signals_detail.append(f"订单簿偏多({imbalance:.2f})")
@@ -330,8 +282,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
     elif direction == "short" and imbalance < -0.2:
         signals_detail.append(f"订单簿偏空({imbalance:.2f})")
         total_score += 15
-
-    # 9. 【新增】多空持仓人数比（12%）
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     try:
         lsa = float(ls_account)
@@ -343,8 +293,6 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
             total_score += 12
     except:
         pass
-
-    # 计算等级（基于得分率）
     score_rate = total_score / max_score if max_score > 0 else 0
     if score_rate >= 0.75:
         level = "极强"
@@ -356,48 +304,35 @@ def calculate_signal_strength(direction: str, coinglass_data: dict, macro_data: 
         level = "弱"
     else:
         level = "极弱"
+    return {"level": level, "score": total_score, "max_score": max_score, "details": signals_detail}
 
-    return {
-        "level": level,
-        "score": total_score,
-        "max_score": max_score,
-        "details": signals_detail
-    }
-
-
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None) -> str:
+def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: dict = None, liq_warning: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
     signals = profile["signals"]
-
     signal_desc = ""
     for name, cfg in signals.items():
         if cfg["reliable"]:
             signal_desc += f"- {name}: 可信，权重 {cfg['weight']}%\n"
         else:
             signal_desc += f"- {name}: 不可用，不计入评分\n"
-
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     if volatility_factor > 1.5:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} > 1.5，仓位需乘以 {profile['volatility_discount']}。"
     elif volatility_factor < 0.7:
         position_rule += f" 当前波动率因子 {volatility_factor:.2f} < 0.7，可适当放大仓位（最大1.2倍）。"
-
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
     cluster_price_raw = cluster.get("price", "N/A")
     cluster_intensity = cluster.get("intensity", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
-
     min_profit_distance = max(profile["min_profit_atr_mult"] * atr, price * profile["min_profit_pct"])
     tp2_layer_distance = profile["tp2_layer_atr_mult"] * atr
     absolute_min_profit = max(0.2 * atr, price * 0.0015)
     max_profit_distance = 3.0 * atr
-
     sol_extra = ""
     if symbol.upper() == "SOL":
         sol_extra = "\n**SOL 特别说明**：期权痛点数据不可用，清算区稀疏。止盈锚点优先使用 2×ATR 估算，无结构性目标时请明确说明。"
-
     regine_desc = ""
     if market_regime:
         regine = market_regime.get("regime", "range")
@@ -408,16 +343,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             regine_desc = f"**当前市场状态：极端情绪市**（{details.get('reason', '')}）。情绪类指标（恐惧贪婪、资金费率）权重提升，趋势类指标权重降低。"
         else:
             regine_desc = f"**当前市场状态：震荡市**（{details.get('reason', '')}）。各指标保持默认权重。"
-
-    # 订单簿失衡率描述
     imbalance = coinglass_data.get("orderbook_imbalance", 0.0)
     imbalance_desc = f"订单簿失衡率：{imbalance:.2f}（>0.2为买盘显著占优，<-0.2为卖盘显著占优）"
-    # 多空人数比描述
     ls_account = coinglass_data.get("ls_account_ratio", 1.0)
     ls_account_desc = f"多空持仓人数比：{ls_account:.2f}（<0.7极度恐慌偏多，>2.0极度贪婪偏空）"
-
-    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时），必须专业分析研判，不得简化。
-
+    warning_text = f"\n{liq_warning}\n" if liq_warning else ""
+    return f"""你是一位顶尖的加密货币短线合约交易员，专精于**清算动力学**、**多空博弈分析**。请根据以下实时市场数据，为{symbol}永续合约制定一份具体的短线交易策略（持仓周期4-24小时）。
+{warning_text}
 {regine_desc}
 
 ### 当前市场数据
@@ -528,20 +460,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **胜率由系统自动计算，你无需填写，将 win_rate 设为 0。**
 """
 
-
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
-    client = OpenAI(
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url="https://api.deepseek.com/v1"
-    )
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1000
-            )
+            response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1000)
             content = response.choices[0].message.content
             json_start = content.find('{')
             json_end = content.rfind('}') + 1
@@ -549,77 +472,49 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
                 raise ValueError("未找到 JSON")
             json_str = content[json_start:json_end]
             strategy = json.loads(json_str)
-            if "win_rate" not in strategy:
-                strategy["win_rate"] = 0
-            if "tp1_anchor" not in strategy:
-                strategy["tp1_anchor"] = "未提供"
-            if "tp2_anchor" not in strategy:
-                strategy["tp2_anchor"] = "未提供"
-            if "is_probe" not in strategy:
-                strategy["is_probe"] = False
+            if "win_rate" not in strategy: strategy["win_rate"] = 0
+            if "tp1_anchor" not in strategy: strategy["tp1_anchor"] = "未提供"
+            if "tp2_anchor" not in strategy: strategy["tp2_anchor"] = "未提供"
+            if "is_probe" not in strategy: strategy["is_probe"] = False
             return strategy
         except Exception as e:
             logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                raise
+            if attempt == max_retries - 1: raise
     return {}
 
-
 def validate_strategy(strategy: dict, current_price: float) -> bool:
-    if "direction" not in strategy:
-        return False
+    if "direction" not in strategy: return False
     direction = strategy["direction"]
-    if direction not in ["long", "short", "neutral"]:
-        return False
-    if direction == "neutral":
-        return True
-
+    if direction not in ["long", "short", "neutral"]: return False
+    if direction == "neutral": return True
     required = ["entry_price_low", "entry_price_high", "stop_loss"]
     for field in required:
-        if field not in strategy or strategy[field] in [None, ""]:
-            return False
-        try:
-            float(strategy[field])
-        except:
-            return False
-
+        if field not in strategy or strategy[field] in [None, ""]: return False
+        try: float(strategy[field])
+        except: return False
     entry_low = float(strategy["entry_price_low"])
     entry_high = float(strategy["entry_price_high"])
     stop = float(strategy["stop_loss"])
-
     if direction == "long" and stop >= entry_low:
         logger.warning("做多时止损必须低于入场价")
         return False
     if direction == "short" and stop <= entry_high:
         logger.warning("做空时止损必须高于入场价")
         return False
-
     tp1 = strategy.get("take_profit_1")
     tp2 = strategy.get("take_profit_2")
     if tp1 is not None and tp1 != "":
         try:
             tp1_val = float(tp1)
             entry_ref = entry_low if direction == "long" else entry_high
-            if direction == "long" and tp1_val <= entry_ref:
-                logger.warning(f"做多时 TP1({tp1_val}) 必须大于入场价({entry_ref})")
-                return False
-            if direction == "short" and tp1_val >= entry_ref:
-                logger.warning(f"做空时 TP1({tp1_val}) 必须小于入场价({entry_ref})")
-                return False
-        except:
-            pass
-
+            if direction == "long" and tp1_val <= entry_ref: return False
+            if direction == "short" and tp1_val >= entry_ref: return False
+        except: pass
     if tp2 is not None and tp2 != "":
         try:
             tp2_val = float(tp2)
             entry_ref = entry_low if direction == "long" else entry_high
-            if direction == "long" and tp2_val <= entry_ref:
-                logger.warning(f"做多时 TP2({tp2_val}) 必须大于入场价({entry_ref})")
-                return False
-            if direction == "short" and tp2_val >= entry_ref:
-                logger.warning(f"做空时 TP2({tp2_val}) 必须小于入场价({entry_ref})")
-                return False
-        except:
-            pass
-
+            if direction == "long" and tp2_val <= entry_ref: return False
+            if direction == "short" and tp2_val >= entry_ref: return False
+        except: pass
     return True
