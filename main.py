@@ -26,9 +26,9 @@ STRATEGY_PROFILES = {
         "tp1_ratio": 1.5,
         "tp2_ratio": 2.5,
         "volatility_discount": 0.8,
-        "min_profit_pct": 0.0025,       # 0.25%
-        "min_profit_atr_mult": 0.4,     # 0.4×ATR
-        "tp2_layer_atr_mult": 0.2,      # TP2 与 TP1 的最小距离
+        "min_profit_pct": 0.0025,
+        "min_profit_atr_mult": 0.4,
+        "tp2_layer_atr_mult": 0.2,
         "signals": {
             "liquidation": {"weight": 10, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -47,9 +47,9 @@ STRATEGY_PROFILES = {
         "tp1_ratio": 1.8,
         "tp2_ratio": 3.0,
         "volatility_discount": 0.7,
-        "min_profit_pct": 0.003,        # 0.3%
-        "min_profit_atr_mult": 0.5,     # 0.5×ATR
-        "tp2_layer_atr_mult": 0.3,      # TP2 与 TP1 的最小距离
+        "min_profit_pct": 0.003,
+        "min_profit_atr_mult": 0.5,
+        "tp2_layer_atr_mult": 0.3,
         "signals": {
             "liquidation": {"weight": 12, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -64,13 +64,13 @@ STRATEGY_PROFILES = {
         "max_win_rate": 75,
         "base_position": 0.15,
         "max_position": 0.30,
-        "stop_multiplier": 2.5,         # 从 2.2 增加到 2.5，降低扫损概率
+        "stop_multiplier": 2.5,
         "tp1_ratio": 2.0,
         "tp2_ratio": 3.5,
         "volatility_discount": 0.6,
-        "min_profit_pct": 0.005,        # 0.5%
-        "min_profit_atr_mult": 0.8,     # 0.8×ATR
-        "tp2_layer_atr_mult": 0.5,      # TP2 与 TP1 的最小距离
+        "min_profit_pct": 0.005,
+        "min_profit_atr_mult": 0.8,
+        "tp2_layer_atr_mult": 0.5,
         "signals": {
             "liquidation": {"weight": 20, "reliable": True},
             "funding_rate": {"weight": 10, "reliable": True},
@@ -130,6 +130,10 @@ def main():
         volatility_factor = cg.calculate_volatility_factor(symbol)
         logger.info(f"{symbol} 波动率因子: {volatility_factor:.2f}")
 
+        # 获取市场状态
+        market_regime = cg.get_market_regime(symbol, current_price=price, atr=atr)
+        logger.info(f"{symbol} 市场状态: {market_regime['regime']} ({market_regime['details']['reason']})")
+
         macro = get_macro_data()
         logger.info(f"宏观数据: 恐惧贪婪指数 {macro['fear_greed']['value']}")
 
@@ -140,7 +144,8 @@ def main():
             coinglass_data=cg_data,
             macro_data=macro,
             profile=profile,
-            volatility_factor=volatility_factor
+            volatility_factor=volatility_factor,
+            market_regime=market_regime
         )
         strategy = call_deepseek(prompt)
 
@@ -148,7 +153,9 @@ def main():
             raise Exception("DeepSeek 返回为空")
 
         if strategy.get("direction") != "neutral":
-            strategy["win_rate"] = calculate_win_rate(strategy["direction"], cg_data, macro, profile)
+            strategy["win_rate"] = calculate_win_rate(
+                strategy["direction"], cg_data, macro, profile, market_regime
+            )
         else:
             strategy["win_rate"] = 0
 
