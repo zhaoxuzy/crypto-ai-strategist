@@ -52,10 +52,19 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
     profit_ratio = extra.get("profit_ratio", 0.0)
+    market_regime = extra.get("market_regime", "range")
+    ema55 = extra.get("ema55", 0.0)
     probe_tag = " 🧪 试探信号" if is_probe else ""
+
+    regine_text = "震荡市"
+    if market_regime == "trend_bear":
+        regine_text = f"趋势空头市 (价格 < EMA55({ema55:.1f}))"
+    elif market_regime == "trend_bull":
+        regine_text = f"趋势多头市 (价格 > EMA55({ema55:.1f}))"
 
     if direction == "neutral":
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
+**市场状态：{regine_text}**
 ### 📊 AI 研判
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
 - 当前价：${current_price:,.1f}
@@ -75,6 +84,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     position = float(strategy.get("position_size_ratio", 0.1))
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}%{probe_tag} 🕒 {now_str}
+**市场状态：{regine_text}**
 ### 📊 策略概要
 - **方向**：{dir_text}
 - **当前价**：${current_price:,.1f}
@@ -89,7 +99,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险提示
 - {strategy.get('risk_note', '请严格设置止损')}
 ### 🔗 数据快照
-- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
+- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f} | EMA55：{ema55:.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
 - **信号强度**：{strength_level}（{strength_score}/{strength_max}分）| {strength_details}
