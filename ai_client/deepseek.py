@@ -85,12 +85,6 @@ LIQ_MIN_THRESHOLDS = {
 
 
 def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None, market_regime: str = "range") -> dict:
-    """
-    计算加权信号强度得分。引入市场状态动态权重：
-    - trend_bear: 趋势空头市，CVD和主动卖盘权重提升，清算和持仓结构权重降低。
-    - trend_bull: 趋势多头市，CVD和主动买盘权重提升。
-    - range: 震荡市，保持原有均衡权重。
-    """
     total_score = 0.0
     signals_detail = []
     min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
@@ -291,6 +285,7 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
 
     total_score = max(-20, min(100, total_score))
 
+    # 等级映射（固定档位）
     if total_score >= 75:
         level = "极强"
     elif total_score >= 55:
@@ -324,7 +319,7 @@ def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_
     return strength["win_rate"]
 
 
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: str = "range", ema55: float = 0.0, liq_warning: str = "", data_source_status: str = "") -> str:
+def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: str = "range", ema55: float = 0.0, ema_slope: float = 0.0, atr_percentile: float = 50.0, liq_warning: str = "", data_source_status: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
     position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
@@ -341,7 +336,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     trend_extra = ""
     if market_regime == "trend_bear":
         trend_extra = f"""
-**⚠️ 当前市场判定为【趋势空头市】（价格低于EMA55({ema55:.1f})，CVD/主动卖盘占优）**
+**⚠️ 当前市场判定为【趋势空头市】（价格<EMA55({ema55:.1f})，EMA斜率{ema_slope:.1f}，CVD/主动卖盘占优，ATR百分位{atr_percentile}%）**
 - 下方巨大的清算墙不再是“强支撑”，而是空头继续猎杀的目标。
 - 资金费率转负视为“空头建仓确认”，而非反转信号。
 - 允许在共振强度不足时输出**轻仓追空**信号（仓位10%，止损0.5×ATR，止盈1×ATR）。
@@ -349,10 +344,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 """
     elif market_regime == "trend_bull":
         trend_extra = f"""
-**⚠️ 当前市场判定为【趋势多头市】（价格高于EMA55({ema55:.1f})，CVD/主动买盘占优）**
+**⚠️ 当前市场判定为【趋势多头市】（价格>EMA55({ema55:.1f})，EMA斜率{ema_slope:.1f}，CVD/主动买盘占优，ATR百分位{atr_percentile}%）**
 - 上方巨大的清算墙不再是“强阻力”，而是多头继续猎杀的目标。
 - 资金费率转正视作“多头建仓确认”。
 - 允许轻仓追多。
+"""
+    else:
+        trend_extra = f"""
+**当前市场判定为【震荡市】（ATR百分位{atr_percentile}%，低波或均线缠绕）**
+- 采用均衡权重，严格遵循盈亏比要求。
 """
 
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
@@ -366,8 +366,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ### 核心市场数据
 **价格与波动**
 - 当前价格：{price} USDT
-- 1小时ATR：{atr} USDT
-- 1小时EMA55：{ema55:.1f} USDT
+- 1小时ATR：{atr} USDT (历史百分位：{atr_percentile}%)
+- 1小时EMA55：{ema55:.1f} USDT (斜率：{ema_slope:.1f})
 - 波动因子：{volatility_factor:.2f}
 
 **清算压力**
@@ -409,13 +409,19 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 确认结果：【支持/反对/中性】
 
 **第四步：信号共振与矛盾裁决**
-- 列举支持与矛盾信号。在趋势空头市中，即使共振强度<55分，若CVD持续bearish且价格在EMA55下方，仍可输出轻仓追空。
+- 列举支持与矛盾信号。在`reasoning`中**必须提及最支持方向的信号和最矛盾的信号**。
 - 最终裁决方向。
 
 **第五步：止盈止损锚定与盈亏比计算**
 - TP1锚定来源与距离，止损锚定来源与距离。
 - 计算盈亏比。在趋势空头市中，盈亏比要求可降至0.4。
 - 若盈亏比<0.3，必须输出neutral。
+- **必须在reasoning中注明：止损基于（X倍ATR / 关键支撑位下方Y%）设置。**
+
+### 中性策略特殊要求
+若输出`neutral`，必须在`reasoning`中明确列出：
+- 转为多头的条件（如价格突破XX并站稳）
+- 转为空头的条件（如价格跌破XX）
 
 ### 策略输出要求
 请严格按JSON格式输出：
@@ -431,12 +437,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "tp2_anchor": "TP2锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
   "profit_ratio": 盈亏比数值（保留两位小数）,
-  "reasoning": "必须包含强制分析步骤的简要结论",
+  "reasoning": "必须包含强制分析步骤的简要结论，并说明止损依据",
   "risk_note": "风险提示"
 }}
 
 ### 止盈锚定原则
 - TP1 优先锚定最近清算密集区（强度≥3/5）或期权最大痛点，且盈利空间需≥0.8×ATR且≤3×ATR。
+- TP2 锚定下一个清算区或清算最大痛点，需与TP1保持分层距离。
 - 若有效锚点不足，可使用1.5×ATR估算。
 
 ### 止损与仓位
