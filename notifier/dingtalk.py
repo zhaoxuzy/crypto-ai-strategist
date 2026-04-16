@@ -46,12 +46,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     win_rate = strategy.get("win_rate", 50)
     is_probe = extra.get("is_probe", False)
     signal_strength = extra.get("signal_strength", {})
-    strength_level = signal_strength.get("level", "未知")
     strength_score = signal_strength.get("score", 0)
-    strength_max = signal_strength.get("max_score", 100)
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
-    profit_ratio = extra.get("profit_ratio", 0.0)
     market_regime = extra.get("market_regime", "range")
     ema55 = extra.get("ema55", 0.0)
     atr_percentile = extra.get("atr_percentile", 50.0)
@@ -59,7 +56,23 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 阈值警报
+    # 信号可信度计算
+    if strength_score >= 75:
+        credibility = "★★★★☆"
+        cred_desc = "正常仓位"
+    elif strength_score >= 55:
+        credibility = "★★★☆☆"
+        cred_desc = "中等仓位"
+    elif strength_score >= 35:
+        credibility = "★★☆☆☆"
+        cred_desc = "轻仓博弈"
+    elif strength_score >= 15:
+        credibility = "★☆☆☆☆"
+        cred_desc = "试探或观望"
+    else:
+        credibility = "☆☆☆☆☆"
+        cred_desc = "建议观望"
+
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
     try:
@@ -79,9 +92,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     except:
         pass
 
-    if profit_ratio < 1.0 and profit_ratio > 0:
-        alerts.append(f"⚠️低盈亏比({profit_ratio:.2f})")
-
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
@@ -93,13 +103,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     else:
         regine_text = f"震荡市(ATR百分位{atr_percentile:.0f}%)"
 
-    score_tier = ""
-    if strength_score >= 75: score_tier = "极强"
-    elif strength_score >= 55: score_tier = "强"
-    elif strength_score >= 35: score_tier = "中"
-    elif strength_score >= 15: score_tier = "弱"
-    else: score_tier = "极弱"
-
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
@@ -109,7 +112,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 信号强度：{strength_level}（{strength_score}/{strength_max}分，档位：{score_tier}）| {strength_details}
+- 信号强度：{strength_score:.1f}/100分 | 可信度：{credibility}（{cred_desc}）
 - {data_source_status}
 """
 
@@ -121,7 +124,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp2 = float(strategy.get("take_profit_2", 0))
     tp1_anchor = strategy.get("tp1_anchor", "未提供")
     tp2_anchor = strategy.get("tp2_anchor", "未提供")
-    position = float(strategy.get("position_size_ratio", 0.1))
 
     alerts_str = "\n".join(alerts) if alerts else ""
 
@@ -135,8 +137,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **止损**：${stop:,.1f}
 - **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
 - **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
-- **建议仓位**：{int(position*100)}%
-- **盈亏比**：{profit_ratio:.2f}（TP1/止损）{' ⚠️低盈亏比' if profit_ratio < 1.0 and profit_ratio > 0 else ''}
+- **信号可信度**：{credibility}（{cred_desc}）
 - **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
 ### 📈 AI 分析逻辑
 > {strategy.get('reasoning', '暂无分析')}
@@ -146,7 +147,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f} | EMA55：{ema55:.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- **信号强度**：{strength_level}（{strength_score}/{strength_max}分，档位：{score_tier}）| {strength_details}
+- **信号强度**：{strength_score:.1f}/100分 | {strength_details}
 - **{data_source_status}**
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
