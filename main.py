@@ -62,7 +62,6 @@ def main():
             strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
 
-        # 获取新宏观数据
         eth_btc_data = cg.get_eth_btc_ratio()
         balance_data = cg.get_exchange_balances()
 
@@ -79,7 +78,18 @@ def main():
             logger.info(f"{symbol} 策略胜率{original_win_rate}%低于{MIN_WIN_RATE}%，已转为neutral")
 
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
-        extra = {"atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"), "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cg_data.get("cvd_signal", "N/A"), "skew": cg_data.get("skew", "N/A"), "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength, "data_source_status": data_source_status}
+        extra = {
+            "atr": atr,
+            "funding_rate": cg_data.get("funding_rate", "N/A"),
+            "oi_change": cg_data.get("oi_change_24h", "N/A"),
+            "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
+            "cvd_signal": cg_data.get("cvd_signal", "N/A"),
+            "skew": cg_data.get("skew", "N/A"),
+            "fear_greed": macro["fear_greed"]["value"],
+            "signal_strength": signal_strength,
+            "data_source_status": data_source_status,
+            "profit_ratio": strategy.get("profit_ratio", 0.0)
+        }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
         if success: logger.info(f"{symbol} 策略推送成功")
