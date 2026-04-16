@@ -18,121 +18,119 @@ STRATEGY_PROFILES = {
 }
 
 MIN_WIN_RATE = 50
-
 probe_history = deque(maxlen=20)
 
-def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
-    """
-    计算趋势强度得分（0-100），即时判定，无确认期。
-    """
-    if not klines or len(klines) < 55:
-        return {"direction": "neutral", "score": 0, "confidence": "数据不足", "signals": []}
+# 极端清算阈值（美元）
+EXTREME_LIQ_THRESHOLDS = {"BTC": 200_000_000, "ETH": 80_000_000, "SOL": 20_000_000}
 
+def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
+    if not klines or len(klines) < 55:
+        return {"direction": "neutral", "score": 0, "confidence": "低", "signals": [], "transition": False}
     ema55 = calculate_ema(klines, 55)
     ema_slope = calculate_ema_slope(klines, 55, 5)
     atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
-
-    score = 0
-    signals = []
-    direction = "neutral"
-
-    # 1. 价格与均线关系 (0-35分)
+    score, signals, direction = 0, [], "neutral"
     if current_price < ema55:
-        score += 35
-        signals.append("价格<EMA55")
-        direction = "bear"
+        score += 35; signals.append("价格<EMA55"); direction = "bear"
     else:
-        signals.append("价格>EMA55")
-        direction = "bull"
-
-    # 2. 均线斜率 (0-25分)
+        signals.append("价格>EMA55"); direction = "bull"
     if ema_slope < -2.0:
-        score += 25
-        signals.append("EMA斜率向下")
+        score += 25; signals.append("EMA斜率向下")
     elif ema_slope > 2.0:
-        score += 25
-        signals.append("EMA斜率向上")
+        score += 25; signals.append("EMA斜率向上")
     else:
-        score += 10
-        signals.append("EMA斜率走平")
-
-    # 3. CVD信号 (0-25分)
+        score += 10; signals.append("EMA斜率走平")
     if cvd_signal in ["bearish", "slightly_bearish"]:
         score += 25 if cvd_signal == "bearish" else 15
         signals.append(f"CVD:{cvd_signal}")
-        if direction == "neutral":
-            direction = "bear"
+        if direction == "neutral": direction = "bear"
     elif cvd_signal in ["bullish", "slightly_bullish"]:
         score += 25 if cvd_signal == "bullish" else 15
         signals.append(f"CVD:{cvd_signal}")
-        if direction == "neutral":
-            direction = "bull"
+        if direction == "neutral": direction = "bull"
     else:
-        score += 5
-        signals.append("CVD:neutral")
-
-    # 4. 主动买卖盘 (0-15分)
+        score += 5; signals.append("CVD:neutral")
     if taker_ratio < 0.45:
-        score += 15
-        signals.append(f"主动卖盘({taker_ratio:.2f})")
-        if direction == "neutral":
-            direction = "bear"
+        score += 15; signals.append(f"主动卖盘({taker_ratio:.2f})")
+        if direction == "neutral": direction = "bear"
     elif taker_ratio > 0.55:
-        score += 15
-        signals.append(f"主动买盘({taker_ratio:.2f})")
-        if direction == "neutral":
-            direction = "bull"
+        score += 15; signals.append(f"主动买盘({taker_ratio:.2f})")
+        if direction == "neutral": direction = "bull"
     else:
-        score += 5
-        signals.append("主动买卖均衡")
-
-    # 低波动惩罚
+        score += 5; signals.append("主动买卖均衡")
     if atr_percentile < 30:
-        score = int(score * 0.7)
-        signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
-
+        score = int(score * 0.7); signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
     score = max(0, min(100, score))
+    confidence = "高" if score >= 60 else ("中" if score >= 35 else "低")
+    transition = 30 <= score <= 70
+    return {"direction": direction, "score": score, "confidence": confidence, "signals": signals, "ema55": ema55, "ema_slope": ema_slope, "atr_percentile": atr_percentile, "transition": transition}
 
-    if score >= 60:
-        confidence = "高"
-    elif score >= 35:
-        confidence = "中"
-    else:
-        confidence = "低"
+def get_key_levels(coinglass_data: dict, ema55: float) -> dict:
+    cluster = coinglass_data.get("nearest_cluster", {})
+    cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
+    cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
+    max_pain = float(coinglass_data.get("max_pain_price", 0)) if coinglass_data.get("max_pain_price", "N/A") != "N/A" else 0
+    option_pain = float(coinglass_data.get("skew", 0)) if coinglass_data.get("skew", "N/A") != "N/A" else 0
+    support = ema55
+    resistance = ema55
+    if cluster_intensity >= 3 and cluster_price > 0:
+        direction = cluster.get("direction", "")
+        if direction == "上": resistance = cluster_price
+        elif direction == "下": support = cluster_price
+    if max_pain > 0:
+        if max_pain < ema55 and max_pain > support: support = max_pain
+        elif max_pain > ema55 and max_pain < resistance: resistance = max_pain
+    if option_pain > 0:
+        if option_pain < ema55 and option_pain > support: support = option_pain
+        elif option_pain > ema55 and option_pain < resistance: resistance = option_pain
+    return {"support": support, "resistance": resistance}
 
-    return {
-        "direction": direction,
-        "score": score,
-        "confidence": confidence,
-        "signals": signals,
-        "ema55": ema55,
-        "ema_slope": ema_slope,
-        "atr_percentile": atr_percentile
-    }
-
-def check_momentum_signal(klines: list, cvd_signal: str, taker_ratio: float, current_price: float) -> dict:
-    """检测是否满足动量追势快速通道条件"""
-    if not klines or len(klines) < 5:
-        return {"active": False}
-    
+def check_momentum_override(klines: list, cvd_signal: str, taker_ratio: float, current_price: float) -> dict:
+    if not klines or len(klines) < 5: return {"active": False}
     ema55 = calculate_ema(klines, 55)
-    if ema55 == 0:
-        return {"active": False}
-    
-    price_below_ema = current_price < ema55
+    if ema55 == 0: return {"active": False}
+    price_below = current_price < ema55
     cvd_bearish = cvd_signal in ["bearish", "slightly_bearish"]
     taker_bearish = taker_ratio < 0.45
-    
-    price_above_ema = current_price > ema55
+    price_above = current_price > ema55
     cvd_bullish = cvd_signal in ["bullish", "slightly_bullish"]
     taker_bullish = taker_ratio > 0.55
-    
-    if price_below_ema and cvd_bearish and taker_bearish:
+    if price_below and cvd_bearish and taker_bearish:
         return {"active": True, "direction": "short", "cvd": cvd_signal, "taker": taker_ratio}
-    elif price_above_ema and cvd_bullish and taker_bullish:
+    elif price_above and cvd_bullish and taker_bullish:
         return {"active": True, "direction": "long", "cvd": cvd_signal, "taker": taker_ratio}
-    
     return {"active": False}
+
+def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict) -> dict:
+    # 简化版方向倾向得分（供AI裁决参考）
+    bull_score, bear_score = 0, 0
+    # 清算方向
+    above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
+    below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
+    if above + below > 0:
+        if above > below * 1.3: bear_score += 30
+        elif below > above * 1.3: bull_score += 30
+    # CVD
+    cvd = coinglass_data.get("cvd_signal", "N/A")
+    if cvd in ["bearish", "slightly_bearish"]: bear_score += 25
+    elif cvd in ["bullish", "slightly_bullish"]: bull_score += 25
+    # 主动买卖盘
+    try:
+        tr = float(coinglass_data.get("taker_ratio", 0.5))
+        if tr < 0.45: bear_score += 15
+        elif tr > 0.55: bull_score += 15
+    except: pass
+    # 顶级交易员
+    try:
+        tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
+        if tls > 2.0: bear_score += 20
+        elif tls < 0.7: bull_score += 20
+    except: pass
+    # 恐惧贪婪
+    fg = int(macro_data.get("fear_greed", {}).get("value", 50))
+    if fg < 30: bull_score += 10
+    elif fg > 70: bear_score += 10
+    return {"bull": bull_score, "bear": bear_score}
 
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
@@ -149,8 +147,7 @@ def send_error_notification(symbol: str, error_msg: str):
 def main():
     global probe_history
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
-    if symbol not in SYMBOL_MAP:
-        symbol = "BTC"
+    if symbol not in SYMBOL_MAP: symbol = "BTC"
     profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"]).copy()
     okx_inst_id = SYMBOL_MAP[symbol]
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
@@ -179,78 +176,61 @@ def main():
             profile['tp1_ratio'] = profile.get('tp1_ratio', 1.5) * 0.8
 
         cvd_signal = cg_data.get("cvd_signal", "neutral")
-        taker_ratio_str = cg_data.get("taker_ratio", "0.5")
-        try:
-            taker_ratio = float(taker_ratio_str)
-        except:
-            taker_ratio = 0.5
+        taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
 
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr)
-        momentum_signal = check_momentum_signal(klines, cvd_signal, taker_ratio, price)
-        logger.info(f"趋势强度: 方向={trend_info['direction']}, 得分={trend_info['score']}/100, 动量信号={'触发' if momentum_signal['active'] else '未触发'}")
+        momentum_override = check_momentum_override(klines, cvd_signal, taker_ratio, price)
+        key_levels = get_key_levels(cg_data, ema55)
+        directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info)
 
+        # 紧贴关键位判定
+        near_key_level = False
+        if trend_info["direction"] == "bull" and key_levels["resistance"] > 0:
+            if abs(price - key_levels["resistance"]) < 0.3 * atr: near_key_level = True
+        elif trend_info["direction"] == "bear" and key_levels["support"] > 0:
+            if abs(price - key_levels["support"]) < 0.3 * atr: near_key_level = True
+
+        # 极端清算判定
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
-        extreme_liq = False
-        if symbol.upper() == "BTC":
-            extreme_liq = (above_val > 200_000_000) or (below_val > 200_000_000)
-        elif symbol.upper() == "ETH":
-            extreme_liq = (above_val > 80_000_000) or (below_val > 80_000_000)
+        extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            momentum_signal=momentum_signal
+            momentum_override=momentum_override, key_levels=key_levels, near_key_level=near_key_level,
+            directional_scores=directional_scores
         )
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
-        probe_ratio = sum(probe_history) / len(probe_history) if probe_history else 0
-        if is_probe and probe_ratio > 0.3:
+        if is_probe and sum(probe_history)/len(probe_history) > 0.3:
             strategy["risk_note"] = strategy.get("risk_note", "") + " 系统告警：试探信号比例过高，请谨慎参考。"
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
             strategy["confidence"] = "low"
-            strategy["reasoning"] = "清算数据连续缺失，无法构建有效策略，自动转为观望。"
+            strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
 
-        eth_btc_data = cg.get_eth_btc_ratio()
-        balance_data = cg.get_exchange_balances()
-
-        signal_strength = calculate_signal_strength(
-            symbol, strategy["direction"], cg_data, macro, liq_zero_count,
-            eth_btc_data, balance_data, trend_info, extreme_liq
-        )
+        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq)
         strategy["win_rate"] = signal_strength["win_rate"]
 
         if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
-            original_direction = strategy["direction"]
-            original_win_rate = strategy["win_rate"]
             strategy["direction"] = "neutral"
             strategy["confidence"] = "low"
-            strategy["reasoning"] = f"策略胜率({original_win_rate}%)低于最低阈值({MIN_WIN_RATE}%)，自动转为观望。原方向：{original_direction}"
-            strategy["win_rate"] = 0
-            logger.info(f"{symbol} 策略胜率{original_win_rate}%低于{MIN_WIN_RATE}%，已转为neutral")
+            strategy["reasoning"] = f"胜率{strategy['win_rate']}%低于阈值{MIN_WIN_RATE}%，转为观望。"
 
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {
-            "atr": atr,
-            "funding_rate": cg_data.get("funding_rate", "N/A"),
-            "oi_change": cg_data.get("oi_change_24h", "N/A"),
-            "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
-            "cvd_signal": cg_data.get("cvd_signal", "N/A"),
-            "skew": cg_data.get("skew", "N/A"),
-            "fear_greed": macro["fear_greed"]["value"],
-            "signal_strength": signal_strength,
-            "data_source_status": data_source_status,
-            "trend_info": trend_info,
-            "volatility_factor": volatility_factor,
-            "extreme_liq": extreme_liq,
-            "is_probe": is_probe,
-            "momentum_active": momentum_signal.get("active", False)
+            "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"),
+            "ls_ratio": cg_data.get("long_short_ratio", "N/A"), "cvd_signal": cvd_signal, "skew": cg_data.get("skew", "N/A"),
+            "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength, "data_source_status": data_source_status,
+            "trend_info": trend_info, "volatility_factor": volatility_factor, "extreme_liq": extreme_liq, "is_probe": is_probe,
+            "momentum_active": momentum_override.get("active", False), "near_key_level": near_key_level,
+            "key_support": key_levels["support"], "key_resistance": key_levels["resistance"]
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
