@@ -49,14 +49,27 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     strength_score = signal_strength.get("score", 0)
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
-    market_regime = extra.get("market_regime", "range")
-    ema55 = extra.get("ema55", 0.0)
-    atr_percentile = extra.get("atr_percentile", 50.0)
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 信号可信度计算
+    trend_info = extra.get("trend_info", {})
+    trend_direction = trend_info.get("direction", "neutral")
+    trend_score = trend_info.get("score", 0)
+    trend_confidence = trend_info.get("confidence", "低")
+    trend_signals = ", ".join(trend_info.get("signals", []))
+
+    if trend_direction == "bull":
+        trend_text = f"多头倾向({trend_score}/100，可信度{trend_confidence})"
+    elif trend_direction == "bear":
+        trend_text = f"空头倾向({trend_score}/100，可信度{trend_confidence})"
+    else:
+        trend_text = f"无明显倾向({trend_score}/100，震荡特征)"
+
+    if 30 <= trend_score <= 70:
+        trend_text += " ⚠️过渡期"
+
+    # 信号可信度
     if strength_score >= 75:
         credibility = "★★★★☆"
         cred_desc = "正常仓位"
@@ -95,18 +108,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
-    regine_text = "震荡市"
-    if market_regime == "trend_bear":
-        regine_text = f"趋势空头市(价<EMA55，ATR百分位{atr_percentile:.0f}%)"
-    elif market_regime == "trend_bull":
-        regine_text = f"趋势多头市(价>EMA55，ATR百分位{atr_percentile:.0f}%)"
-    else:
-        regine_text = f"震荡市(ATR百分位{atr_percentile:.0f}%)"
-
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
-**市场状态：{regine_text}** | 波动因子：{volatility_factor:.2f}
+**趋势强度**：{trend_text} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 AI 研判
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
@@ -128,7 +133,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     alerts_str = "\n".join(alerts) if alerts else ""
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}%{probe_tag} 🕒 {now_str}
-**市场状态：{regine_text}** | 波动因子：{volatility_factor:.2f}
+**趋势强度**：{trend_text} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 策略概要
 - **方向**：{dir_text}
@@ -144,7 +149,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险提示
 - {strategy.get('risk_note', '请严格设置止损')}
 ### 🔗 数据快照
-- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f} | EMA55：{ema55:.1f}
+- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
 - **信号强度**：{strength_score:.1f}/100分 | {strength_details}
