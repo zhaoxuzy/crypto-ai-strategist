@@ -4,122 +4,85 @@ from openai import OpenAI
 from utils.logger import logger
 
 # ---------- 连续型评分辅助函数 ----------
-def linear_score(value: float, low: float, high: float, full_score: float, reverse: bool = False) -> float:
+def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
+    """线性插值评分，rev=True 表示值越小得分越高"""
     if low == high:
         return 0.0
-    if reverse:
-        if value <= low:
-            return full_score
-        if value >= high:
+    if rev:
+        if v <= low:
+            return full
+        if v >= high:
             return 0.0
-        return full_score * (high - value) / (high - low)
+        return full * (high - v) / (high - low)
     else:
-        if value <= low:
+        if v <= low:
             return 0.0
-        if value >= high:
-            return full_score
-        return full_score * (value - low) / (high - low)
+        if v >= high:
+            return full
+        return full * (v - low) / (high - low)
 
 
-def get_position_structure_score(direction: str, coinglass_data: dict, macro_data: dict, symbol: str) -> tuple:
-    score = 0.0
-    details = []
-    thresholds = {
-        "BTC": {"long": 0.7, "short": 2.0},
-        "ETH": {"long": 0.7, "short": 2.0},
-        "SOL": {"long": 0.5, "short": 1.5}
-    }
-    th = thresholds.get(symbol.upper(), {"long": 0.7, "short": 2.0})
-    
-    top_ls = coinglass_data.get("top_long_short_ratio", "N/A")
+def get_position_structure_score(direction: str, cg: dict, macro: dict, sym: str) -> tuple:
+    """计算持仓结构得分（顶级交易员多空比 + 人数比）"""
+    s, det = 0.0, []
+    th = {"BTC": (0.7, 2.0), "ETH": (0.7, 2.0), "SOL": (0.5, 1.5)}.get(sym.upper(), (0.7, 2.0))
+
+    # 顶级交易员多空比
     try:
-        tls = float(top_ls)
+        tls = float(cg.get("top_long_short_ratio", 1))
         if direction == "long":
-            if tls <= th["long"]:
-                s = 20.0
-            elif tls <= th["short"]:
-                s = linear_score(tls, th["long"], th["short"], 20, reverse=True)
-            else:
-                s = 0.0
+            if tls <= th[0]:
+                s += 20.0
+            elif tls <= th[1]:
+                s += linear_score(tls, th[0], th[1], 20, True)
         else:
-            if tls >= th["short"]:
-                s = 20.0
-            elif tls >= th["long"]:
-                s = linear_score(tls, th["long"], th["short"], 20, reverse=False)
-            else:
-                s = 0.0
-        score += s
+            if tls >= th[1]:
+                s += 20.0
+            elif tls >= th[0]:
+                s += linear_score(tls, th[0], th[1], 20, False)
         if s > 1:
-            details.append(f"顶级持仓结构({tls:.2f})")
-        elif tls != "N/A" and ((direction == "long" and tls > th["short"]) or (direction == "short" and tls < th["long"])):
-            score -= 20 * 0.4
-            details.append(f"顶级持仓反向({tls:.2f})")
-    except:
+            det.append(f"顶级持仓({tls:.2f})")
+    except Exception:
         pass
-    
-    ls_account = coinglass_data.get("ls_account_ratio", 1.0)
+
+    # 人数比
     try:
-        lsa = float(ls_account)
+        lsa = float(cg.get("ls_account_ratio", 1))
         if direction == "long":
             if lsa <= 0.7:
-                s = 12.0
+                s += 12.0
             elif lsa <= 2.0:
-                s = linear_score(lsa, 0.7, 2.0, 12, reverse=True)
-            else:
-                s = 0.0
+                s += linear_score(lsa, 0.7, 2.0, 12, True)
         else:
             if lsa >= 2.0:
-                s = 12.0
+                s += 12.0
             elif lsa >= 0.7:
-                s = linear_score(lsa, 0.7, 2.0, 12, reverse=False)
-            else:
-                s = 0.0
-        score += s
+                s += linear_score(lsa, 0.7, 2.0, 12, False)
         if s > 1:
-            details.append(f"人数比({lsa:.2f})")
-        elif lsa != 1.0 and ((direction == "long" and lsa > 2.0) or (direction == "short" and lsa < 0.7)):
-            score -= 12 * 0.3
-            details.append(f"人数比反向({lsa:.2f})")
-    except:
+            det.append(f"人数比({lsa:.2f})")
+    except Exception:
         pass
-    return score, details
+    return s, det
 
 
-LIQ_MIN_THRESHOLDS = {
-    "BTC": 50_000_000,
-    "ETH": 20_000_000,
-    "SOL": 5_000_000
-}
+LIQ_MIN = {"BTC": 50_000_000, "ETH": 20_000_000, "SOL": 5_000_000}
 
 
-def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None, trend_info: dict = None, extreme_liq: bool = False) -> dict:
-    total_score = 0.0
-    signals_detail = []
-    min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
-
+def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict,
+                              liq_zero: int = 0, eth_btc: dict = None, bal: dict = None,
+                              trend_info: dict = None, extreme_liq: bool = False) -> dict:
+    """
+    计算综合信号强度得分（0-100）
+    返回字典包含：level, score, max_score, details, win_rate
+    """
+    score, det = 0.0, []
     trend_score = trend_info.get("score", 0) if trend_info else 0
-    trend_direction = trend_info.get("direction", "neutral") if trend_info else "neutral"
 
-    w_liq_r = 25
-    w_pos_r = 29
-    w_cvd_r = 11
-    w_fg_r = 7
-    w_fr_r = 4
-    w_taker_r = 7
-    w_net_r = 5
-    w_ob_r = 11
-    w_macro_r = 8
+    # 震荡市基准权重 vs 趋势市基准权重
+    w_liq_r, w_pos_r, w_cvd_r, w_fg_r, w_fr_r, w_taker_r, w_net_r, w_ob_r, w_macro_r = 25, 29, 11, 7, 4, 7, 5, 11, 8
+    w_liq_t, w_pos_t, w_cvd_t, w_fg_t, w_fr_t, w_taker_t, w_net_t, w_ob_t, w_macro_t = 15, 15, 25, 5, 3, 15, 3, 7, 5
 
-    w_liq_t = 15
-    w_pos_t = 15
-    w_cvd_t = 25
-    w_fg_t = 5
-    w_fr_t = 3
-    w_taker_t = 15
-    w_net_t = 3
-    w_ob_t = 7
-    w_macro_t = 5
-
+    # 根据趋势得分线性插值权重（平滑过渡）
     t = trend_score / 100.0
     weight_liq = int(w_liq_r * (1 - t) + w_liq_t * t)
     weight_pos = int(w_pos_r * (1 - t) + w_pos_t * t)
@@ -133,251 +96,236 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
 
     if extreme_liq:
         if direction == "long":
-            total_score -= 50
-            signals_detail.append("⚠️极端清算风险，禁止做多")
+            score -= 50
+            det.append("⚠️极端清算禁止做多")
         elif direction == "short":
-            total_score += 10
-            signals_detail.append("极端清算支持做空")
+            score += 10
+            det.append("极端清算支持做空")
 
-    above = coinglass_data.get("above_short_liquidation", "0")
-    below = coinglass_data.get("below_long_liquidation", "0")
-    try:
-        above_val = float(above.replace(",", "")) if isinstance(above, str) else float(above)
-        below_val = float(below.replace(",", "")) if isinstance(below, str) else float(below)
-        total_liq = above_val + below_val
-        scale_factor = min(1.0, total_liq / min_liq_threshold) if total_liq > 0 else 0.0
-        if total_liq > 0:
-            short_ratio = above_val / total_liq
-            if direction == "short":
-                raw_s = linear_score(short_ratio, 0.5, 0.8, weight_liq, reverse=False)
-            else:
-                raw_s = linear_score(short_ratio, 0.2, 0.5, weight_liq, reverse=True)
-            s = raw_s * scale_factor
-            total_score += s
-            if s > 5:
-                if scale_factor < 0.5:
-                    signals_detail.append(f"清算结构({short_ratio:.1%}, 规模小)")
-                else:
-                    signals_detail.append(f"清算结构({short_ratio:.1%})")
-            if direction == "long" and below_val == 0 and trend_score < 50:
-                total_score -= 15
-                signals_detail.append("下方无多头清算(风险极大)")
-            if (direction == "long" and short_ratio > 0.6) or (direction == "short" and short_ratio < 0.4):
-                if not (trend_direction == "bear" and direction == "short"):
-                    total_score -= weight_liq * 0.4
-                    signals_detail.append("清算结构反向")
-    except:
-        pass
+    # 1. 清算结构
+    above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
+    below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
+    total = above + below
+    if total > 0:
+        ratio = above / total
+        if direction == "long":
+            raw = linear_score(ratio, 0.2, 0.5, weight_liq, True)
+        else:
+            raw = linear_score(ratio, 0.5, 0.8, weight_liq, False)
+        scale = min(1.0, total / LIQ_MIN.get(symbol.upper(), 50_000_000))
+        s = raw * scale
+        score += s
+        if s > 5:
+            det.append(f"清算结构({ratio:.1%})")
 
-    pos_score, pos_details = get_position_structure_score(direction, coinglass_data, macro_data, symbol)
-    total_score += pos_score * (weight_pos / 32)
-    signals_detail.extend(pos_details)
+    # 2. 持仓结构
+    pos_s, pos_d = get_position_structure_score(direction, cg, macro, symbol)
+    score += pos_s * (weight_pos / 32.0)
+    det.extend(pos_d)
 
-    cvd = coinglass_data.get("cvd_signal", "N/A")
+    # 3. CVD
+    cvd = cg.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         if direction == "long":
             s = weight_cvd if cvd == "bullish" else weight_cvd * 0.7
-            total_score += s
-            signals_detail.append(f"CVD:{cvd}")
+            score += s
+            det.append(f"CVD:{cvd}")
         else:
-            total_score -= weight_cvd * 0.5
-            signals_detail.append("CVD反向")
+            score -= weight_cvd * 0.5
+            det.append("CVD反向")
     elif cvd in ["bearish", "slightly_bearish"]:
         if direction == "short":
             s = weight_cvd if cvd == "bearish" else weight_cvd * 0.7
-            total_score += s
-            signals_detail.append(f"CVD:{cvd}")
+            score += s
+            det.append(f"CVD:{cvd}")
         else:
-            total_score -= weight_cvd * 0.5
-            signals_detail.append("CVD反向")
+            score -= weight_cvd * 0.5
+            det.append("CVD反向")
 
-    fg = macro_data.get("fear_greed", {})
-    fg_val = int(fg.get("value", 50))
+    # 4. 恐惧贪婪
+    fg_val = int(macro.get("fear_greed", {}).get("value", 50))
     if direction == "long":
-        s = linear_score(fg_val, 20, 50, weight_fg, reverse=True)
+        s = linear_score(fg_val, 20, 50, weight_fg, True)
     else:
-        s = linear_score(fg_val, 50, 80, weight_fg, reverse=False)
-    total_score += s
+        s = linear_score(fg_val, 50, 80, weight_fg, False)
+    score += s
     if s > 2:
-        signals_detail.append(f"恐惧贪婪({fg_val})")
-    if (direction == "long" and fg_val > 70) or (direction == "short" and fg_val < 30):
-        total_score -= weight_fg * 0.4
-        signals_detail.append("情绪反向")
+        det.append(f"恐惧贪婪({fg_val})")
 
-    funding_rate = coinglass_data.get("funding_rate", "N/A")
+    # 5. 资金费率
     try:
-        fr = float(funding_rate)
+        fr = float(cg.get("funding_rate", 0))
         if direction == "short":
-            s = linear_score(fr, 0.02, 0.08, weight_fr, reverse=False)
+            s = linear_score(fr, 0.02, 0.08, weight_fr, False)
         else:
-            s = linear_score(fr, -0.08, -0.01, weight_fr, reverse=True)
-        total_score += s
+            s = linear_score(fr, -0.08, -0.01, weight_fr, True)
+        score += s
         if abs(s) > 1:
-            signals_detail.append(f"资金费率({fr:.4f})")
-        if (direction == "long" and fr > 0.03) or (direction == "short" and fr < -0.03):
-            total_score -= weight_fr * 0.5
-            signals_detail.append("费率反向")
-    except:
+            det.append(f"费率({fr:.4f})")
+    except Exception:
         pass
 
-    taker_ratio = coinglass_data.get("taker_ratio", "N/A")
+    # 6. 主动吃单比率
     try:
-        tr = float(taker_ratio)
+        tr = float(cg.get("taker_ratio", 0.5))
         if direction == "long":
-            s = linear_score(tr, 0.5, 0.65, weight_taker, reverse=False)
+            s = linear_score(tr, 0.5, 0.65, weight_taker, False)
         else:
-            s = linear_score(tr, 0.35, 0.5, weight_taker, reverse=True)
-        total_score += s
+            s = linear_score(tr, 0.35, 0.5, weight_taker, True)
+        score += s
         if s > 2:
-            signals_detail.append(f"主动买盘({tr:.2f})")
-        if (direction == "long" and tr < 0.45) or (direction == "short" and tr > 0.55):
-            total_score -= weight_taker * 0.5
-            signals_detail.append("主动方向反向")
-    except:
+            det.append(f"主动买卖({tr:.2f})")
+    except Exception:
         pass
 
-    net_pos = coinglass_data.get("net_position_cum", "N/A")
-    total_oi_usd = coinglass_data.get("option_oi_usd", 0)
+    # 7. 净持仓累积（OI百分比）
     try:
-        total_oi = float(total_oi_usd) if total_oi_usd != "N/A" else 0
-    except:
-        total_oi = 0
-    try:
-        np = float(net_pos)
-        net_pct = (np / total_oi * 100) if total_oi > 0 else 0.0
+        np = float(cg.get("net_position_cum", 0))
+        oi_usd = cg.get("option_oi_usd", "N/A")
+        oi = float(oi_usd) if oi_usd != "N/A" else 1.0
+        pct = (np / oi * 100) if oi > 0 else 0.0
         if direction == "long":
-            s = linear_score(net_pct, 1.0, 3.0, weight_net, reverse=False)
+            s = linear_score(pct, 1.0, 3.0, weight_net, False)
         else:
-            s = linear_score(net_pct, -3.0, -1.0, weight_net, reverse=True)
-        total_score += s
+            s = linear_score(pct, -3.0, -1.0, weight_net, True)
+        score += s
         if abs(s) > 1:
-            signals_detail.append(f"净持仓({net_pct:.1f}%)")
-        if (direction == "long" and net_pct < -1.0) or (direction == "short" and net_pct > 1.0):
-            total_score -= weight_net * 0.5
-            signals_detail.append("净持仓反向")
-    except:
+            det.append(f"净持仓({pct:.1f}%)")
+    except Exception:
         pass
 
-    imbalance = coinglass_data.get("orderbook_imbalance", 0.0)
+    # 8. 订单簿失衡率
+    imb = cg.get("orderbook_imbalance", 0.0)
     if direction == "long":
-        s = linear_score(imbalance, 0.1, 0.3, weight_ob, reverse=False)
+        s = linear_score(imb, 0.1, 0.3, weight_ob, False)
     else:
-        s = linear_score(imbalance, -0.3, -0.1, weight_ob, reverse=True)
-    total_score += s
+        s = linear_score(imb, -0.3, -0.1, weight_ob, True)
+    score += s
     if abs(s) > 3:
-        signals_detail.append(f"订单簿({imbalance:.2f})")
-    if (direction == "long" and imbalance < -0.15) or (direction == "short" and imbalance > 0.15):
-        total_score -= weight_ob * 0.4
-        signals_detail.append("订单簿反向")
+        det.append(f"订单簿({imb:.2f})")
 
-    if eth_btc_data:
-        trend = eth_btc_data.get("trend", "neutral")
+    # 9. 宏观过滤器
+    if eth_btc:
+        trend = eth_btc.get("trend", "neutral")
         if direction == "long" and trend == "up":
-            total_score += weight_macro
-            signals_detail.append(f"ETH/BTC上升(+{weight_macro})")
+            score += weight_macro
+            det.append(f"ETH/BTC上升(+{weight_macro})")
         elif direction == "short" and trend == "down":
-            total_score += weight_macro
-            signals_detail.append(f"ETH/BTC下降(+{weight_macro})")
-        elif (direction == "long" and trend == "down") or (direction == "short" and trend == "up"):
-            total_score -= weight_macro * 0.5
-            signals_detail.append(f"ETH/BTC逆向(-{weight_macro*0.5:.0f})")
-
-    if balance_data:
-        btc_flow = balance_data.get("btc_flow", "neutral")
-        stable_flow = balance_data.get("stable_flow", "neutral")
+            score += weight_macro
+            det.append(f"ETH/BTC下降(+{weight_macro})")
+    if bal:
+        btc_flow = bal.get("btc_flow", "neutral")
+        stable_flow = bal.get("stable_flow", "neutral")
         if direction == "long" and stable_flow == "in" and btc_flow == "out":
-            total_score += weight_macro
-            signals_detail.append(f"余额:稳定币流入&BTC流出(+{weight_macro})")
+            score += weight_macro
+            det.append(f"余额:稳定币流入&BTC流出(+{weight_macro})")
         elif direction == "short" and stable_flow == "out" and btc_flow == "in":
-            total_score += weight_macro
-            signals_detail.append(f"余额:稳定币流出&BTC流入(+{weight_macro})")
-        elif (direction == "long" and stable_flow == "out" and btc_flow == "in") or \
-             (direction == "short" and stable_flow == "in" and btc_flow == "out"):
-            total_score -= weight_macro * 0.4
-            signals_detail.append(f"余额逆向(-{weight_macro*0.4:.0f})")
+            score += weight_macro
+            det.append(f"余额:稳定币流出&BTC流入(+{weight_macro})")
 
-    core_missing = sum(1 for v in [coinglass_data.get("above_short_liquidation"),
-                                   coinglass_data.get("cvd_signal")] if v == "N/A")
-    important_missing = sum(1 for v in [coinglass_data.get("top_long_short_ratio"),
-                                        coinglass_data.get("funding_rate")] if v == "N/A")
-    auxiliary_missing = sum(1 for v in [coinglass_data.get("skew"),
-                                        coinglass_data.get("option_oi_usd")] if v == "N/A")
-    total_score -= min(15, core_missing * 5 + important_missing * 3 + auxiliary_missing * 1)
-
-    # 宏观情绪对做多的额外门槛（不禁止，但提高难度）
+    # 10. 宏观情绪调整
     if fg_val < 30 and direction == "long":
-        total_score -= 10
-        signals_detail.append("⚠️极度恐惧做多，需更高共振")
+        score -= 10
+        det.append("⚠️极度恐惧做多门槛提高")
 
-    total_score = max(-20, min(100, total_score))
+    # 数据缺失扣分
+    core_missing = sum(1 for v in [cg.get("above_short_liquidation"), cg.get("cvd_signal")] if v == "N/A")
+    important_missing = sum(1 for v in [cg.get("top_long_short_ratio"), cg.get("funding_rate")] if v == "N/A")
+    score -= min(15, core_missing * 5 + important_missing * 3)
 
-    if total_score >= 75:
+    score = max(-20.0, min(100.0, score))
+
+    # 等级与胜率映射
+    if score >= 75:
         level = "极强"
-    elif total_score >= 55:
+    elif score >= 55:
         level = "强"
-    elif total_score >= 35:
+    elif score >= 35:
         level = "中"
-    elif total_score >= 15:
+    elif score >= 15:
         level = "弱"
     else:
         level = "极弱"
 
-    if total_score <= 30:
-        win_rate = int(35 + total_score * 0.3)
-    elif total_score <= 60:
-        win_rate = int(45 + (total_score - 30) * 0.6)
+    if score <= 30:
+        win_rate = int(35 + score * 0.3)
+    elif score <= 60:
+        win_rate = int(45 + (score - 30) * 0.6)
     else:
-        win_rate = int(63 + (total_score - 60) * 0.3)
+        win_rate = int(63 + (score - 60) * 0.3)
     win_rate = max(35, min(85, win_rate))
 
-    if liq_zero_count >= 2:
+    if liq_zero >= 2:
         level = "极弱"
-        total_score = max(0, total_score - 30)
+        score = max(0, score - 30)
         win_rate = max(35, win_rate - 20)
 
     return {
         "level": level,
-        "score": round(total_score, 1),
+        "score": round(score, 1),
         "max_score": 100,
-        "details": signals_detail,
+        "details": det,
         "win_rate": win_rate
     }
 
 
-def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_data: dict, profile: dict, trend_info: dict = None, liq_zero_count: int = 0, eth_btc_data: dict = None, balance_data: dict = None, extreme_liq: bool = False) -> int:
-    strength = calculate_signal_strength(symbol, direction, coinglass_data, macro_data, liq_zero_count, eth_btc_data, balance_data, trend_info, extreme_liq)
-    return strength["win_rate"]
-
-
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, trend_info: dict = None, extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "") -> str:
+def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
+                 profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
+                 extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
+                 momentum_override: dict = None, key_levels: dict = None,
+                 near_key_level: bool = False, directional_scores: dict = None) -> str:
+    """
+    构建 DeepSeek API 的提示词 —— 完整保留强制五步分析流程
+    """
     fg = macro_data.get("fear_greed", {})
-    stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
+    stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 关键位距离 × 1.2)"
     cluster = coinglass_data.get("nearest_cluster", {})
-    cluster_direction = cluster.get("direction", "N/A")
-    cluster_price_raw = cluster.get("price", "N/A")
-    cluster_intensity = cluster.get("intensity", "N/A")
-    option_pain = coinglass_data.get("skew", "N/A")
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
+    option_pain = coinglass_data.get("skew", "N/A")
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
+    extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n"
+                        if extreme_liq else "")
 
-    extreme_liq_text = ""
-    if extreme_liq:
-        extreme_liq_text = "\n⚠️ **极端清算警报**：当前单侧清算额异常巨大，存在极端失衡风险。\n"
+    # ---------- 动量覆盖指令 ----------
+    override_text = ""
+    if momentum_override and momentum_override.get("active"):
+        d = momentum_override.get("direction", "neutral")
+        override_text = f"""
+🚨🚨🚨 **最高优先级规则：动量追势信号已触发 - 强制覆盖模式** 🚨🚨🚨
+- 你必须输出与信号一致的方向：**{d.upper()}**。
+- 来源：价格{"<" if d == 'short' else ">"}EMA55 + CVD {momentum_override.get('cvd')} + 主动买卖盘确认。
+- **唯一例外**：仅当 extreme_liq=true 时可输出 neutral。否则必须输出 {d}。
+- **覆盖模式下，无视后续所有分析步骤中的矛盾信号。**
+- 仓位建议：轻仓(正常仓位30%-50%)，止损0.8×ATR，止盈1.5×ATR。
+"""
 
+    # ---------- 关键位与紧贴 ----------
+    support = key_levels.get("support", 0) if key_levels else 0
+    resistance = key_levels.get("resistance", 0) if key_levels else 0
+    near_text = ("⚠️ 价格紧贴关键位（距离<0.3×ATR），若输出方向，confidence 必须为 low，并注明轻仓。"
+                 if near_key_level else "")
+
+    # ---------- 方向倾向得分 ----------
+    bull_score = directional_scores.get("bull", 0) if directional_scores else 0
+    bear_score = directional_scores.get("bear", 0) if directional_scores else 0
+    diff = abs(bull_score - bear_score)
+    if diff > 18:
+        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值 {diff} > 18，可倾向高分方向（置信度 low）。"
+    elif diff > 12:
+        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值在12-18之间，弱倾向，若输出方向必须为试探信号(is_probe=true)。"
+    else:
+        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值较小，信号矛盾。"
+
+    # 趋势描述
     trend_desc = ""
     if trend_info:
-        direction = trend_info.get("direction", "neutral")
-        score = trend_info.get("score", 0)
-        confidence = trend_info.get("confidence", "低")
-        signals = ", ".join(trend_info.get("signals", []))
-        if direction == "bull":
-            trend_desc = f"**趋势强度**：多头倾向，得分{score}/100（可信度：{confidence}）\n- 支持信号：{signals}"
-        elif direction == "bear":
-            trend_desc = f"**趋势强度**：空头倾向，得分{score}/100（可信度：{confidence}）\n- 支持信号：{signals}"
-        else:
-            trend_desc = f"**趋势强度**：无明显倾向，得分{score}/100（震荡特征明显）"
-        if 30 <= score <= 70:
+        dir_t = trend_info.get('direction', 'neutral')
+        score_t = trend_info.get('score', 0)
+        conf_t = trend_info.get('confidence', '低')
+        signals_t = ", ".join(trend_info.get('signals', []))
+        trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
+        if 30 <= score_t <= 70:
             trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
@@ -387,6 +335,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 {warning_text}
 {data_source_text}
 {extreme_liq_text}
+{override_text}
 {trend_desc}
 
 ### 核心市场数据
@@ -394,12 +343,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 当前价格：{price} USDT
 - 1小时ATR：{atr} USDT
 - 波动因子：{volatility_factor:.2f}
+- **系统计算关键支撑**：{support:.1f} USDT
+- **系统计算关键阻力**：{resistance:.1f} USDT
 
 **清算压力**
 - 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{liq_max_pain} USDT
-- 最近清算密集区：{cluster_direction}方 {cluster_price_raw} USDT，强度{cluster_intensity}/5
+- 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
   （注：强度≥3的清算区方可作为有效锚点）
 
 **多空博弈**
@@ -417,28 +368,35 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
 
+**量化倾向参考**
+- {score_guidance}
+- {near_text}
+
 ### 🔒 强制分析流程（必须逐项在reasoning中体现）
 
+**🚨 最高优先级规则**：若上方提示“动量追势信号已触发 - 强制覆盖模式”，你必须输出与信号一致的方向（short/long），不得输出 neutral。唯一例外是极端清算风险（extreme_liq=true）。覆盖模式下，后续分析步骤仅用于补充说明，不得改变方向。
+
 **第一步：清算动力学定锚**
-- 对比上下方清算金额。趋势强度得分较高时，清算墙视为“猎物”而非“支撑/阻力”。
-- 结论应表述为【偏多/偏空/风险预警/中性观察】。
+- 对比上下方清算金额。结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若得分较高（>70），清算墙视为“猎物”而非“支撑/阻力”。
+- 确认结果：【偏多/偏空/风险预警/中性观察】
 
 **第二步：多空博弈找“犯错方”**
-- 分析资金费率、顶级交易员、净持仓。
-- 结论：【偏多/偏空/中性】。
+- 分析资金费率、顶级交易员多空比、净持仓累积。
+- 结论：【偏多/偏空/中性】
 
 **第三步：宏观过滤器定基调**
-- 分析ETH/BTC汇率趋势、交易所钱包余额。
-- 结论：【支持/反对/中性】。
+- 分析ETH/BTC汇率趋势、交易所钱包余额、恐惧贪婪指数。
+- 结论：【支持/反对/中性】
 
 **第四步：信号共振与矛盾裁决**
-- 列举支持与矛盾信号。必须提及最支持方向的信号和最矛盾的信号。
+- 列举支持与矛盾信号。**必须提及最支持方向的信号和最矛盾的信号**。
+- **倾向性裁决**：参考上方提供的方向倾向得分（多头{bull_score} vs 空头{bear_score}）。若差值>15分，且无覆盖指令，可倾向高分方向（confidence为low）。
 - **过渡期规则**：趋势得分30-70时，允许输出试探信号（`is_probe: true`），前提是清算或持仓结构有明确偏向。
 - **紧贴规则**：若价格紧贴关键位（距离<0.3×ATR），不得直接输出neutral。允许输出方向，但必须将`confidence`设为`low`，并在`risk_note`中注明“⚠️价格紧贴关键区，盈亏比偏窄，建议轻仓”。
-- **倾向性裁决**：若支持信号与矛盾信号并存，比较累计权重。若支持信号总权重大于矛盾信号的1.5倍，可输出`confidence: "low"`的方向，而非neutral。
+- 若最终输出neutral，必须显式说明否决原因。
 
 **第五步：止损设置校验（强制执行）**
-- 止损优先设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。
+- 止损优先设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。系统已提供关键位：支撑{support:.1f}，阻力{resistance:.1f}。
 - 若无法找到明确结构锚点，允许使用 **1.5×ATR 作为止损距离**，并在`reasoning`中注明“采用波动率止损”。
 - **必须在reasoning中注明止损依据**。
 
@@ -446,6 +404,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 触及 TP1 时，必须平仓 **50%** 的仓位，剩余仓位止损移动至成本价。
 - TP2 为最终目标，触及后平仓剩余仓位。
 - 在 `risk_note` 中必须注明：“TP1减仓50%，剩余仓位止损移至成本价”。
+- **试探信号仓位限制**：若`is_probe: true`，建议仓位不得超过正常仓位的50%。
 
 ### 策略输出要求
 请严格按JSON格式输出：
@@ -475,42 +434,59 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 """
 
 
-def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
+def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool = False,
+                  max_retries: int = 2) -> dict:
+    """
+    调用 DeepSeek API 并返回解析后的策略字典。
+    包含动量覆盖硬校验：若覆盖指令激活且非极端清算，AI输出方向不符则强制修正。
+    """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
-    for attempt in range(max_retries):
+    for _ in range(max_retries):
         try:
-            response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1000)
-            content = response.choices[0].message.content
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
-                raise ValueError("未找到 JSON")
-            json_str = content[json_start:json_end]
-            strategy = json.loads(json_str)
-            strategy.setdefault("win_rate", 0)
-            strategy.setdefault("tp1_anchor", "未提供")
-            strategy.setdefault("tp2_anchor", "未提供")
-            strategy.setdefault("is_probe", False)
-            return strategy
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1000
+            )
+            content = resp.choices[0].message.content
+            js = content[content.find('{'):content.rfind('}') + 1]
+            s = json.loads(js)
+
+            # 设置默认字段
+            for k in ["win_rate", "tp1_anchor", "tp2_anchor", "is_probe"]:
+                s.setdefault(k, 0 if k == "win_rate" else ("未提供" if "anchor" in k else False))
+
+            # ---------- 动量覆盖硬校验 ----------
+            if momentum_override and momentum_override.get("active") and not extreme_liq:
+                req_dir = momentum_override.get("direction")
+                if s.get("direction") != req_dir:
+                    logger.warning(f"动量覆盖硬校验触发：AI输出 {s.get('direction')} 修正为 {req_dir}")
+                    s["direction"] = req_dir
+                    s["confidence"] = "medium"
+                    s["is_probe"] = True
+                    s["reasoning"] = f"[动量覆盖强制修正] {s.get('reasoning', '')}"
+            return s
+
         except Exception as e:
-            logger.warning(f"DeepSeek 调用失败: {e}")
-            if attempt == max_retries - 1: raise
+            logger.warning(f"DeepSeek调用失败: {e}")
     return {}
 
 
-def validate_strategy(strategy: dict, current_price: float) -> bool:
-    if "direction" not in strategy: return False
-    direction = strategy["direction"]
-    if direction not in ["long", "short", "neutral"]: return False
-    if direction == "neutral": return True
-    required = ["entry_price_low", "entry_price_high", "stop_loss"]
-    for field in required:
-        if field not in strategy or strategy[field] in [None, ""]: return False
-        try: float(strategy[field])
-        except: return False
-    entry_low = float(strategy["entry_price_low"])
-    entry_high = float(strategy["entry_price_high"])
-    stop = float(strategy["stop_loss"])
-    if direction == "long" and stop >= entry_low: return False
-    if direction == "short" and stop <= entry_high: return False
+def validate_strategy(s: dict, price: float) -> bool:
+    """校验策略字典的基本合法性"""
+    if s.get("direction") not in ["long", "short", "neutral"]:
+        return False
+    if s["direction"] == "neutral":
+        return True
+    try:
+        entry_low = float(s.get("entry_price_low", 0))
+        entry_high = float(s.get("entry_price_high", 0))
+        stop = float(s.get("stop_loss", 0))
+        if s["direction"] == "long" and stop >= entry_low:
+            return False
+        if s["direction"] == "short" and stop <= entry_high:
+            return False
+    except Exception:
+        return False
     return True
