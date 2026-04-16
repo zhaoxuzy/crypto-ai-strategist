@@ -265,13 +265,13 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     elif total_score >= 15:
         level = "弱"
     else:
-        level = "极弱"
+        level = "極弱"
 
     win_rate = int(40 + (total_score / 100) * 45)
     win_rate = max(40, min(85, win_rate))
 
     if liq_zero_count >= 2:
-        level = "极弱"
+        level = "極弱"
         total_score = max(0, total_score - 30)
         win_rate = max(35, win_rate - 20)
 
@@ -365,13 +365,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 列举所有与最终方向矛盾的信号。
 - 最终裁决：共振信号的强度是否足以压倒矛盾信号？若矛盾信号≥2个且共振强度<55分，应输出neutral。
 
-**第五步：止盈止损锚定校验**
+**第五步：止盈止损锚定与盈亏比计算（强制输出）**
 - TP1锚定来源：____（清算区/期权痛点/ATR估算），该锚点与当前价的距离是____ USDT。
-- 该距离是否 ≥ 最小盈利空间阈值且 ≤ 最大约束？【是/否】
-- TP2锚定来源：____，与TP1的分层距离是____ USDT，是否满足分层要求？【是/否】
-- 止损锚定来源：____，是否位于关键支撑/阻力下方？【是/否】
-- **强制盈亏比规则（已放宽）**：做多时，(TP1 - 入场价) **必须 ≥** (入场价 - 止损) × 0.5。做空时，(入场价 - TP1) **必须 ≥** (止损 - 入场价) × 0.5。若无法满足，必须输出neutral。
-- **极端行情豁免**：若波动率因子 > 1.8，可进一步放宽盈亏比至0.3，但必须在风险提示中明确标注。
+- 止损锚定来源：____，与当前价的距离是____ USDT。
+- **计算盈亏比**：做多时，盈亏比 = (TP1 - 入场价) / (入场价 - 止损)。做空时，盈亏比 = (入场价 - TP1) / (止损 - 入场价)。
+- **强制输出盈亏比数值**：你必须在JSON的`profit_ratio`字段中输出计算结果（保留两位小数）。
+- **硬性风控底线**：若计算出的盈亏比 < 0.3，必须输出`direction: "neutral"`，并在`reasoning`中说明盈亏比过低。
+- **风险警告**：若盈亏比在0.3-0.8之间，必须在`risk_note`中明确警告：“盈亏比仅为X.XX，潜在亏损大于潜在盈利，请谨慎评估。”
 
 **完成以上分析后，再生成最终JSON。你的reasoning字段必须是对上述步骤的简要总结。**
 
@@ -388,8 +388,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2锚定来源",
   "position_size_ratio": 仓位比例（0.0-1.0）,
+  "profit_ratio": 盈亏比数值（保留两位小数）,
   "reasoning": "必须包含强制分析五步骤的简要结论",
-  "risk_note": "风险提示"
+  "risk_note": "风险提示（若盈亏比<0.8必须明确警告）"
 }}
 
 ### 止盈锚定原则
@@ -420,6 +421,7 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
             strategy.setdefault("tp1_anchor", "未提供")
             strategy.setdefault("tp2_anchor", "未提供")
             strategy.setdefault("is_probe", False)
+            strategy.setdefault("profit_ratio", 0.0)
             return strategy
         except Exception as e:
             logger.warning(f"DeepSeek 调用失败: {e}")
