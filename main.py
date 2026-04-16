@@ -12,18 +12,16 @@ from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
 STRATEGY_PROFILES = {
-    "BTC": {"base_win_rate": 50, "max_win_rate": 85, "base_position": 0.25, "max_position": 0.50, "stop_multiplier": 1.5, "tp1_ratio": 1.5, "tp2_ratio": 2.5, "volatility_discount": 0.8, "min_profit_pct": 0.0025, "min_profit_atr_mult": 0.4, "tp2_layer_atr_mult": 0.2, "signals": {"liquidation": {"weight": 10, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 10, "reliable": True}, "cvd": {"weight": 10, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": True}}},
-    "ETH": {"base_win_rate": 48, "max_win_rate": 80, "base_position": 0.20, "max_position": 0.40, "stop_multiplier": 1.8, "tp1_ratio": 1.8, "tp2_ratio": 3.0, "volatility_discount": 0.7, "min_profit_pct": 0.003, "min_profit_atr_mult": 0.5, "tp2_layer_atr_mult": 0.3, "signals": {"liquidation": {"weight": 12, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 10, "reliable": True}, "cvd": {"weight": 12, "reliable": True}, "fear_greed": {"weight": 8, "reliable": True}, "option_pain": {"weight": 0, "reliable": True}}},
-    "SOL": {"base_win_rate": 45, "max_win_rate": 75, "base_position": 0.15, "max_position": 0.30, "stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6, "min_profit_pct": 0.005, "min_profit_atr_mult": 0.8, "tp2_layer_atr_mult": 0.5, "signals": {"liquidation": {"weight": 20, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 0, "reliable": False}, "cvd": {"weight": 15, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": False}}}
+    "BTC": {"base_win_rate": 50, "max_win_rate": 85, "stop_multiplier": 1.5, "tp1_ratio": 1.5, "tp2_ratio": 2.5, "volatility_discount": 0.8, "min_profit_pct": 0.0025, "min_profit_atr_mult": 0.4, "tp2_layer_atr_mult": 0.2, "signals": {"liquidation": {"weight": 10, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 10, "reliable": True}, "cvd": {"weight": 10, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": True}}},
+    "ETH": {"base_win_rate": 48, "max_win_rate": 80, "stop_multiplier": 1.8, "tp1_ratio": 1.8, "tp2_ratio": 3.0, "volatility_discount": 0.7, "min_profit_pct": 0.003, "min_profit_atr_mult": 0.5, "tp2_layer_atr_mult": 0.3, "signals": {"liquidation": {"weight": 12, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 10, "reliable": True}, "cvd": {"weight": 12, "reliable": True}, "fear_greed": {"weight": 8, "reliable": True}, "option_pain": {"weight": 0, "reliable": True}}},
+    "SOL": {"base_win_rate": 45, "max_win_rate": 75, "stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6, "min_profit_pct": 0.005, "min_profit_atr_mult": 0.8, "tp2_layer_atr_mult": 0.5, "signals": {"liquidation": {"weight": 20, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 0, "reliable": False}, "cvd": {"weight": 15, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": False}}}
 }
 
 MIN_WIN_RATE = 50
 
-# 试探信号配额监控
 probe_history = deque(maxlen=20)
 
 def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float, state_cache: dict) -> tuple:
-    """判定市场状态：trend_bear / trend_bull / range。带确认期机制。"""
     if not klines or len(klines) < 55:
         return "range", 50.0, 0.0, False
 
@@ -31,7 +29,6 @@ def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current
     ema_slope = calculate_ema_slope(klines, 55, 5)
     atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
 
-    # 低波动率过滤
     if atr_percentile < 30:
         new_regime = "range"
     else:
@@ -51,7 +48,6 @@ def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current
         else:
             new_regime = "range"
 
-    # 状态确认期（连续3次才切换）
     last_state = state_cache.get("last_state", "range")
     state_count = state_cache.get("state_count", 0)
 
@@ -72,10 +68,7 @@ def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current
     return final_regime, atr_percentile, ema_slope, confirmed, ema55
 
 def check_extreme_liquidation(cg: CoinGlassClient, symbol: str, current_above: float, current_below: float) -> bool:
-    """检查是否触发极端清算（单侧超过近7日日均的3倍）"""
     try:
-        # 获取近7日每日清算总额（简化：使用历史清算热力图数据，此处调用一个聚合接口或缓存）
-        # 由于CoinGlass未直接提供历史日均，我们使用一个简单的相对阈值：单侧超过2亿美元视为极端（BTC/ETH）
         if symbol.upper() == "BTC":
             threshold = 200_000_000
         elif symbol.upper() == "ETH":
@@ -98,7 +91,6 @@ def send_error_notification(symbol: str, error_msg: str):
 """
     send_dingtalk_message(markdown, f"DeepSeek策略异常-{symbol}")
 
-# 全局状态缓存
 market_state_cache = {}
 
 def main():
@@ -126,7 +118,6 @@ def main():
         volatility_factor = cg.calculate_volatility_factor(symbol)
         macro = get_macro_data()
 
-        # 动态调整风控参数
         if volatility_factor > 1.5:
             profile['stop_multiplier'] = profile.get('stop_multiplier', 1.5) * 1.5
             profile['tp1_ratio'] = profile.get('tp1_ratio', 1.5) * 1.3
@@ -149,7 +140,6 @@ def main():
         ema55 = ema55_calc if ema55_calc > 0 else ema55
         logger.info(f"市场趋势状态: {trend_regime} (确认: {confirmed}), ATR百分位: {atr_percentile}%, EMA斜率: {ema_slope:.1f}")
 
-        # 极端清算检测
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = check_extreme_liquidation(cg, symbol, above_val, below_val)
@@ -163,16 +153,11 @@ def main():
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
 
-        # 试探信号处理
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
         probe_ratio = sum(probe_history) / len(probe_history) if probe_history else 0
-        if is_probe:
-            strategy["position_size_ratio"] = min(0.1, strategy.get("position_size_ratio", 0.2) * 0.5)
-            strategy["reasoning"] = "【试探信号，仓位已强制降至" + str(int(strategy["position_size_ratio"]*100)) + "%】" + strategy.get("reasoning", "")
-            if probe_ratio > 0.3:
-                strategy["position_size_ratio"] = strategy["position_size_ratio"] * 0.5
-                strategy["risk_note"] = strategy.get("risk_note", "") + " 系统告警：试探信号比例过高，仓位已进一步减半。"
+        if is_probe and probe_ratio > 0.3:
+            strategy["risk_note"] = strategy.get("risk_note", "") + " 系统告警：试探信号比例过高，请谨慎参考。"
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
@@ -208,7 +193,6 @@ def main():
             "fear_greed": macro["fear_greed"]["value"],
             "signal_strength": signal_strength,
             "data_source_status": data_source_status,
-            "profit_ratio": strategy.get("profit_ratio", 0.0),
             "market_regime": trend_regime,
             "ema55": ema55,
             "atr_percentile": atr_percentile,
