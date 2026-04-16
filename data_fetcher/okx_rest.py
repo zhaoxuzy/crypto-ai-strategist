@@ -63,12 +63,50 @@ def calculate_ema(klines: list, period: int = 55) -> float:
     if len(closes) < period:
         return 0.0
 
-    # 取最近 period 根K线
     closes = closes[-period:]
     multiplier = 2 / (period + 1)
-    ema = sum(closes[:period]) / period  # 初始SMA
+    ema = sum(closes[:period]) / period
 
     for price in closes[period:]:
         ema = (price - ema) * multiplier + ema
 
     return round(ema, 2)
+
+def calculate_atr_percentile(klines: list, current_atr: float, period: int = 20) -> float:
+    """计算当前ATR在过去20根K线的ATR中的百分位（0-100）"""
+    if not klines or len(klines) < period + 14:
+        return 50.0
+
+    # 计算每根K线对应的14周期ATR（滑动窗口）
+    atr_values = []
+    for i in range(14, len(klines)):
+        true_ranges = []
+        for j in range(i - 13, i + 1):
+            high = float(klines[j][2])
+            low = float(klines[j][3])
+            prev_close = float(klines[j-1][4])
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+        if true_ranges:
+            atr_values.append(sum(true_ranges) / 14)
+
+    if not atr_values:
+        return 50.0
+
+    atr_values.sort()
+    rank = sum(1 for v in atr_values if v < current_atr)
+    percentile = (rank / len(atr_values)) * 100
+    return round(percentile, 1)
+
+def calculate_ema_slope(klines: list, period: int = 55, lookback: int = 5) -> float:
+    """计算EMA55的斜率（当前值 - 5根K线前的值）"""
+    if not klines or len(klines) < period + lookback:
+        return 0.0
+
+    current_ema = calculate_ema(klines, period)
+    past_ema = calculate_ema(klines[:-lookback], period)
+
+    if past_ema == 0:
+        return 0.0
+
+    return round(current_ema - past_ema, 2)
