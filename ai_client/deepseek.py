@@ -5,7 +5,6 @@ from utils.logger import logger
 
 # ---------- 连续型评分辅助函数 ----------
 def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
-    """线性插值评分，rev=True 表示值越小得分越高"""
     if low == high:
         return 0.0
     if rev:
@@ -23,11 +22,9 @@ def linear_score(v: float, low: float, high: float, full: float, rev: bool = Fal
 
 
 def get_position_structure_score(direction: str, cg: dict, macro: dict, sym: str) -> tuple:
-    """计算持仓结构得分（顶级交易员多空比 + 人数比）"""
     s, det = 0.0, []
     th = {"BTC": (0.7, 2.0), "ETH": (0.7, 2.0), "SOL": (0.5, 1.5)}.get(sym.upper(), (0.7, 2.0))
 
-    # 顶级交易员多空比
     try:
         tls = float(cg.get("top_long_short_ratio", 1))
         if direction == "long":
@@ -45,7 +42,6 @@ def get_position_structure_score(direction: str, cg: dict, macro: dict, sym: str
     except Exception:
         pass
 
-    # 人数比
     try:
         lsa = float(cg.get("ls_account_ratio", 1))
         if direction == "long":
@@ -71,18 +67,12 @@ LIQ_MIN = {"BTC": 50_000_000, "ETH": 20_000_000, "SOL": 5_000_000}
 def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict,
                               liq_zero: int = 0, eth_btc: dict = None, bal: dict = None,
                               trend_info: dict = None, extreme_liq: bool = False) -> dict:
-    """
-    计算综合信号强度得分（0-100）
-    返回字典包含：level, score, max_score, details, win_rate
-    """
     score, det = 0.0, []
     trend_score = trend_info.get("score", 0) if trend_info else 0
 
-    # 震荡市基准权重 vs 趋势市基准权重
     w_liq_r, w_pos_r, w_cvd_r, w_fg_r, w_fr_r, w_taker_r, w_net_r, w_ob_r, w_macro_r = 25, 29, 11, 7, 4, 7, 5, 11, 8
     w_liq_t, w_pos_t, w_cvd_t, w_fg_t, w_fr_t, w_taker_t, w_net_t, w_ob_t, w_macro_t = 15, 15, 25, 5, 3, 15, 3, 7, 5
 
-    # 根据趋势得分线性插值权重（平滑过渡）
     t = trend_score / 100.0
     weight_liq = int(w_liq_r * (1 - t) + w_liq_t * t)
     weight_pos = int(w_pos_r * (1 - t) + w_pos_t * t)
@@ -102,7 +92,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score += 10
             det.append("极端清算支持做空")
 
-    # 1. 清算结构
     above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
     total = above + below
@@ -118,12 +107,10 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         if s > 5:
             det.append(f"清算结构({ratio:.1%})")
 
-    # 2. 持仓结构
     pos_s, pos_d = get_position_structure_score(direction, cg, macro, symbol)
     score += pos_s * (weight_pos / 32.0)
     det.extend(pos_d)
 
-    # 3. CVD
     cvd = cg.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         if direction == "long":
@@ -142,7 +129,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score -= weight_cvd * 0.5
             det.append("CVD反向")
 
-    # 4. 恐惧贪婪
     fg_val = int(macro.get("fear_greed", {}).get("value", 50))
     if direction == "long":
         s = linear_score(fg_val, 20, 50, weight_fg, True)
@@ -152,7 +138,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     if s > 2:
         det.append(f"恐惧贪婪({fg_val})")
 
-    # 5. 资金费率
     try:
         fr = float(cg.get("funding_rate", 0))
         if direction == "short":
@@ -165,7 +150,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # 6. 主动吃单比率
     try:
         tr = float(cg.get("taker_ratio", 0.5))
         if direction == "long":
@@ -178,7 +162,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # 7. 净持仓累积（OI百分比）
     try:
         np = float(cg.get("net_position_cum", 0))
         oi_usd = cg.get("option_oi_usd", "N/A")
@@ -194,7 +177,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # 8. 订单簿失衡率
     imb = cg.get("orderbook_imbalance", 0.0)
     if direction == "long":
         s = linear_score(imb, 0.1, 0.3, weight_ob, False)
@@ -204,7 +186,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     if abs(s) > 3:
         det.append(f"订单簿({imb:.2f})")
 
-    # 9. 宏观过滤器
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
         if direction == "long" and trend == "up":
@@ -223,19 +204,16 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score += weight_macro
             det.append(f"余额:稳定币流出&BTC流入(+{weight_macro})")
 
-    # 10. 宏观情绪调整
     if fg_val < 30 and direction == "long":
         score -= 10
         det.append("⚠️极度恐惧做多门槛提高")
 
-    # 数据缺失扣分
     core_missing = sum(1 for v in [cg.get("above_short_liquidation"), cg.get("cvd_signal")] if v == "N/A")
     important_missing = sum(1 for v in [cg.get("top_long_short_ratio"), cg.get("funding_rate")] if v == "N/A")
     score -= min(15, core_missing * 5 + important_missing * 3)
 
     score = max(-20.0, min(100.0, score))
 
-    # 等级与胜率映射
     if score >= 75:
         level = "极强"
     elif score >= 55:
@@ -274,9 +252,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
                  momentum_override: dict = None, key_levels: dict = None,
                  near_key_level: bool = False, directional_scores: dict = None) -> str:
-    """
-    构建 DeepSeek API 的提示词 —— 完整保留强制五步分析流程
-    """
     fg = macro_data.get("fear_greed", {})
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 关键位距离 × 1.2)"
     cluster = coinglass_data.get("nearest_cluster", {})
@@ -287,7 +262,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n"
                         if extreme_liq else "")
 
-    # ---------- 动量覆盖指令 ----------
     override_text = ""
     if momentum_override and momentum_override.get("active"):
         d = momentum_override.get("direction", "neutral")
@@ -300,13 +274,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 仓位建议：轻仓(正常仓位30%-50%)，止损0.8×ATR，止盈1.5×ATR。
 """
 
-    # ---------- 关键位与紧贴 ----------
     support = key_levels.get("support", 0) if key_levels else 0
     resistance = key_levels.get("resistance", 0) if key_levels else 0
     near_text = ("⚠️ 价格紧贴关键位（距离<0.3×ATR），若输出方向，confidence 必须为 low，并注明轻仓。"
                  if near_key_level else "")
 
-    # ---------- 方向倾向得分 ----------
     bull_score = directional_scores.get("bull", 0) if directional_scores else 0
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
     diff = abs(bull_score - bear_score)
@@ -317,7 +289,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     else:
         score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值较小，信号矛盾。"
 
-    # 趋势描述
     trend_desc = ""
     if trend_info:
         dir_t = trend_info.get('direction', 'neutral')
@@ -436,10 +407,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool = False,
                   max_retries: int = 2) -> dict:
-    """
-    调用 DeepSeek API 并返回解析后的策略字典。
-    包含动量覆盖硬校验：若覆盖指令激活且非极端清算，AI输出方向不符则强制修正。
-    """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
     for _ in range(max_retries):
         try:
@@ -453,11 +420,9 @@ def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool
             js = content[content.find('{'):content.rfind('}') + 1]
             s = json.loads(js)
 
-            # 设置默认字段
             for k in ["win_rate", "tp1_anchor", "tp2_anchor", "is_probe"]:
                 s.setdefault(k, 0 if k == "win_rate" else ("未提供" if "anchor" in k else False))
 
-            # ---------- 动量覆盖硬校验 ----------
             if momentum_override and momentum_override.get("active") and not extreme_liq:
                 req_dir = momentum_override.get("direction")
                 if s.get("direction") != req_dir:
@@ -466,6 +431,7 @@ def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool
                     s["confidence"] = "medium"
                     s["is_probe"] = True
                     s["reasoning"] = f"[动量覆盖强制修正] {s.get('reasoning', '')}"
+
             return s
 
         except Exception as e:
@@ -474,7 +440,6 @@ def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool
 
 
 def validate_strategy(s: dict, price: float) -> bool:
-    """校验策略字典的基本合法性"""
     if s.get("direction") not in ["long", "short", "neutral"]:
         return False
     if s["direction"] == "neutral":
