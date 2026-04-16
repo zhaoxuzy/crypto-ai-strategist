@@ -21,63 +21,102 @@ MIN_WIN_RATE = 50
 
 probe_history = deque(maxlen=20)
 
-def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float, state_cache: dict) -> tuple:
+def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
+    """
+    计算连续趋势强度得分（0-100）及方向。
+    返回：{"direction": "bull"/"bear"/"neutral", "score": 0-100, "confidence": 可信度描述, "signals": []}
+    """
     if not klines or len(klines) < 55:
-        return "range", 50.0, 0.0, False
+        return {"direction": "neutral", "score": 0, "confidence": "数据不足", "signals": []}
 
     ema55 = calculate_ema(klines, 55)
     ema_slope = calculate_ema_slope(klines, 55, 5)
     atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
 
+    # 基础得分 = 各条件满足情况
+    score = 0
+    signals = []
+    direction = "neutral"
+
+    # 1. 价格与均线关系 (0-30分)
+    price_above = current_price > ema55
+    if price_above:
+        score += 30
+        signals.append("价格>EMA55")
+        direction = "bull"
+    else:
+        signals.append("价格<EMA55")
+        direction = "bear"
+
+    # 2. 均线斜率 (0-25分)
+    if ema_slope > 2.0:
+        score += 25
+        signals.append("EMA斜率向上")
+    elif ema_slope < -2.0:
+        signals.append("EMA斜率向下")
+    else:
+        score += 10
+        signals.append("EMA斜率走平")
+
+    # 3. CVD信号 (0-25分)
+    if cvd_signal in ["bullish", "slightly_bullish"]:
+        score += 25 if cvd_signal == "bullish" else 15
+        signals.append(f"CVD:{cvd_signal}")
+        if direction == "neutral":
+            direction = "bull"
+    elif cvd_signal in ["bearish", "slightly_bearish"]:
+        signals.append(f"CVD:{cvd_signal}")
+        if direction == "neutral":
+            direction = "bear"
+    else:
+        score += 5
+        signals.append("CVD:neutral")
+
+    # 4. 主动买卖盘 (0-20分)
+    if taker_ratio > 0.55:
+        score += 20
+        signals.append(f"主动买盘({taker_ratio:.2f})")
+        if direction == "neutral":
+            direction = "bull"
+    elif taker_ratio < 0.45:
+        signals.append(f"主动卖盘({taker_ratio:.2f})")
+        if direction == "neutral":
+            direction = "bear"
+    else:
+        score += 10
+        signals.append("主动买卖均衡")
+
+    # 低波动惩罚：ATR百分位<30%时，趋势强度降权
     if atr_percentile < 30:
-        new_regime = "range"
+        score = int(score * 0.6)
+        signals.append(f"低波动惩罚(ATR百分位{atr_percentile:.0f}%)")
+
+    # 限制范围
+    score = max(0, min(100, score))
+
+    # 可信度描述
+    if score >= 70:
+        confidence = "高"
+    elif score >= 40:
+        confidence = "中"
     else:
-        price_below_ema = current_price < ema55
-        cvd_bearish = cvd_signal in ["bearish", "slightly_bearish"]
-        taker_bearish = taker_ratio < 0.45
-        cvd_bullish = cvd_signal in ["bullish", "slightly_bullish"]
-        taker_bullish = taker_ratio > 0.55
+        confidence = "低"
 
-        bear_conditions = sum([price_below_ema, cvd_bearish, taker_bearish])
-        bull_conditions = sum([not price_below_ema, cvd_bullish, taker_bullish])
+    # 方向校正：如果方向与主要得分矛盾，设为neutral
+    if direction == "bull" and current_price < ema55 and cvd_signal not in ["bullish", "slightly_bullish"]:
+        direction = "neutral"
+    elif direction == "bear" and current_price > ema55 and cvd_signal not in ["bearish", "slightly_bearish"]:
+        direction = "neutral"
 
-        if bear_conditions >= 2 and ema_slope < 0:
-            new_regime = "trend_bear"
-        elif bull_conditions >= 2 and ema_slope > 0:
-            new_regime = "trend_bull"
-        else:
-            new_regime = "range"
-
-    last_state = state_cache.get("last_state", "range")
-    state_count = state_cache.get("state_count", 0)
-
-    if new_regime == last_state:
-        state_count += 1
-    else:
-        state_count = 1
-        last_state = new_regime
-
-    state_cache["last_state"] = last_state
-    state_cache["state_count"] = state_count
-
-    confirmed = state_count >= 3
-    final_regime = last_state if confirmed else state_cache.get("confirmed_state", "range")
-    if confirmed:
-        state_cache["confirmed_state"] = last_state
-
-    return final_regime, atr_percentile, ema_slope, confirmed, ema55
-
-def check_extreme_liquidation(cg: CoinGlassClient, symbol: str, current_above: float, current_below: float) -> bool:
-    try:
-        if symbol.upper() == "BTC":
-            threshold = 200_000_000
-        elif symbol.upper() == "ETH":
-            threshold = 80_000_000
-        else:
-            threshold = 20_000_000
-        return (current_above > threshold) or (current_below > threshold)
-    except:
-        return False
+    return {
+        "direction": direction,
+        "score": score,
+        "confidence": confidence,
+        "signals": signals,
+        "ema55": ema55,
+        "ema_slope": ema_slope,
+        "atr_percentile": atr_percentile
+    }
 
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
@@ -90,8 +129,6 @@ def send_error_notification(symbol: str, error_msg: str):
 - 可稍后手动重试或查看 Actions 日志排查
 """
     send_dingtalk_message(markdown, f"DeepSeek策略异常-{symbol}")
-
-market_state_cache = {}
 
 def main():
     global probe_history
@@ -132,23 +169,23 @@ def main():
         except:
             taker_ratio = 0.5
 
-        state_cache = market_state_cache.get(symbol, {"last_state": "range", "state_count": 0, "confirmed_state": "range"})
-        trend_regime, atr_percentile, ema_slope, confirmed, ema55_calc = get_market_regime(
-            klines, cvd_signal, taker_ratio, price, atr, state_cache
-        )
-        market_state_cache[symbol] = state_cache
-        ema55 = ema55_calc if ema55_calc > 0 else ema55
-        logger.info(f"市场趋势状态: {trend_regime} (确认: {confirmed}), ATR百分位: {atr_percentile}%, EMA斜率: {ema_slope:.1f}")
+        trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr)
+        trend_direction = trend_info["direction"]
+        trend_score = trend_info["score"]
+        logger.info(f"趋势强度: 方向={trend_direction}, 得分={trend_score}/100, 可信度={trend_info['confidence']}")
 
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
-        extreme_liq = check_extreme_liquidation(cg, symbol, above_val, below_val)
+        extreme_liq = False
+        if symbol.upper() == "BTC":
+            extreme_liq = (above_val > 200_000_000) or (below_val > 200_000_000)
+        elif symbol.upper() == "ETH":
+            extreme_liq = (above_val > 80_000_000) or (below_val > 80_000_000)
 
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
-            profile=profile, volatility_factor=volatility_factor, market_regime=trend_regime,
-            ema55=ema55, ema_slope=ema_slope, atr_percentile=atr_percentile, extreme_liq=extreme_liq,
-            liq_warning=liq_warning, data_source_status=data_source_status
+            profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
+            extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status
         )
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
@@ -169,7 +206,7 @@ def main():
 
         signal_strength = calculate_signal_strength(
             symbol, strategy["direction"], cg_data, macro, liq_zero_count,
-            eth_btc_data, balance_data, trend_regime, extreme_liq
+            eth_btc_data, balance_data, trend_info, extreme_liq
         )
         strategy["win_rate"] = signal_strength["win_rate"]
 
@@ -193,9 +230,7 @@ def main():
             "fear_greed": macro["fear_greed"]["value"],
             "signal_strength": signal_strength,
             "data_source_status": data_source_status,
-            "market_regime": trend_regime,
-            "ema55": ema55,
-            "atr_percentile": atr_percentile,
+            "trend_info": trend_info,
             "volatility_factor": volatility_factor,
             "extreme_liq": extreme_liq,
             "is_probe": is_probe
