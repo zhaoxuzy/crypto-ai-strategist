@@ -44,7 +44,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
     win_rate = strategy.get("win_rate", 50)
-    is_probe = strategy.get("is_probe", False)
+    is_probe = extra.get("is_probe", False)
     signal_strength = extra.get("signal_strength", {})
     strength_level = signal_strength.get("level", "未知")
     strength_score = signal_strength.get("score", 0)
@@ -56,9 +56,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     ema55 = extra.get("ema55", 0.0)
     atr_percentile = extra.get("atr_percentile", 50.0)
     volatility_factor = extra.get("volatility_factor", 1.0)
+    extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 阈值警报生成
+    # 阈值警报
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
     try:
@@ -81,6 +82,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if profit_ratio < 1.0 and profit_ratio > 0:
         alerts.append(f"⚠️低盈亏比({profit_ratio:.2f})")
 
+    if extreme_liq:
+        alerts.append("🚨极端清算警报")
+
     regine_text = "震荡市"
     if market_regime == "trend_bear":
         regine_text = f"趋势空头市(价<EMA55，ATR百分位{atr_percentile:.0f}%)"
@@ -89,7 +93,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     else:
         regine_text = f"震荡市(ATR百分位{atr_percentile:.0f}%)"
 
-    # 信号强度档位说明
     score_tier = ""
     if strength_score >= 75: score_tier = "极强"
     elif strength_score >= 55: score_tier = "强"
@@ -134,6 +137,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
 - **建议仓位**：{int(position*100)}%
 - **盈亏比**：{profit_ratio:.2f}（TP1/止损）{' ⚠️低盈亏比' if profit_ratio < 1.0 and profit_ratio > 0 else ''}
+- **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
 ### 📈 AI 分析逻辑
 > {strategy.get('reasoning', '暂无分析')}
 ### ⚠️ 风险提示
