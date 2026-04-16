@@ -344,7 +344,6 @@ def calculate_win_rate(symbol: str, direction: str, coinglass_data: dict, macro_
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict, profile: dict, volatility_factor: float = 1.0, market_regime: str = "range", ema55: float = 0.0, ema_slope: float = 0.0, atr_percentile: float = 50.0, extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
     stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 最近清算密集区距离 × 1.2)"
-    position_rule = f"基准仓位 {profile['base_position']*100:.0f}%，最大 {profile['max_position']*100:.0f}%。"
     cluster = coinglass_data.get("nearest_cluster", {})
     cluster_direction = cluster.get("direction", "N/A")
     cluster_price_raw = cluster.get("price", "N/A")
@@ -364,21 +363,18 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **⚠️ 当前市场判定为【趋势空头市】（连续3小时确认，价<EMA55({ema55:.1f})，斜率{ema_slope:.1f})**
 - 下方巨大的清算墙不再是“强支撑”，而是空头继续猎杀的目标。
 - 资金费率转负视为“空头建仓确认”，而非反转信号。
-- 允许在共振强度不足时输出**轻仓追空**信号（仓位10%，止损0.5×ATR，止盈1×ATR）。
-- 盈亏比要求可降至0.4。
+- 允许在共振强度不足时输出**轻仓追空**信号。
 """
     elif market_regime == "trend_bull":
         trend_extra = f"""
 **⚠️ 当前市场判定为【趋势多头市】（连续3小时确认，价>EMA55({ema55:.1f})，斜率{ema_slope:.1f})**
 - 上方巨大的清算墙不再是“强阻力”，而是多头继续猎杀的目标。
 - 资金费率转正视作“多头建仓确认”。
-- 允许轻仓追多。
 """
     else:
         trend_extra = f"""
 **当前市场判定为【震荡市】（ATR百分位{atr_percentile:.0f}%）**
-- 采用均衡权重，严格遵循盈亏比要求。
-- 当价格紧贴强支撑/阻力（距离<0.3×ATR）时，即使方向偏向某一侧，也必须因“盈亏比不足”而输出neutral。
+- 采用均衡权重。当价格紧贴强支撑/阻力时，若止损设置得当可轻仓博弈，但需明确关键位。
 """
 
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
@@ -409,8 +405,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
 - 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}
 - 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}（相对OI的百分比见评分细节）
-- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优；强度较弱时注明）
+- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}（相对OI百分比见系统评分）
+- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优）
 
 **资金流向**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
@@ -425,11 +421,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **第一步：清算动力学定锚**
 - 对比上下方清算金额。在趋势空头市中，下方巨大清算墙视为“潜在猎物”而非“强支撑”。
-- 结论应表述为【潜在支撑有效，但当前价位不具备入场盈亏比，视为中性观察区】或【偏多/偏空，具备盈亏比】。避免使用模糊的“偏多但需等待”。
+- 结论应表述为【偏多/偏空/风险预警/中性观察】。若价格紧贴关键位导致空间狭窄，需说明“盈亏空间有限，但若止损设置得当可轻仓博弈”。
 
 **第二步：多空博弈找“犯错方”**
-- 分析资金费率（绝对值<0.01%视为中性）、顶级交易员、净持仓。
-- 结论应明确【偏多/偏空/中性】，并指出最显著的博弈信号。
+- 分析资金费率（<0.01%视为中性）、顶级交易员、净持仓。
+- 结论：【偏多/偏空/中性】。
 
 **第三步：宏观过滤器定基调**
 - 分析ETH/BTC汇率趋势、交易所钱包余额。
@@ -437,31 +433,22 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **第四步：信号共振与矛盾裁决**
 - 列举支持与矛盾信号。必须提及最支持方向的信号和最矛盾的信号。
-- 若最终输出neutral，必须显式说明否决原因，至少包含以下之一：“信号共振强度不足”、“潜在盈亏比低于阈值”、“关键数据缺失或矛盾”。
-- **在震荡市中，若潜在盈亏比<0.5，必须输出neutral，并在reasoning中说明。**
+- 若最终输出neutral，必须显式说明否决原因，例如：“信号共振强度不足”、“关键数据矛盾”、“缺乏有效锚点”。
 
-**第五步：止盈止损锚定与盈亏比计算**
-- TP1锚定来源与距离，止损锚定来源与距离。
-- 计算盈亏比。在趋势空头市中，盈亏比要求可降至0.4。
-- 若盈亏比<0.3，必须输出neutral。
-- **必须在reasoning中注明：止损基于（X倍ATR / 关键支撑位下方Y%）设置。**
+**第五步：止损设置校验（强制执行）**
+- 止损必须设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。
+- **必须在reasoning中注明止损依据**（例如：“止损设在下方清算密集区74293.5下方0.3%处”）。
+- 若无法找到明确关键位，必须输出neutral。
 
 ### 中性策略特殊要求
 若输出`neutral`，必须在`reasoning`中明确列出：
-- 转为多头的条件（需量化，如“小时K线收盘价高于XX，且下一根K线未跌破”）
-- 转为空头的条件（需量化，如“小时K线收盘价低于XX，并伴随资金费率转正或主动卖盘放量”）
-- **禁止使用简单的“收于其下”作为唯一转空条件，需增加确认信号。**
+- 转为多头的量化条件
+- 转为空头的量化条件
 
 ### 分批止盈规则（必须遵守）
 - 触及 TP1 时，必须平仓 **50%** 的仓位，剩余仓位止损移动至成本价。
 - TP2 为最终目标，触及后平仓剩余仓位。
-- 你输出的 `position_size_ratio` 为**总仓位**。
 - 在 `risk_note` 中必须注明：“TP1减仓50%，剩余仓位止损移至成本价”。
-
-### 试探信号的审慎原则
-- 你只能在“信号共振强度不足，但趋势市结构清晰”时使用试探信号（`is_probe: true`）。
-- 不得将常规中性策略强行标记为试探信号。
-- 若你在连续 3 次输出中使用了试探信号，第 4 次必须输出 neutral 以等待趋势确认。
 
 ### 策略输出要求
 请严格按JSON格式输出：
@@ -476,8 +463,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "tp1_anchor": "TP1锚定来源",
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2锚定来源",
-  "position_size_ratio": 仓位比例（0.0-1.0）,
-  "profit_ratio": 盈亏比数值（保留两位小数）,
   "reasoning": "必须包含强制分析步骤的简要结论，并说明止损依据",
   "risk_note": "风险提示（必须包含分批止盈说明）"
 }}
@@ -487,9 +472,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - TP2 锚定下一个清算区或清算最大痛点，需与TP1保持分层距离。
 - 若有效锚点不足，可使用1.5×ATR估算。
 
-### 止损与仓位
+### 止损规则
 - {stop_rule}
-- {position_rule}
 - 所有价格保留1位小数。
 """
 
@@ -510,7 +494,6 @@ def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
             strategy.setdefault("tp1_anchor", "未提供")
             strategy.setdefault("tp2_anchor", "未提供")
             strategy.setdefault("is_probe", False)
-            strategy.setdefault("profit_ratio", 0.0)
             return strategy
         except Exception as e:
             logger.warning(f"DeepSeek 调用失败: {e}")
