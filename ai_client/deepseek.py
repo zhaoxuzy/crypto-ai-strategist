@@ -97,11 +97,9 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     signals_detail = []
     min_liq_threshold = LIQ_MIN_THRESHOLDS.get(symbol.upper(), 50_000_000)
 
-    # 趋势强度得分（0-100），用于平滑过渡权重
     trend_score = trend_info.get("score", 0) if trend_info else 0
     trend_direction = trend_info.get("direction", "neutral") if trend_info else "neutral"
 
-    # 震荡市基准权重
     w_liq_r = 25
     w_pos_r = 29
     w_cvd_r = 11
@@ -112,7 +110,6 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     w_ob_r = 11
     w_macro_r = 8
 
-    # 趋势市基准权重（取bull/bear平均值）
     w_liq_t = 15
     w_pos_t = 15
     w_cvd_t = 25
@@ -123,8 +120,7 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
     w_ob_t = 7
     w_macro_t = 5
 
-    # 根据趋势强度得分线性插值权重
-    t = trend_score / 100.0  # 0-1
+    t = trend_score / 100.0
     weight_liq = int(w_liq_r * (1 - t) + w_liq_t * t)
     weight_pos = int(w_pos_r * (1 - t) + w_pos_t * t)
     weight_cvd = int(w_cvd_r * (1 - t) + w_cvd_t * t)
@@ -364,7 +360,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     if extreme_liq:
         extreme_liq_text = "\n⚠️ **极端清算警报**：当前单侧清算额异常巨大，存在极端失衡风险。\n"
 
-    # 趋势状态描述
     trend_desc = ""
     if trend_info:
         direction = trend_info.get("direction", "neutral")
@@ -439,9 +434,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 止损必须设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。
 - **必须在reasoning中注明止损依据**。
 - 若无法找到明确关键位，必须输出neutral。
-
-### 中性策略特殊要求
-若输出`neutral`，必须在`reasoning`中明确列出转为多/空头的量化条件。
 
 ### 分批止盈规则（必须遵守）
 - 触及 TP1 时，必须平仓 **50%** 的仓位，剩余仓位止损移动至成本价。
