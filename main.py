@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
-from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema
+from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
 from data_fetcher.macro_cache import get_macro_data
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
@@ -18,14 +18,18 @@ STRATEGY_PROFILES = {
 
 MIN_WIN_RATE = 50
 
-def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current_price: float) -> str:
-    """判定市场状态：trend_bear / trend_bull / range"""
+def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> tuple:
+    """判定市场状态：trend_bear / trend_bull / range。返回(regime, atr_percentile, ema_slope)"""
     if not klines or len(klines) < 55:
-        return "range"
+        return "range", 50.0, 0.0
 
     ema55 = calculate_ema(klines, 55)
-    if ema55 <= 0:
-        return "range"
+    ema_slope = calculate_ema_slope(klines, 55, 5)
+    atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
+
+    # 低波动率过滤：ATR百分位<30%时，强制判定为震荡市
+    if atr_percentile < 30:
+        return "range", atr_percentile, ema_slope
 
     price_below_ema = current_price < ema55
     cvd_bearish = cvd_signal in ["bearish", "slightly_bearish"]
@@ -34,15 +38,16 @@ def get_market_regime(klines: list, cvd_signal: str, taker_ratio: float, current
     cvd_bullish = cvd_signal in ["bullish", "slightly_bullish"]
     taker_bullish = taker_ratio > 0.55
 
+    # 均线斜率确认：趋势方向需与EMA斜率一致
     bear_conditions = sum([price_below_ema, cvd_bearish, taker_bearish])
     bull_conditions = sum([not price_below_ema, cvd_bullish, taker_bullish])
 
-    if bear_conditions >= 2:
-        return "trend_bear"
-    elif bull_conditions >= 2:
-        return "trend_bull"
+    if bear_conditions >= 2 and ema_slope < 0:
+        return "trend_bear", atr_percentile, ema_slope
+    elif bull_conditions >= 2 and ema_slope > 0:
+        return "trend_bull", atr_percentile, ema_slope
     else:
-        return "range"
+        return "range", atr_percentile, ema_slope
 
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
@@ -60,13 +65,13 @@ def main():
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
     if symbol not in SYMBOL_MAP:
         symbol = "BTC"
-    profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"])
+    profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"]).copy()
     okx_inst_id = SYMBOL_MAP[symbol]
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
     try:
         price = get_current_price(okx_inst_id)
         if price <= 0: raise Exception("无法获取当前价格")
-        klines = get_klines(okx_inst_id, "1H", 60)  # 获取足够计算EMA55的K线
+        klines = get_klines(okx_inst_id, "1H", 70)  # 足够计算ATR百分位和EMA斜率
         atr = calculate_atr(okx_inst_id)
         ema55 = calculate_ema(klines, 55)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}, EMA55: {ema55:.1f}")
@@ -78,8 +83,15 @@ def main():
         if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
         volatility_factor = cg.calculate_volatility_factor(symbol)
-        market_regime_klines = cg.get_market_regime_from_klines(klines, price, atr) if hasattr(cg, 'get_market_regime_from_klines') else {"regime": "range", "details": {"reason": "默认"}}
         macro = get_macro_data()
+
+        # 动态调整风控参数（根据波动率）
+        if volatility_factor > 1.5:
+            profile['stop_multiplier'] = profile.get('stop_multiplier', 1.5) * 1.5
+            profile['tp1_ratio'] = profile.get('tp1_ratio', 1.5) * 1.3
+        elif volatility_factor < 0.7:
+            profile['stop_multiplier'] = profile.get('stop_multiplier', 1.5) * 0.8
+            profile['tp1_ratio'] = profile.get('tp1_ratio', 1.5) * 0.8
 
         # 判定趋势状态
         cvd_signal = cg_data.get("cvd_signal", "neutral")
@@ -88,12 +100,22 @@ def main():
             taker_ratio = float(taker_ratio_str)
         except:
             taker_ratio = 0.5
-        trend_regime = get_market_regime(klines, cvd_signal, taker_ratio, price)
-        logger.info(f"市场趋势状态: {trend_regime}")
+        trend_regime, atr_percentile, ema_slope = get_market_regime(klines, cvd_signal, taker_ratio, price, atr)
+        logger.info(f"市场趋势状态: {trend_regime}, ATR百分位: {atr_percentile}%, EMA斜率: {ema_slope:.1f}")
 
-        prompt = build_prompt(symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro, profile=profile, volatility_factor=volatility_factor, market_regime=trend_regime, ema55=ema55, liq_warning=liq_warning, data_source_status=data_source_status)
+        prompt = build_prompt(
+            symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
+            profile=profile, volatility_factor=volatility_factor, market_regime=trend_regime,
+            ema55=ema55, ema_slope=ema_slope, atr_percentile=atr_percentile,
+            liq_warning=liq_warning, data_source_status=data_source_status
+        )
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
+
+        # 试探信号仓位自动减半
+        if strategy.get("is_probe", False):
+            strategy["position_size_ratio"] = strategy.get("position_size_ratio", 0.2) * 0.5
+            strategy["reasoning"] = "【试探信号，仓位已自动减半】" + strategy.get("reasoning", "")
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
@@ -103,7 +125,10 @@ def main():
         eth_btc_data = cg.get_eth_btc_ratio()
         balance_data = cg.get_exchange_balances()
 
-        signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, eth_btc_data, balance_data, trend_regime)
+        signal_strength = calculate_signal_strength(
+            symbol, strategy["direction"], cg_data, macro, liq_zero_count,
+            eth_btc_data, balance_data, trend_regime
+        )
         strategy["win_rate"] = signal_strength["win_rate"]
 
         if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
@@ -128,7 +153,9 @@ def main():
             "data_source_status": data_source_status,
             "profit_ratio": strategy.get("profit_ratio", 0.0),
             "market_regime": trend_regime,
-            "ema55": ema55
+            "ema55": ema55,
+            "atr_percentile": atr_percentile,
+            "volatility_factor": volatility_factor
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
