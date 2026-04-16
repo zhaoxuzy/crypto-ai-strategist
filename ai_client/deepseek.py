@@ -304,6 +304,11 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
                                         coinglass_data.get("option_oi_usd")] if v == "N/A")
     total_score -= min(15, core_missing * 5 + important_missing * 3 + auxiliary_missing * 1)
 
+    # 宏观情绪对做多的额外门槛（不禁止，但提高难度）
+    if fg_val < 30 and direction == "long":
+        total_score -= 10
+        signals_detail.append("⚠️极度恐惧做多，需更高共振")
+
     total_score = max(-20, min(100, total_score))
 
     if total_score >= 75:
@@ -373,7 +378,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         else:
             trend_desc = f"**趋势强度**：无明显倾向，得分{score}/100（震荡特征明显）"
         if 30 <= score <= 70:
-            trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。建议轻仓或等待确认。"
+            trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
 
@@ -428,12 +433,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **第四步：信号共振与矛盾裁决**
 - 列举支持与矛盾信号。必须提及最支持方向的信号和最矛盾的信号。
-- 若最终输出neutral，必须显式说明否决原因。
+- **过渡期规则**：趋势得分30-70时，允许输出试探信号（`is_probe: true`），前提是清算或持仓结构有明确偏向。
+- **紧贴规则**：若价格紧贴关键位（距离<0.3×ATR），不得直接输出neutral。允许输出方向，但必须将`confidence`设为`low`，并在`risk_note`中注明“⚠️价格紧贴关键区，盈亏比偏窄，建议轻仓”。
+- **倾向性裁决**：若支持信号与矛盾信号并存，比较累计权重。若支持信号总权重大于矛盾信号的1.5倍，可输出`confidence: "low"`的方向，而非neutral。
 
 **第五步：止损设置校验（强制执行）**
-- 止损必须设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。
+- 止损优先设在最近关键支撑/阻力外侧（做多时低于支撑0.2%-0.3%，做空时高于阻力0.2%-0.3%）。
+- 若无法找到明确结构锚点，允许使用 **1.5×ATR 作为止损距离**，并在`reasoning`中注明“采用波动率止损”。
 - **必须在reasoning中注明止损依据**。
-- 若无法找到明确关键位，必须输出neutral。
 
 ### 分批止盈规则（必须遵守）
 - 触及 TP1 时，必须平仓 **50%** 的仓位，剩余仓位止损移动至成本价。
