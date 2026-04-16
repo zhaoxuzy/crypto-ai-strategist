@@ -77,7 +77,6 @@ def calculate_atr_percentile(klines: list, current_atr: float, period: int = 20)
     if not klines or len(klines) < period + 14:
         return 50.0
 
-    # 计算每根K线对应的14周期ATR（滑动窗口）
     atr_values = []
     for i in range(14, len(klines)):
         true_ranges = []
