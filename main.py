@@ -20,7 +20,6 @@ STRATEGY_PROFILES = {
 MIN_WIN_RATE = 50
 probe_history = deque(maxlen=20)
 
-# 极端清算阈值（美元）
 EXTREME_LIQ_THRESHOLDS = {"BTC": 200_000_000, "ETH": 80_000_000, "SOL": 20_000_000}
 
 def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
@@ -95,38 +94,32 @@ def check_momentum_override(klines: list, cvd_signal: str, taker_ratio: float, c
     price_above = current_price > ema55
     cvd_bullish = cvd_signal in ["bullish", "slightly_bullish"]
     taker_bullish = taker_ratio > 0.55
-    if price_below and cvd_bearish and taker_bearish:
+    if (price_below and cvd_bearish and not taker_bullish) or (price_below and taker_bearish and not cvd_bullish) or (cvd_bearish and taker_bearish and not price_above):
         return {"active": True, "direction": "short", "cvd": cvd_signal, "taker": taker_ratio}
-    elif price_above and cvd_bullish and taker_bullish:
+    elif (price_above and cvd_bullish and not taker_bearish) or (price_above and taker_bullish and not cvd_bearish) or (cvd_bullish and taker_bullish and not price_below):
         return {"active": True, "direction": "long", "cvd": cvd_signal, "taker": taker_ratio}
     return {"active": False}
 
 def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict) -> dict:
-    # 简化版方向倾向得分（供AI裁决参考）
     bull_score, bear_score = 0, 0
-    # 清算方向
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
     if above + below > 0:
         if above > below * 1.3: bear_score += 30
         elif below > above * 1.3: bull_score += 30
-    # CVD
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bearish", "slightly_bearish"]: bear_score += 25
     elif cvd in ["bullish", "slightly_bullish"]: bull_score += 25
-    # 主动买卖盘
     try:
         tr = float(coinglass_data.get("taker_ratio", 0.5))
         if tr < 0.45: bear_score += 15
         elif tr > 0.55: bull_score += 15
     except: pass
-    # 顶级交易员
     try:
         tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
         if tls > 2.0: bear_score += 20
         elif tls < 0.7: bull_score += 20
     except: pass
-    # 恐惧贪婪
     fg = int(macro_data.get("fear_greed", {}).get("value", 50))
     if fg < 30: bull_score += 10
     elif fg > 70: bear_score += 10
@@ -183,14 +176,12 @@ def main():
         key_levels = get_key_levels(cg_data, ema55)
         directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info)
 
-        # 紧贴关键位判定
         near_key_level = False
         if trend_info["direction"] == "bull" and key_levels["resistance"] > 0:
             if abs(price - key_levels["resistance"]) < 0.3 * atr: near_key_level = True
         elif trend_info["direction"] == "bear" and key_levels["support"] > 0:
             if abs(price - key_levels["support"]) < 0.3 * atr: near_key_level = True
 
-        # 极端清算判定
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
@@ -202,7 +193,7 @@ def main():
             momentum_override=momentum_override, key_levels=key_levels, near_key_level=near_key_level,
             directional_scores=directional_scores
         )
-        strategy = call_deepseek(prompt)
+        strategy = call_deepseek(prompt, momentum_override, extreme_liq)
         if not strategy: raise Exception("DeepSeek 返回为空")
 
         is_probe = strategy.get("is_probe", False)
