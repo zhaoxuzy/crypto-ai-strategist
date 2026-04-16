@@ -110,6 +110,10 @@ def calculate_signal_strength(symbol: str, direction: str, coinglass_data: dict,
                     signals_detail.append(f"清算结构({short_ratio:.1%}, 规模小)")
                 else:
                     signals_detail.append(f"清算结构({short_ratio:.1%})")
+            # 关键修复：下方多头为0时，做多必须严重扣分
+            if direction == "long" and below_val == 0:
+                total_score -= 15
+                signals_detail.append("下方无多头清算(风险极大)")
             if (direction == "long" and short_ratio > 0.6) or (direction == "short" and short_ratio < 0.4):
                 total_score -= 25 * 0.4
                 signals_detail.append("清算结构反向")
@@ -337,10 +341,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 在输出最终的JSON前，你必须在内心（并在reasoning字段中）完成以下步骤的确认。每一个步骤的结论都必须明确。
 
-**第一步：清算动力学定锚**
+**第一步：清算动力学定锚（关键修复）**
 - 对比上方空头清算总额和下方多头清算总额。
-- 判断结论：价格更易被磁吸向（上方/下方）？该方向的清算墙厚度是否达到对方1.3倍以上？
-- 确认结果：【偏多/偏空/中性】
+- **强制解读规则**：
+    1. 若【下方多头清算 ≈ 0 或 规模极小】，意味着价格下方无强力支撑，一旦下跌极易崩盘。此时，即使上方有巨大空头清算，也**严禁**将此解读为【偏多】。必须标注为【风险预警：下方无支撑，做多盈亏比极差】。
+    2. 只有当【下方多头清算 > 0】且【上方空头清算 > 下方多头清算 × 1.3】时，才可解读为【偏多】（支撑位明确，盈亏比合理）。
+- 确认结果：【偏多/偏空/风险预警】
 
 **第二步：多空博弈找“犯错方”**
 - 分析资金费率：是极端正值（多头拥挤）还是负值（空头拥挤）？
@@ -365,6 +371,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 该距离是否 ≥ 最小盈利空间阈值且 ≤ 最大约束？【是/否】
 - TP2锚定来源：____，与TP1的分层距离是____ USDT，是否满足分层要求？【是/否】
 - 止损锚定来源：____，是否位于关键支撑/阻力下方？【是/否】
+- **强制盈亏比规则**：做多时，(TP1 - 入场价) **必须 ≥** (入场价 - 止损) × 0.8。若无法满足，必须输出neutral。
 
 **完成以上分析后，再生成最终JSON。你的reasoning字段必须是对上述步骤的简要总结。**
 
