@@ -23,8 +23,7 @@ probe_history = deque(maxlen=20)
 
 def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
     """
-    计算连续趋势强度得分（0-100）及方向。
-    返回：{"direction": "bull"/"bear"/"neutral", "score": 0-100, "confidence": 可信度描述, "signals": []}
+    计算趋势强度得分（0-100），即时判定，无确认期。
     """
     if not klines or len(klines) < 55:
         return {"direction": "neutral", "score": 0, "confidence": "数据不足", "signals": []}
@@ -33,80 +32,73 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
     ema_slope = calculate_ema_slope(klines, 55, 5)
     atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
 
-    # 基础得分 = 各条件满足情况
     score = 0
     signals = []
     direction = "neutral"
 
-    # 1. 价格与均线关系 (0-30分)
-    price_above = current_price > ema55
-    if price_above:
-        score += 30
-        signals.append("价格>EMA55")
-        direction = "bull"
-    else:
+    # 1. 价格与均线关系 (0-35分)
+    if current_price < ema55:
+        score += 35
         signals.append("价格<EMA55")
         direction = "bear"
+    else:
+        signals.append("价格>EMA55")
+        direction = "bull"
 
     # 2. 均线斜率 (0-25分)
-    if ema_slope > 2.0:
+    if ema_slope < -2.0:
+        score += 25
+        signals.append("EMA斜率向下")
+    elif ema_slope > 2.0:
         score += 25
         signals.append("EMA斜率向上")
-    elif ema_slope < -2.0:
-        signals.append("EMA斜率向下")
     else:
         score += 10
         signals.append("EMA斜率走平")
 
     # 3. CVD信号 (0-25分)
-    if cvd_signal in ["bullish", "slightly_bullish"]:
+    if cvd_signal in ["bearish", "slightly_bearish"]:
+        score += 25 if cvd_signal == "bearish" else 15
+        signals.append(f"CVD:{cvd_signal}")
+        if direction == "neutral":
+            direction = "bear"
+    elif cvd_signal in ["bullish", "slightly_bullish"]:
         score += 25 if cvd_signal == "bullish" else 15
         signals.append(f"CVD:{cvd_signal}")
         if direction == "neutral":
             direction = "bull"
-    elif cvd_signal in ["bearish", "slightly_bearish"]:
-        signals.append(f"CVD:{cvd_signal}")
-        if direction == "neutral":
-            direction = "bear"
     else:
         score += 5
         signals.append("CVD:neutral")
 
-    # 4. 主动买卖盘 (0-20分)
-    if taker_ratio > 0.55:
-        score += 20
-        signals.append(f"主动买盘({taker_ratio:.2f})")
-        if direction == "neutral":
-            direction = "bull"
-    elif taker_ratio < 0.45:
+    # 4. 主动买卖盘 (0-15分)
+    if taker_ratio < 0.45:
+        score += 15
         signals.append(f"主动卖盘({taker_ratio:.2f})")
         if direction == "neutral":
             direction = "bear"
+    elif taker_ratio > 0.55:
+        score += 15
+        signals.append(f"主动买盘({taker_ratio:.2f})")
+        if direction == "neutral":
+            direction = "bull"
     else:
-        score += 10
+        score += 5
         signals.append("主动买卖均衡")
 
-    # 低波动惩罚：ATR百分位<30%时，趋势强度降权
+    # 低波动惩罚
     if atr_percentile < 30:
-        score = int(score * 0.6)
-        signals.append(f"低波动惩罚(ATR百分位{atr_percentile:.0f}%)")
+        score = int(score * 0.7)
+        signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
 
-    # 限制范围
     score = max(0, min(100, score))
 
-    # 可信度描述
-    if score >= 70:
+    if score >= 60:
         confidence = "高"
-    elif score >= 40:
+    elif score >= 35:
         confidence = "中"
     else:
         confidence = "低"
-
-    # 方向校正：如果方向与主要得分矛盾，设为neutral
-    if direction == "bull" and current_price < ema55 and cvd_signal not in ["bullish", "slightly_bullish"]:
-        direction = "neutral"
-    elif direction == "bear" and current_price > ema55 and cvd_signal not in ["bearish", "slightly_bearish"]:
-        direction = "neutral"
 
     return {
         "direction": direction,
@@ -117,6 +109,30 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
         "ema_slope": ema_slope,
         "atr_percentile": atr_percentile
     }
+
+def check_momentum_signal(klines: list, cvd_signal: str, taker_ratio: float, current_price: float) -> dict:
+    """检测是否满足动量追势快速通道条件"""
+    if not klines or len(klines) < 5:
+        return {"active": False}
+    
+    ema55 = calculate_ema(klines, 55)
+    if ema55 == 0:
+        return {"active": False}
+    
+    price_below_ema = current_price < ema55
+    cvd_bearish = cvd_signal in ["bearish", "slightly_bearish"]
+    taker_bearish = taker_ratio < 0.45
+    
+    price_above_ema = current_price > ema55
+    cvd_bullish = cvd_signal in ["bullish", "slightly_bullish"]
+    taker_bullish = taker_ratio > 0.55
+    
+    if price_below_ema and cvd_bearish and taker_bearish:
+        return {"active": True, "direction": "short", "cvd": cvd_signal, "taker": taker_ratio}
+    elif price_above_ema and cvd_bullish and taker_bullish:
+        return {"active": True, "direction": "long", "cvd": cvd_signal, "taker": taker_ratio}
+    
+    return {"active": False}
 
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
@@ -170,9 +186,8 @@ def main():
             taker_ratio = 0.5
 
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr)
-        trend_direction = trend_info["direction"]
-        trend_score = trend_info["score"]
-        logger.info(f"趋势强度: 方向={trend_direction}, 得分={trend_score}/100, 可信度={trend_info['confidence']}")
+        momentum_signal = check_momentum_signal(klines, cvd_signal, taker_ratio, price)
+        logger.info(f"趋势强度: 方向={trend_info['direction']}, 得分={trend_info['score']}/100, 动量信号={'触发' if momentum_signal['active'] else '未触发'}")
 
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
@@ -185,7 +200,8 @@ def main():
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
-            extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status
+            extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
+            momentum_signal=momentum_signal
         )
         strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
@@ -233,7 +249,8 @@ def main():
             "trend_info": trend_info,
             "volatility_factor": volatility_factor,
             "extreme_liq": extreme_liq,
-            "is_probe": is_probe
+            "is_probe": is_probe,
+            "momentum_active": momentum_signal.get("active", False)
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
