@@ -51,6 +51,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     strength_max = signal_strength.get("max_score", 100)
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
+    profit_ratio = extra.get("profit_ratio", 0.0)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
     if direction == "neutral":
@@ -82,6 +83,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
 - **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
 - **建议仓位**：{int(position*100)}%
+- **盈亏比**：{profit_ratio:.2f}（TP1/止损）
 ### 📈 AI 分析逻辑
 > {strategy.get('reasoning', '暂无分析')}
 ### ⚠️ 风险提示
