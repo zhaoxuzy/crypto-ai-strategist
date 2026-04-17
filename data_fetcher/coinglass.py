@@ -710,5 +710,9 @@ class CoinGlassClient:
         data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
         data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
         data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
+       
+        # 获取 ETH/BTC 汇率趋势并存入 data
+        eth_btc_ratio = self.get_eth_btc_ratio()
+        data["eth_btc_ratio"] = eth_btc_ratio
 
         return data
