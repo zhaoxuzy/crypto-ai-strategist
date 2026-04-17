@@ -37,6 +37,7 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
         logger.error(f"钉钉请求异常: {e}")
         return False
 
+
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
@@ -52,7 +53,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 获取置信度等级（取代 win_rate）
     confidence_grade = signal_strength.get("confidence_grade", "Low")
     grade_star = {"High": "★★★", "Medium": "★★☆", "Low": "★☆☆"}.get(confidence_grade, "☆☆☆")
     grade_display = f"{grade_star} {confidence_grade}"
@@ -61,7 +61,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
     trend_confidence = trend_info.get("confidence", "低")
-    trend_signals = ", ".join(trend_info.get("signals", []))
 
     if trend_direction == "bull":
         trend_text = f"多头倾向({trend_score}/100，可信度{trend_confidence})"
@@ -73,7 +72,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         trend_text += " ⚠️过渡期"
 
-    # 信号可信度（基于分数，用于中性消息和仓位建议）
     if strength_score >= 75:
         credibility = "★★★★☆"
         cred_desc = "正常仓位"
