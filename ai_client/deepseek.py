@@ -70,9 +70,29 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     score, det = 0.0, []
     trend_score = trend_info.get("score", 0) if trend_info else 0
 
-    w_liq_r, w_pos_r, w_cvd_r, w_fg_r, w_fr_r, w_taker_r, w_net_r, w_ob_r, w_macro_r = 25, 29, 11, 7, 4, 7, 5, 11, 8
-    w_liq_t, w_pos_t, w_cvd_t, w_fg_t, w_fr_t, w_taker_t, w_net_t, w_ob_t, w_macro_t = 15, 15, 25, 5, 3, 15, 3, 7, 5
+    # ---------- 震荡市权重（总和 100）----------
+    w_liq_r = 28      # 清算结构
+    w_pos_r = 16      # 持仓结构
+    w_cvd_r = 18      # CVD
+    w_fg_r = 4        # 恐惧贪婪
+    w_fr_r = 5        # 资金费率
+    w_taker_r = 14    # 主动吃单比率
+    w_net_r = 7       # 净持仓变化
+    w_ob_r = 5        # 订单簿失衡
+    w_macro_r = 3     # 宏观（ETH/BTC、余额）
 
+    # ---------- 趋势市权重（总和 100）----------
+    w_liq_t = 22      # 清算结构
+    w_pos_t = 10      # 持仓结构
+    w_cvd_t = 25      # CVD
+    w_fg_t = 3        # 恐惧贪婪
+    w_fr_t = 4        # 资金费率
+    w_taker_t = 20    # 主动吃单比率
+    w_net_t = 5       # 净持仓变化
+    w_ob_t = 5        # 订单簿失衡
+    w_macro_t = 3     # 宏观
+
+    # 根据趋势得分线性插值权重
     t = trend_score / 100.0
     weight_liq = int(w_liq_r * (1 - t) + w_liq_t * t)
     weight_pos = int(w_pos_r * (1 - t) + w_pos_t * t)
@@ -92,7 +112,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score += 10
             det.append("极端清算支持做空")
 
-    # ---------- 清算结构（核心数据，转换失败则直接抛异常）----------
+    # ---------- 1. 清算结构 ----------
     above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
     total = above + below
@@ -108,12 +128,12 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         if s > 5:
             det.append(f"清算结构({ratio:.1%})")
 
-    # ---------- 持仓结构 ----------
+    # ---------- 2. 持仓结构 ----------
     pos_s, pos_d = get_position_structure_score(direction, cg, macro, symbol)
     score += pos_s * (weight_pos / 32.0)
     det.extend(pos_d)
 
-    # ---------- CVD ----------
+    # ---------- 3. CVD ----------
     cvd = cg.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         if direction == "long":
@@ -132,7 +152,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score -= weight_cvd * 0.5
             det.append("CVD反向")
 
-    # ---------- 恐惧贪婪 ----------
+    # ---------- 4. 恐惧贪婪（已移除额外扣分）----------
     fg_val = int(macro.get("fear_greed", {}).get("value", 50))
     if direction == "long":
         s = linear_score(fg_val, 20, 50, weight_fg, True)
@@ -141,8 +161,9 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     score += s
     if s > 2:
         det.append(f"恐惧贪婪({fg_val})")
+    # 注意：已移除 fg_val < 30 时的 -10 分惩罚
 
-    # ---------- 资金费率 ----------
+    # ---------- 5. 资金费率 ----------
     try:
         fr = float(cg.get("funding_rate", 0))
         if direction == "short":
@@ -155,7 +176,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # ---------- 主动吃单比率 ----------
+    # ---------- 6. 主动吃单比率 ----------
     try:
         tr = float(cg.get("taker_ratio", 0.5))
         if direction == "long":
@@ -168,7 +189,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # ---------- 净持仓累积（OI百分比）----------
+    # ---------- 7. 净持仓累积（OI百分比）----------
     try:
         np = float(cg.get("net_position_cum", 0))
         oi_usd = cg.get("option_oi_usd", "N/A")
@@ -184,7 +205,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
-    # ---------- 订单簿失衡率 ----------
+    # ---------- 8. 订单簿失衡率 ----------
     imb = cg.get("orderbook_imbalance", 0.0)
     if direction == "long":
         s = linear_score(imb, 0.1, 0.3, weight_ob, False)
@@ -194,7 +215,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     if abs(s) > 3:
         det.append(f"订单簿({imb:.2f})")
 
-    # ---------- 宏观过滤器 ----------
+    # ---------- 9. 宏观过滤器 ----------
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
         if direction == "long" and trend == "up":
@@ -212,10 +233,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         elif direction == "short" and stable_flow == "out" and btc_flow == "in":
             score += weight_macro
             det.append(f"余额:稳定币流出&BTC流入(+{weight_macro})")
-
-    if fg_val < 30 and direction == "long":
-        score -= 10
-        det.append("⚠️极度恐惧做多门槛提高")
 
     # 数据缺失扣分
     core_missing = sum(1 for v in [cg.get("above_short_liquidation"), cg.get("cvd_signal")] if v == "N/A")
@@ -236,7 +253,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     else:
         level = "极弱"
 
-    # 置信度等级（取代虚假胜率）
+    # 置信度等级
     if score >= 60:
         confidence_grade = "High"
     elif score >= 35:
@@ -254,7 +271,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         "score": round(score, 1),
         "max_score": 100,
         "details": det,
-        "confidence_grade": confidence_grade   # 替代 win_rate
+        "confidence_grade": confidence_grade
     }
 
 
@@ -293,10 +310,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     bull_score = directional_scores.get("bull", 0) if directional_scores else 0
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
     diff = abs(bull_score - bear_score)
-    if diff > 18:
-        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值 {diff} > 18，可倾向高分方向（置信度 low）。"
-    elif diff > 12:
-        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值在12-18之间，弱倾向，若输出方向必须为试探信号(is_probe=true)。"
+    if diff > 15:
+        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值 {diff} > 15，可倾向高分方向（置信度 low）。"
+    elif diff > 10:
+        score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值在10-15之间，弱倾向，若输出方向必须为试探信号(is_probe=true)。"
     else:
         score_guidance = f"**方向倾向得分**：多头 {bull_score} vs 空头 {bear_score}。差值较小，信号矛盾。"
 
@@ -310,7 +327,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         if 30 <= score_t <= 70:
             trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    # 止损候选值
     stop_override = stop_candidates.get("override", 0.0) if stop_candidates else 0.0
     stop_key = stop_candidates.get("key", 0.0) if stop_candidates else 0.0
     stop_default = stop_candidates.get("default", 0.0) if stop_candidates else 0.0
@@ -378,7 +394,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **第四步：信号共振与矛盾裁决**
 - 列举支持与矛盾信号。**必须提及最支持方向的信号和最矛盾的信号**。
-- **倾向性裁决**：参考上方提供的方向倾向得分（多头{bull_score} vs 空头{bear_score}）。若差值>15分，且无覆盖指令，可倾向高分方向（confidence为low）。
+- **倾向性裁决**：参考上方提供的方向倾向得分（多头{bull_score} vs 空头{bear_score}）。若差值>10分，且无覆盖指令，可倾向高分方向（confidence为low）。
 - **过渡期规则**：趋势得分30-70时，允许输出试探信号（`is_probe: true`），前提是清算或持仓结构有明确偏向。
 - **紧贴规则**：若价格紧贴关键位（距离<0.3×ATR），不得直接输出neutral。允许输出方向，但必须将`confidence`设为`low`，并在`risk_note`中注明“⚠️价格紧贴关键区，盈亏比偏窄，建议轻仓”。
 - 若最终输出neutral，必须显式说明否决原因。
