@@ -17,7 +17,6 @@ STRATEGY_PROFILES = {
     "SOL": {"base_win_rate": 45, "max_win_rate": 75, "stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6, "min_profit_pct": 0.005, "min_profit_atr_mult": 0.8, "tp2_layer_atr_mult": 0.5, "signals": {"liquidation": {"weight": 20, "reliable": True}, "funding_rate": {"weight": 10, "reliable": True}, "top_trader": {"weight": 0, "reliable": False}, "cvd": {"weight": 15, "reliable": True}, "fear_greed": {"weight": 10, "reliable": True}, "option_pain": {"weight": 0, "reliable": False}}}
 }
 
-MIN_WIN_RATE = 50
 probe_history = deque(maxlen=20)
 
 EXTREME_LIQ_THRESHOLDS = {"BTC": 200_000_000, "ETH": 80_000_000, "SOL": 20_000_000}
@@ -60,7 +59,6 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
     if atr_percentile < 30:
         score = int(score * 0.7); signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
 
-    # 清算动态信号融入趋势得分
     if liq_dynamic_signals:
         for sig in liq_dynamic_signals:
             if "清算压力偏空" in sig:
@@ -221,8 +219,7 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
-        # ----- 预先计算止损候选值（剥夺AI计算权）-----
-        # 使用趋势方向确定做多还是做空，若方向不明默认做多（但实际会在覆盖模式或倾向裁决中确定）
+        # 预先计算止损候选值
         ref_dir = trend_info.get("direction", "bull")
         if momentum_override and momentum_override.get("active"):
             ref_dir = momentum_override.get("direction", "bull")
@@ -233,15 +230,13 @@ def main():
                 ref_dir = "bear"
 
         stop_candidates = {"override": 0.0, "key": 0.0, "default": 0.0}
-        entry_ref = price  # 若后续AI输出入场区间，将以区间下限/上限为准；此处提供参考值
-        # 1. 覆盖模式止损 (0.8 ATR)
+        entry_ref = price
         if ref_dir == "long":
             stop_candidates["override"] = entry_ref - 0.8 * atr
             stop_candidates["default"] = entry_ref - 1.5 * atr
         else:
             stop_candidates["override"] = entry_ref + 0.8 * atr
             stop_candidates["default"] = entry_ref + 1.5 * atr
-        # 2. 关键位止损
         if key_levels:
             if ref_dir == "long":
                 stop_candidates["key"] = key_levels["support"] * 0.998
@@ -249,18 +244,6 @@ def main():
                 stop_candidates["key"] = key_levels["resistance"] * 1.002
         else:
             stop_candidates["key"] = stop_candidates["default"]
-
-        # 可选：动量覆盖胜率预检（若希望更保守，可取消注释启用）
-        """
-        if momentum_override.get("active"):
-            test_strength = calculate_signal_strength(
-                symbol, momentum_override["direction"], cg_data, macro, liq_zero_count,
-                cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
-            )
-            if test_strength["win_rate"] < 45:
-                logger.info(f"动量覆盖预检胜率{test_strength['win_rate']}% < 45%，取消覆盖")
-                momentum_override["active"] = False
-        """
 
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
@@ -283,14 +266,8 @@ def main():
             strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
 
         signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq)
-        strategy["win_rate"] = signal_strength["win_rate"]
 
-        if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
-            original_reasoning = strategy.get("reasoning", "")
-            strategy["direction"] = "neutral"
-            strategy["confidence"] = "low"
-            strategy["reasoning"] = f"{original_reasoning}\n\n【系统风控拦截】预估胜率{strategy['win_rate']}%低于阈值{MIN_WIN_RATE}%，强制转为观望。"
-
+        # 移除胜率拦截逻辑，改用信号强度等级辅助判断（可自行决定是否添加基于分数的拦截）
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"),
