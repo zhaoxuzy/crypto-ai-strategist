@@ -60,7 +60,7 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
     if atr_percentile < 30:
         score = int(score * 0.7); signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
 
-    # ----- 新增：清算动态信号融入趋势得分 -----
+    # 清算动态信号融入趋势得分
     if liq_dynamic_signals:
         for sig in liq_dynamic_signals:
             if "清算压力偏空" in sig:
@@ -205,7 +205,6 @@ def main():
         cvd_signal = cg_data.get("cvd_signal", "neutral")
         taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
 
-        # 获取清算动态信号列表
         liq_dynamic_signals = cg_data.get("liq_dynamic_signals", [])
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr, liq_dynamic_signals)
         momentum_override = check_momentum_override(klines, cvd_signal, taker_ratio, price)
@@ -222,12 +221,53 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
+        # ----- 预先计算止损候选值（剥夺AI计算权）-----
+        # 使用趋势方向确定做多还是做空，若方向不明默认做多（但实际会在覆盖模式或倾向裁决中确定）
+        ref_dir = trend_info.get("direction", "bull")
+        if momentum_override and momentum_override.get("active"):
+            ref_dir = momentum_override.get("direction", "bull")
+        elif directional_scores:
+            if directional_scores.get("bull", 0) > directional_scores.get("bear", 0):
+                ref_dir = "bull"
+            else:
+                ref_dir = "bear"
+
+        stop_candidates = {"override": 0.0, "key": 0.0, "default": 0.0}
+        entry_ref = price  # 若后续AI输出入场区间，将以区间下限/上限为准；此处提供参考值
+        # 1. 覆盖模式止损 (0.8 ATR)
+        if ref_dir == "long":
+            stop_candidates["override"] = entry_ref - 0.8 * atr
+            stop_candidates["default"] = entry_ref - 1.5 * atr
+        else:
+            stop_candidates["override"] = entry_ref + 0.8 * atr
+            stop_candidates["default"] = entry_ref + 1.5 * atr
+        # 2. 关键位止损
+        if key_levels:
+            if ref_dir == "long":
+                stop_candidates["key"] = key_levels["support"] * 0.998
+            else:
+                stop_candidates["key"] = key_levels["resistance"] * 1.002
+        else:
+            stop_candidates["key"] = stop_candidates["default"]
+
+        # 可选：动量覆盖胜率预检（若希望更保守，可取消注释启用）
+        """
+        if momentum_override.get("active"):
+            test_strength = calculate_signal_strength(
+                symbol, momentum_override["direction"], cg_data, macro, liq_zero_count,
+                cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
+            )
+            if test_strength["win_rate"] < 45:
+                logger.info(f"动量覆盖预检胜率{test_strength['win_rate']}% < 45%，取消覆盖")
+                momentum_override["active"] = False
+        """
+
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
             momentum_override=momentum_override, key_levels=key_levels, near_key_level=near_key_level,
-            directional_scores=directional_scores
+            directional_scores=directional_scores, stop_candidates=stop_candidates
         )
         strategy = call_deepseek(prompt, momentum_override, extreme_liq)
         if not strategy: raise Exception("DeepSeek 返回为空")
