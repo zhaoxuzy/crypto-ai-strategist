@@ -12,9 +12,9 @@ from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
 STRATEGY_PROFILES = {
-    "BTC": {"stop_multiplier": 1.5, "tp1_ratio": 1.5, "tp2_ratio": 2.5, "volatility_discount": 0.8},
-    "ETH": {"stop_multiplier": 1.8, "tp1_ratio": 1.8, "tp2_ratio": 3.0, "volatility_discount": 0.7},
-    "SOL": {"stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.6}
+    "BTC": {"stop_multiplier": 1.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.8},
+    "ETH": {"stop_multiplier": 1.8, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.7},
+    "SOL": {"stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 4.0, "volatility_discount": 0.6}
 }
 
 probe_history = deque(maxlen=20)
@@ -29,21 +29,15 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
     atr_percentile = calculate_atr_percentile(klines, current_atr, 20)
     score, signals, direction = 0, [], "neutral"
     if current_price < ema55:
-        score += 35
-        signals.append("价格<EMA55")
-        direction = "bear"
+        score += 35; signals.append("价格<EMA55"); direction = "bear"
     else:
-        signals.append("价格>EMA55")
-        direction = "bull"
+        signals.append("价格>EMA55"); direction = "bull"
     if ema_slope < -2.0:
-        score += 25
-        signals.append("EMA斜率向下")
+        score += 25; signals.append("EMA斜率向下")
     elif ema_slope > 2.0:
-        score += 25
-        signals.append("EMA斜率向上")
+        score += 25; signals.append("EMA斜率向上")
     else:
-        score += 10
-        signals.append("EMA斜率走平")
+        score += 10; signals.append("EMA斜率走平")
     if cvd_signal in ["bearish", "slightly_bearish"]:
         score += 25 if cvd_signal == "bearish" else 15
         signals.append(f"CVD:{cvd_signal}")
@@ -53,50 +47,38 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
         signals.append(f"CVD:{cvd_signal}")
         if direction == "neutral": direction = "bull"
     else:
-        score += 5
-        signals.append("CVD:neutral")
+        score += 5; signals.append("CVD:neutral")
     if taker_ratio < 0.45:
-        score += 15
-        signals.append(f"主动卖盘({taker_ratio:.2f})")
+        score += 15; signals.append(f"主动卖盘({taker_ratio:.2f})")
         if direction == "neutral": direction = "bear"
     elif taker_ratio > 0.55:
-        score += 15
-        signals.append(f"主动买盘({taker_ratio:.2f})")
+        score += 15; signals.append(f"主动买盘({taker_ratio:.2f})")
         if direction == "neutral": direction = "bull"
     else:
-        score += 5
-        signals.append("主动买卖均衡")
+        score += 5; signals.append("主动买卖均衡")
     if atr_percentile < 30:
-        score = int(score * 0.7)
-        signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
+        score = int(score * 0.7); signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
 
     if liq_dynamic_signals:
         for sig in liq_dynamic_signals:
             if "清算压力偏空" in sig:
-                score += 10
-                signals.append(sig)
+                score += 10; signals.append(sig)
                 if direction == "neutral": direction = "bear"
             elif "清算压力偏多" in sig:
-                score += 10
-                signals.append(sig)
+                score += 10; signals.append(sig)
                 if direction == "neutral": direction = "bull"
             elif "最大痛点上移" in sig:
-                score += 8
-                signals.append(sig)
+                score += 8; signals.append(sig)
                 if direction == "neutral": direction = "bull"
             elif "最大痛点下移" in sig:
-                score += 8
-                signals.append(sig)
+                score += 8; signals.append(sig)
                 if direction == "neutral": direction = "bear"
             elif "强磁吸区" in sig:
-                score += 6
-                signals.append(sig)
+                score += 6; signals.append(sig)
             elif "清算堆积加速" in sig:
-                score += 5
-                signals.append(sig)
+                score += 5; signals.append(sig)
             elif "清算堆积衰减" in sig:
-                score -= 3
-                signals.append(sig)
+                score -= 3; signals.append(sig)
 
     score = max(0, min(100, score))
     confidence = "高" if score >= 60 else ("中" if score >= 35 else "低")
@@ -114,67 +96,46 @@ def get_key_levels(coinglass_data: dict, ema55: float) -> dict:
     resistance = ema55
     if cluster_intensity >= 3 and cluster_price > 0:
         direction = cluster.get("direction", "")
-        if direction == "上":
-            resistance = cluster_price
-        elif direction == "下":
-            support = cluster_price
+        if direction == "上": resistance = cluster_price
+        elif direction == "下": support = cluster_price
     if max_pain > 0:
-        if max_pain < ema55 and max_pain > support:
-            support = max_pain
-        elif max_pain > ema55 and max_pain < resistance:
-            resistance = max_pain
+        if max_pain < ema55 and max_pain > support: support = max_pain
+        elif max_pain > ema55 and max_pain < resistance: resistance = max_pain
     if option_pain > 0:
-        if option_pain < ema55 and option_pain > support:
-            support = option_pain
-        elif option_pain > ema55 and option_pain < resistance:
-            resistance = option_pain
+        if option_pain < ema55 and option_pain > support: support = option_pain
+        elif option_pain > ema55 and option_pain < resistance: resistance = option_pain
     return {"support": support, "resistance": resistance}
 
 
 def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict) -> dict:
-    """方向倾向得分，规范化上限约100"""
     bull_score, bear_score = 0, 0
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
     total = above + below
     if total > 0:
         ratio_above = above / total
-        if ratio_above > 0.6:
-            bear_score += 25
-        elif ratio_above < 0.4:
-            bull_score += 25
+        if ratio_above > 0.6: bear_score += 25
+        elif ratio_above < 0.4: bull_score += 25
     cvd = coinglass_data.get("cvd_signal", "N/A")
-    if cvd in ["bearish", "slightly_bearish"]:
-        bear_score += 20
-    elif cvd in ["bullish", "slightly_bullish"]:
-        bull_score += 20
+    if cvd in ["bearish", "slightly_bearish"]: bear_score += 20
+    elif cvd in ["bullish", "slightly_bullish"]: bull_score += 20
     try:
         tr = float(coinglass_data.get("taker_ratio", 0.5))
-        if tr < 0.45:
-            bear_score += 15
-        elif tr > 0.55:
-            bull_score += 15
-    except:
-        pass
+        if tr < 0.45: bear_score += 15
+        elif tr > 0.55: bull_score += 15
+    except: pass
     try:
         tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
-        if tls > 2.0:
-            bear_score += 15
-        elif tls < 0.7:
-            bull_score += 15
-    except:
-        pass
+        if tls > 2.0: bear_score += 15
+        elif tls < 0.7: bull_score += 15
+    except: pass
     fg = int(macro_data.get("fear_greed", {}).get("value", 50))
-    if fg < 30:
-        bull_score += 10
-    elif fg > 70:
-        bear_score += 10
+    if fg < 30: bull_score += 10
+    elif fg > 70: bear_score += 10
     trend_dir = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
-    if trend_dir == "bull":
-        bull_score += int(trend_score / 10)
-    elif trend_dir == "bear":
-        bear_score += int(trend_score / 10)
+    if trend_dir == "bull": bull_score += int(trend_score / 10)
+    elif trend_dir == "bear": bear_score += int(trend_score / 10)
     return {"bull": bull_score, "bear": bear_score}
 
 
@@ -194,15 +155,13 @@ def send_error_notification(symbol: str, error_msg: str):
 def main():
     global probe_history
     symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
-    if symbol not in SYMBOL_MAP:
-        symbol = "BTC"
+    if symbol not in SYMBOL_MAP: symbol = "BTC"
     profile = STRATEGY_PROFILES.get(symbol, STRATEGY_PROFILES["BTC"]).copy()
     okx_inst_id = SYMBOL_MAP[symbol]
     logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
     try:
         price = get_current_price(okx_inst_id)
-        if price <= 0:
-            raise Exception("无法获取当前价格")
+        if price <= 0: raise Exception("无法获取当前价格")
         klines = get_klines(okx_inst_id, "1H", 70)
         atr = calculate_atr(okx_inst_id)
         ema55 = calculate_ema(klines, 55)
@@ -213,8 +172,7 @@ def main():
         logger.info(f"{symbol} CoinGlass 数据获取完成")
         liq_zero_count = cg.get_liq_zero_count()
         liq_warning = cg.get_liq_zero_warning()
-        if liq_warning:
-            logger.warning(liq_warning)
+        if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
         volatility_factor = cg.calculate_volatility_factor(symbol)
         macro = get_macro_data()
@@ -237,30 +195,21 @@ def main():
             cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
         )
         score = signal_strength["score"]
-        if score >= 65:
-            signal_grade = "A"
-        elif score >= 40:
-            signal_grade = "B"
-        else:
-            signal_grade = "C"
+        if score >= 65: signal_grade = "A"
+        elif score >= 40: signal_grade = "B"
+        else: signal_grade = "C"
 
-        # 预填止损止盈（趋势方向）
-        stop_candidates = {"rule2": 0.0, "rule3": 0.0}
-        tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
-
+        # 初次调用 AI 获取方向（此时止损止盈候选值为占位符）
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            directional_scores=directional_scores,
-            signal_grade=signal_grade,
-            stop_candidates=stop_candidates,
-            tp_candidates=tp_candidates
+            directional_scores=directional_scores, signal_grade=signal_grade,
+            stop_loss_rule2=0.0, stop_loss_rule3=0.0, tp1=0.0, tp2=0.0, tp1_anchor="", tp2_anchor=""
         )
 
         strategy = call_deepseek(prompt)
-        if not strategy:
-            raise Exception("DeepSeek 返回为空")
+        if not strategy: raise Exception("DeepSeek 返回为空")
 
         actual_direction = strategy.get("direction", "neutral")
         cluster = cg_data.get("nearest_cluster", {})
@@ -269,52 +218,51 @@ def main():
         cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
         max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
 
+        # ---------- 根据实际方向计算止损止盈候选值（保证非零）----------
+        if actual_direction == "long":
+            stop_loss_rule2 = price - 1.5 * atr
+            stop_loss_rule3 = price - 2.0 * atr
+            tp1 = price + 2.0 * atr
+            tp1_anchor = "2×ATR"
+            # TP2：上方更远的清算区（必须是阻力区且距离≥1.5×ATR），否则用 3.5×ATR
+            if cluster_intensity >= 3 and cluster_price > price and (cluster_price - price) >= 1.5 * atr:
+                tp2 = cluster_price
+                tp2_anchor = f"上方清算区 {cluster_price:.1f}"
+            else:
+                tp2 = price + 3.5 * atr
+                tp2_anchor = "3.5×ATR"
+        elif actual_direction == "short":
+            stop_loss_rule2 = price + 1.5 * atr
+            stop_loss_rule3 = price + 2.0 * atr
+            tp1 = price - 2.0 * atr
+            tp1_anchor = "2×ATR"
+            # TP2：下方清算区（支撑）或清算最大痛点（需距离≥1.5×ATR），否则 3.5×ATR
+            tp2_set = False
+            if cluster_intensity >= 3 and cluster_price < price and (price - cluster_price) >= 1.5 * atr:
+                tp2 = cluster_price
+                tp2_anchor = f"下方清算区 {cluster_price:.1f}"
+                tp2_set = True
+            elif max_pain > 0 and max_pain < price and (price - max_pain) >= 1.5 * atr:
+                tp2 = max_pain
+                tp2_anchor = "清算最大痛点"
+                tp2_set = True
+            if not tp2_set:
+                tp2 = price - 3.5 * atr
+                tp2_anchor = "3.5×ATR"
+        else:
+            stop_loss_rule2 = stop_loss_rule3 = tp1 = tp2 = 0.0
+            tp1_anchor = tp2_anchor = ""
+
+        # 强制覆盖 AI 可能输出的无效止损止盈
         if actual_direction != "neutral":
-            # ---------- 重新计算止损候选值 ----------
-            if actual_direction == "long":
-                stop_candidates["rule2"] = price - 1.5 * atr
-                stop_candidates["rule3"] = price - 2.0 * atr
-            else:
-                stop_candidates["rule2"] = price + 1.5 * atr
-                stop_candidates["rule3"] = price + 2.0 * atr
-
-            # ---------- 重新计算止盈候选值 ----------
-            if actual_direction == "long":
-                tp_candidates["tp1"] = price + 2.0 * atr
-                tp_candidates["tp1_anchor"] = "2×ATR"
-                # TP2：上方更远的清算区（阻力），或 3.5×ATR
-                if cluster_intensity >= 3 and cluster_price > price and cluster_dir == "上":
-                    tp_candidates["tp2"] = cluster_price
-                    tp_candidates["tp2_anchor"] = f"上方清算区 {cluster_price:.1f}"
-                else:
-                    tp_candidates["tp2"] = price + 3.5 * atr
-                    tp_candidates["tp2_anchor"] = "3.5×ATR"
-            else:
-                tp_candidates["tp1"] = price - 2.0 * atr
-                tp_candidates["tp1_anchor"] = "2×ATR"
-                # TP2：下方清算区（支撑）、清算最大痛点（需在合理距离内），或 3.5×ATR
-                tp2_set = False
-                if cluster_intensity >= 3 and cluster_price < price and cluster_dir == "下":
-                    tp_candidates["tp2"] = cluster_price
-                    tp_candidates["tp2_anchor"] = f"下方清算区 {cluster_price:.1f}"
-                    tp2_set = True
-                elif max_pain > 0 and max_pain < price and (price - max_pain) <= 5.0 * atr:
-                    tp_candidates["tp2"] = max_pain
-                    tp_candidates["tp2_anchor"] = "清算最大痛点"
-                    tp2_set = True
-                if not tp2_set:
-                    tp_candidates["tp2"] = price - 3.5 * atr
-                    tp_candidates["tp2_anchor"] = "3.5×ATR"
-
-            # 若AI未提供有效值，则用计算值填充（保证输出完整）
-            if float(strategy.get("stop_loss", 0)) == 0:
-                strategy["stop_loss"] = stop_candidates["rule2"]
-            if float(strategy.get("take_profit_1", 0)) == 0:
-                strategy["take_profit_1"] = tp_candidates["tp1"]
-                strategy["tp1_anchor"] = tp_candidates["tp1_anchor"]
-            if float(strategy.get("take_profit_2", 0)) == 0:
-                strategy["take_profit_2"] = tp_candidates["tp2"]
-                strategy["tp2_anchor"] = tp_candidates["tp2_anchor"]
+            if float(strategy.get("stop_loss", 0)) <= 0:
+                strategy["stop_loss"] = round(stop_loss_rule2, 1)
+            if float(strategy.get("take_profit_1", 0)) <= 0:
+                strategy["take_profit_1"] = round(tp1, 1)
+                strategy["tp1_anchor"] = tp1_anchor
+            if float(strategy.get("take_profit_2", 0)) <= 0:
+                strategy["take_profit_2"] = round(tp2, 1)
+                strategy["tp2_anchor"] = tp2_anchor
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
@@ -328,28 +276,20 @@ def main():
             logger.warning("策略校验未通过")
 
         extra = {
-            "atr": atr,
-            "funding_rate": cg_data.get("funding_rate", "N/A"),
+            "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
             "oi_change": cg_data.get("oi_change_24h", "N/A"),
             "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
-            "cvd_signal": cvd_signal,
-            "skew": cg_data.get("skew", "N/A"),
-            "fear_greed": macro["fear_greed"]["value"],
-            "signal_strength": signal_strength,
-            "data_source_status": data_source_status,
-            "trend_info": trend_info,
-            "volatility_factor": volatility_factor,
-            "extreme_liq": extreme_liq,
-            "is_probe": is_probe,
-            "key_support": key_levels["support"],
+            "cvd_signal": cvd_signal, "skew": cg_data.get("skew", "N/A"),
+            "fear_greed": macro["fear_greed"]["value"], "signal_strength": signal_strength,
+            "data_source_status": data_source_status, "trend_info": trend_info,
+            "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
+            "is_probe": is_probe, "key_support": key_levels["support"],
             "key_resistance": key_levels["resistance"]
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
-        if success:
-            logger.info(f"{symbol} 策略推送成功")
-        else:
-            logger.error(f"{symbol} 推送失败")
+        if success: logger.info(f"{symbol} 策略推送成功")
+        else: logger.error(f"{symbol} 推送失败")
     except Exception as e:
         logger.error(f"{symbol} 策略生成失败: {e}")
         logger.error(traceback.format_exc())
