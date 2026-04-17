@@ -169,7 +169,6 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
         bull_score += 10
     elif fg > 70:
         bear_score += 10
-    # 趋势强度调整
     trend_dir = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
     if trend_dir == "bull":
@@ -246,7 +245,7 @@ def main():
             signal_grade = "C"
 
         # 预填止损止盈（趋势方向）
-        stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
+        stop_candidates = {"rule2": 0.0, "rule3": 0.0}
         tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
 
         prompt = build_prompt(
@@ -275,24 +274,16 @@ def main():
             if actual_direction == "long":
                 stop_candidates["rule2"] = price - 1.5 * atr
                 stop_candidates["rule3"] = price - 2.0 * atr
-                if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "下":
-                    stop_candidates["rule1"] = cluster_price * 0.998
             else:
                 stop_candidates["rule2"] = price + 1.5 * atr
                 stop_candidates["rule3"] = price + 2.0 * atr
-                if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "上":
-                    stop_candidates["rule1"] = cluster_price * 1.002
-            if stop_candidates["rule1"] == 0.0:
-                stop_candidates["rule1"] = stop_candidates["rule2"]
 
-            # ---------- 重新计算止盈候选值（加入最小距离校验 1.5×ATR）----------
-            min_tp_distance = 1.5 * atr
-
+            # ---------- 重新计算止盈候选值 ----------
             if actual_direction == "long":
                 tp_candidates["tp1"] = price + 2.0 * atr
                 tp_candidates["tp1_anchor"] = "2×ATR"
-                if (cluster_intensity >= 3 and cluster_price > price + min_tp_distance
-                        and cluster_dir == "上"):
+                # TP2：上方更远的清算区（阻力），或 3.5×ATR
+                if cluster_intensity >= 3 and cluster_price > price and cluster_dir == "上":
                     tp_candidates["tp2"] = cluster_price
                     tp_candidates["tp2_anchor"] = f"上方清算区 {cluster_price:.1f}"
                 else:
@@ -301,12 +292,13 @@ def main():
             else:
                 tp_candidates["tp1"] = price - 2.0 * atr
                 tp_candidates["tp1_anchor"] = "2×ATR"
+                # TP2：下方清算区（支撑）、清算最大痛点（需在合理距离内），或 3.5×ATR
                 tp2_set = False
-                if cluster_intensity >= 3 and cluster_price < price - min_tp_distance and cluster_dir == "下":
+                if cluster_intensity >= 3 and cluster_price < price and cluster_dir == "下":
                     tp_candidates["tp2"] = cluster_price
                     tp_candidates["tp2_anchor"] = f"下方清算区 {cluster_price:.1f}"
                     tp2_set = True
-                elif max_pain > 0 and max_pain < price - min_tp_distance:
+                elif max_pain > 0 and max_pain < price and (price - max_pain) <= 5.0 * atr:
                     tp_candidates["tp2"] = max_pain
                     tp_candidates["tp2_anchor"] = "清算最大痛点"
                     tp2_set = True
@@ -314,7 +306,7 @@ def main():
                     tp_candidates["tp2"] = price - 3.5 * atr
                     tp_candidates["tp2_anchor"] = "3.5×ATR"
 
-            # 若AI未提供有效值，则用计算值填充
+            # 若AI未提供有效值，则用计算值填充（保证输出完整）
             if float(strategy.get("stop_loss", 0)) == 0:
                 strategy["stop_loss"] = stop_candidates["rule2"]
             if float(strategy.get("take_profit_1", 0)) == 0:
