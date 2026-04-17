@@ -43,11 +43,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     now_str = now_beijing.strftime("%H:%M")
     direction = strategy.get("direction", "neutral")
-    signal_quality = strategy.get("confidence", "medium").upper()  # 信号质量（原置信度）
+    signal_quality = strategy.get("confidence", "medium").upper()
     is_probe = extra.get("is_probe", False)
     extreme_liq = extra.get("extreme_liq", False)
 
-    # 标题行
     if direction == "neutral":
         title = f"⏸️ [{symbol}] 中性观望 🕒 {now_str}"
     else:
@@ -56,7 +55,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         quality_star = {"HIGH": "★★★", "MEDIUM": "★★☆", "LOW": "★☆☆"}.get(signal_quality, "")
         title = f"{'🟢' if direction == 'long' else '🔴'} [{symbol}] {dir_text}{probe_text} {quality_star} 🕒 {now_str}"
 
-    # 极端清算警告
     warning_line = "🚨 **极端清算警报**\n\n" if extreme_liq else ""
 
     if direction == "neutral":
@@ -67,7 +65,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 📊 {summary}"""
 
-    # 有方向时
     entry_low = float(strategy.get("entry_price_low", current_price))
     entry_high = float(strategy.get("entry_price_high", current_price))
     stop = float(strategy.get("stop_loss", 0))
@@ -75,23 +72,16 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp2 = float(strategy.get("take_profit_2", 0))
 
     reasoning = strategy.get('reasoning', '暂无分析')
-    # 提取裁决摘要
-    summary = reasoning
-    if "【第四步" in reasoning:
-        parts = reasoning.split("【第四步")
-        if len(parts) > 1:
-            fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
-            if "必须输出" in fourth:
-                idx = fourth.find("必须输出")
-                end = fourth.find("。", idx)
-                summary = fourth[idx:end+1] if end != -1 else fourth[idx:idx+80]
-            else:
-                summary = fourth[:120] + "..." if len(fourth) > 120 else fourth
-    summary = summary.replace("【", "").replace("】", "").strip()
+    # 提取 reasoning 前 250 字符作为摘要
+    summary = reasoning[:250] + "..." if len(reasoning) > 250 else reasoning
 
     risk_note = strategy.get('risk_note', '严格止损，TP1减仓50%，剩余移至成本价')
+    # 只取风险提示的第一句话
+    if "。" in risk_note:
+        risk_note = risk_note.split("。")[0] + "。"
+    elif "\n" in risk_note:
+        risk_note = risk_note.split("\n")[0]
 
-    # 信号质量描述
     quality_desc = {"HIGH": "高质量", "MEDIUM": "中等质量", "LOW": "低质量"}.get(signal_quality, "")
 
     return f"""## {title}
