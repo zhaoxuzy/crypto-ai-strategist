@@ -43,26 +43,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
-    is_probe = extra.get("is_probe", False)
-    signal_strength = extra.get("signal_strength", {})
-    resonance_score = signal_strength.get("score", 0)
-    strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
-    probe_tag = " 🧪 试探信号" if is_probe else ""
-
-    # 共振强度星级
-    if resonance_score >= 75:
-        resonance_star = "★★★★☆"
-    elif resonance_score >= 55:
-        resonance_star = "★★★☆☆"
-    elif resonance_score >= 35:
-        resonance_star = "★★☆☆☆"
-    elif resonance_score >= 15:
-        resonance_star = "★☆☆☆☆"
-    else:
-        resonance_star = "☆☆☆☆☆"
 
     # 市场状态：纯中文描述
     trend_info = extra.get("trend_info", {})
@@ -119,23 +102,45 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
-    # 处理 AI 分析逻辑：每一步之间空一行，首字母对齐
+    # 处理 AI 分析逻辑：每一步之间空一行
     reasoning = strategy.get('reasoning', '暂无分析')
-    # 在"【第"前插入两个换行（产生空行），并确保段落开头无多余空格
     import re
     reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
 
+    # ===== 计算信号强度星级 =====
+    # 从 extra 中获取方向倾向得分差值，并计算星级
+    directional_scores = extra.get("directional_scores", {})
+    bull_score = directional_scores.get("bull", 0)
+    bear_score = directional_scores.get("bear", 0)
+    diff = abs(bull_score - bear_score)
+
+    # 获取第一步结论（从 reasoning 中提取，若无则默认中性）
+    first_step = ""
+    if "【第一步" in reasoning:
+        parts = reasoning.split("【第一步")
+        if len(parts) > 1:
+            first_step = parts[1].split("【第二步")[0] if "【第二步" in parts[1] else parts[1]
+    first_step = first_step[:100] if first_step else ""
+
+    # 根据绝对差值计算星级
+    if diff >= 25:
+        star = "★★★"
+    elif diff >= 15:
+        star = "★★☆"
+    else:
+        star = "★☆☆"
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
-        return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 共振强度：{resonance_star} 🕒 {now_str}
+        return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 信号强度：{star} 🕒 {now_str}
 📈市场状态：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 AI 研判
 {reasoning}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 共振强度：{resonance_score:.1f}/100分 | {resonance_star}
+- 方向倾向差值：{diff}分
 - {data_source_status}
 """
 
@@ -151,7 +156,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if alerts_str:
         alerts_str = alerts_str + "\n"
 
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 共振强度：{resonance_star}{probe_tag} 🕒 {now_str}
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 信号强度：{star} 🕒 {now_str}
 📈市场状态：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 策略概要
@@ -161,7 +166,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 止损：${stop:,.1f}
 - 止盈1：${tp1:,.1f}（锚定：{tp1_anchor}）
 - 止盈2：${tp2:,.1f}（锚定：{tp2_anchor}）
-- 共振强度：{resonance_score:.1f}/100分 | {resonance_star}
+- 方向倾向差值：{diff}分
 - 止盈策略：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
 
 ### 📈 AI 分析逻辑
@@ -174,7 +179,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- 共振强度明细：{strength_details}
 - {data_source_status}
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
