@@ -41,95 +41,123 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
-    now_str = now_beijing.strftime("%H:%M")
+    now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
-    signal_quality = strategy.get("confidence", "medium").upper()
+    signal_quality = strategy.get("confidence", "medium").upper()  # 原置信度，现改为信号质量
     is_probe = extra.get("is_probe", False)
+    signal_strength = extra.get("signal_strength", {})
+    direction_score = signal_strength.get("score", 0)  # 原共振评分，现改为方向评分
+    strength_details = ", ".join(signal_strength.get("details", []))
+    data_source_status = extra.get("data_source_status", "")
+    volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
+    probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    if direction == "neutral":
-        title = f"⏸️ [{symbol}] 中性观望 🕒 {now_str}"
+    # 信号质量星级
+    quality_star = {"HIGH": "★★★", "MEDIUM": "★★☆", "LOW": "★☆☆"}.get(signal_quality, "")
+
+    # 市场状态（原趋势强度，仅改名称和描述）
+    trend_info = extra.get("trend_info", {})
+    trend_direction = trend_info.get("direction", "neutral")
+    trend_score = trend_info.get("score", 0)
+    trend_confidence = trend_info.get("confidence", "低")
+
+    if trend_direction == "bull":
+        market_state = f"多头倾向({trend_score}/100，可信度{trend_confidence})"
+    elif trend_direction == "bear":
+        market_state = f"空头倾向({trend_score}/100，可信度{trend_confidence})"
     else:
-        dir_text = "做多" if direction == "long" else "做空"
-        probe_text = " 🧪" if is_probe else ""
-        quality_star = {"HIGH": "★★★", "MEDIUM": "★★☆", "LOW": "★☆☆"}.get(signal_quality, "")
-        title = f"{'🟢' if direction == 'long' else '🔴'} [{symbol}] {dir_text}{probe_text} {quality_star} 🕒 {now_str}"
+        market_state = f"无明显倾向({trend_score}/100，震荡特征)"
 
-    warning_line = "🚨 **极端清算警报**\n\n" if extreme_liq else ""
+    if 30 <= trend_score <= 70:
+        market_state += " ⚠️过渡期"
+
+    # 信号可信度（用于仓位建议，保留）
+    if direction_score >= 75:
+        credibility = "★★★★☆"
+        cred_desc = "正常仓位"
+    elif direction_score >= 55:
+        credibility = "★★★☆☆"
+        cred_desc = "中等仓位"
+    elif direction_score >= 35:
+        credibility = "★★☆☆☆"
+        cred_desc = "轻仓博弈"
+    elif direction_score >= 15:
+        credibility = "★☆☆☆☆"
+        cred_desc = "试探或观望"
+    else:
+        credibility = "☆☆☆☆☆"
+        cred_desc = "建议观望"
+
+    # 警报
+    alerts = []
+    funding_rate_str = extra.get("funding_rate", "0")
+    try:
+        fr = float(funding_rate_str.strip('%')) if isinstance(funding_rate_str, str) else 0
+        if fr > 0.05:
+            alerts.append("⚠️资金费率>0.05%(多头拥挤)")
+        elif fr < -0.03:
+            alerts.append("⚠️资金费率<-0.03%(空头拥挤)")
+    except:
+        pass
+
+    oi_change_str = extra.get("oi_change", "0")
+    try:
+        oi = float(oi_change_str.strip('%')) if isinstance(oi_change_str, str) else 0
+        if abs(oi) > 5:
+            alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
+    except:
+        pass
+
+    if extreme_liq:
+        alerts.append("🚨极端清算警报")
 
     if direction == "neutral":
-        reasoning = strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')
-        # 提取第四步核心结论作为摘要，不截断原意
-        summary = reasoning
-        if "【第四步" in reasoning:
-            parts = reasoning.split("【第四步")
-            if len(parts) > 1:
-                fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
-                # 寻找“裁决”或“必须输出”所在句子，展示完整裁决理由
-                if "裁决" in fourth:
-                    lines = fourth.split("。")
-                    for line in lines:
-                        if "裁决" in line or "必须输出" in line or "neutral" in line.lower():
-                            summary = line.strip() + "。"
-                            break
-                    else:
-                        summary = fourth[:300] + "..." if len(fourth) > 300 else fourth
-                else:
-                    summary = fourth[:300] + "..." if len(fourth) > 300 else fourth
-        else:
-            summary = reasoning[:300] + "..." if len(reasoning) > 300 else reasoning
-        summary = summary.replace("【", "").replace("】", "").strip()
-        return f"""## {title}
-{warning_line}当前价：${current_price:,.1f}
+        alerts_str = "\n".join(alerts) if alerts else ""
+        return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
+**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
+{alerts_str}
+### 📊 AI 研判
+> {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
+- 当前价：${current_price:,.1f}
+- 资金费率：{extra.get('funding_rate', 'N/A')}%
+- 方向评分：{direction_score:.1f}/100分 | 信号质量：{quality_star} {signal_quality}
+- {data_source_status}
+"""
 
-📊 {summary}"""
-
-    entry_low = float(strategy.get("entry_price_low", current_price))
-    entry_high = float(strategy.get("entry_price_high", current_price))
+    dir_text = "做多" if direction == "long" else "做空"
+    entry_low = float(strategy.get("entry_price_low", 0))
+    entry_high = float(strategy.get("entry_price_high", 0))
     stop = float(strategy.get("stop_loss", 0))
     tp1 = float(strategy.get("take_profit_1", 0))
     tp2 = float(strategy.get("take_profit_2", 0))
+    tp1_anchor = strategy.get("tp1_anchor", "未提供")
+    tp2_anchor = strategy.get("tp2_anchor", "未提供")
 
-    reasoning = strategy.get('reasoning', '暂无分析')
-    # 摘要：提取第四步核心裁决，保持完整语义，不截断关键逻辑
-    summary = ""
-    if "【第四步" in reasoning:
-        parts = reasoning.split("【第四步")
-        if len(parts) > 1:
-            fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
-            # 寻找包含“必须输出”、“裁决”或“强制”的完整句子
-            sentences = fourth.replace("。", "。\n").split("\n")
-            for s in sentences:
-                if "必须输出" in s or "裁决" in s or "强制" in s or "输出" in s:
-                    summary = s.strip() + "。"
-                    break
-            if not summary:
-                # 取第四步前250字符，但尽量停在句号处
-                if len(fourth) > 250:
-                    last_period = fourth[:250].rfind("。")
-                    summary = fourth[:last_period+1] if last_period != -1 else fourth[:250] + "..."
-                else:
-                    summary = fourth
-    if not summary:
-        # 回退：取reasoning前250字符
-        if len(reasoning) > 250:
-            last_period = reasoning[:250].rfind("。")
-            summary = reasoning[:last_period+1] if last_period != -1 else reasoning[:250] + "..."
-        else:
-            summary = reasoning
-    summary = summary.replace("【", "").replace("】", "").strip()
+    alerts_str = "\n".join(alerts) if alerts else ""
 
-    # 风险提示：完整保留，一个字不截断
-    risk_note = strategy.get('risk_note', '严格止损，TP1减仓50%，剩余移至成本价')
-
-    quality_desc = {"HIGH": "高质量", "MEDIUM": "中等质量", "LOW": "低质量"}.get(signal_quality, "")
-
-    return f"""## {title}
-{warning_line}**入场**：${entry_low:,.1f} - ${entry_high:,.1f}
-**止损**：${stop:,.1f}
-**止盈1**：${tp1:,.1f} | **止盈2**：${tp2:,.1f}
-
-📊 {summary}
-📋 信号质量：{quality_desc}
-
-⚠️ {risk_note}"""
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 信号质量：{quality_star} {signal_quality}{probe_tag} 🕒 {now_str}
+**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
+{alerts_str}
+### 📊 策略概要
+- **方向**：{dir_text}
+- **当前价**：${current_price:,.1f}
+- **入场区间**：${entry_low:,.1f} - ${entry_high:,.1f}
+- **止损**：${stop:,.1f}
+- **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
+- **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
+- **信号可信度**：{credibility}（{cred_desc}）
+- **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
+### 📈 AI 分析逻辑
+> {strategy.get('reasoning', '暂无分析')}
+### ⚠️ 风险提示
+- {strategy.get('risk_note', '请严格设置止损')}
+### 🔗 数据快照
+- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
+- 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
+- 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
+- **方向评分**：{direction_score:.1f}/100分 | {strength_details}
+- **{data_source_status}**
+---
+*本策略由DeepSeek基于实时市场数据生成，仅供参考。*
+"""
