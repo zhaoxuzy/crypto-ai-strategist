@@ -253,6 +253,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  tp_candidates: dict = None) -> str:
     """
     构建DeepSeek API提示词。AI作为资深分析师，严格遵循五步法自主决策。
+    强制裁决规则已硬编码，防止AI在边缘场景滥用neutral。
     """
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
@@ -265,6 +266,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     bull_score = directional_scores.get("bull", 0) if directional_scores else 0
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
+    diff = abs(bull_score - bear_score)
+    higher_direction = "多头" if bull_score > bear_score else "空头"
 
     trend_desc = ""
     if trend_info:
@@ -289,8 +292,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
-- 在第四步中，若信号严重矛盾，可输出neutral并说明理由。
 - 系统提供的量化参考（方向倾向得分、信号评级）仅供辅助，你有权根据数据自主裁决。
+- **特别注意**：第四步中的“强制裁决规则”具有最高优先级，你必须严格遵守，不得以“信号矛盾”为由逃避决策。
 
 {warning_text}
 {data_source_text}
@@ -309,6 +312,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 清算最大痛点：{liq_max_pain} USDT
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
   （注：强度≥3的清算区方可作为有效锚点）
+- ⚠️ **数据口径说明**：清算金额字段可能因统计范围限制显示为0，但“最近清算密集区”仍可反映局部清算堆积，两者口径不同。**判断支撑/阻力时，以“最近清算密集区”为准。**
 
 **多空博弈**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（绝对值<0.01%视为中性）
@@ -326,7 +330,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 恐惧贪婪指数：{fg.get('value', '50')}
 
 **量化参考（供辅助决策）**
-- 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}
+- 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
 - 系统信号评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 
 ### 🔒 强制五步分析流程
@@ -345,8 +349,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **第四步：信号共振与矛盾裁决**
 - 列举最支持某方向的信号（至少一个）和最矛盾的信号（至少一个）。
-- 结合方向倾向得分和系统评级，做出最终裁决。若信号严重矛盾，可输出neutral并说明理由。
-- 若价格紧贴关键位（距离<0.3×ATR）或处于过渡期（趋势得分30-70），可降低置信度或标记为试探信号（is_probe=true）。
+- 结合方向倾向得分和系统评级，做出最终裁决。
+
+**🚨 强制裁决规则（你必须遵守，不得以“信号矛盾”为由输出neutral）**：
+1. 若方向倾向得分差值 ≥ 5 分，且清算动力学倾向（第一步结论）与该方向一致，则**必须**输出该方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
+2. 若价格紧贴关键位（距离<0.3×ATR），且清算动力学有明确倾向（偏多/偏空），则**必须**输出该倾向方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
+3. 若趋势得分在30-70之间（过渡期），且清算动力学倾向明确，同时方向倾向得分差值 ≥ 3 分，则**必须**输出该方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
+4. 只有当清算动力学为“中性观察”，且方向倾向得分差值 < 5 分，且不满足以上任何一条强制出手条件时，才允许输出 neutral。
 
 **第五步：止损与止盈设置**
 - 止损候选值（按优先级选择其一并注明规则编号）：
