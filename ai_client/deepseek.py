@@ -251,9 +251,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
                  momentum_override: dict = None, key_levels: dict = None,
-                 near_key_level: bool = False, directional_scores: dict = None) -> str:
+                 near_key_level: bool = False, directional_scores: dict = None,
+                 stop_candidates: dict = None) -> str:
     fg = macro_data.get("fear_greed", {})
-    stop_rule = f"止损距离 = max({profile['stop_multiplier']} × ATR, 关键位距离 × 1.2)"
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
@@ -298,6 +298,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
         if 30 <= score_t <= 70:
             trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
+
+    # 止损候选值
+    stop_override = stop_candidates.get("override", 0.0) if stop_candidates else 0.0
+    stop_key = stop_candidates.get("key", 0.0) if stop_candidates else 0.0
+    stop_default = stop_candidates.get("default", 0.0) if stop_candidates else 0.0
 
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循所有分析步骤，**不得跳过、简化或敷衍**。
 
@@ -367,13 +372,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **紧贴规则**：若价格紧贴关键位（距离<0.3×ATR），不得直接输出neutral。允许输出方向，但必须将`confidence`设为`low`，并在`risk_note`中注明“⚠️价格紧贴关键区，盈亏比偏窄，建议轻仓”。
 - 若最终输出neutral，必须显式说明否决原因。
 
-**第五步：止损设置（只输出一个止损价）**
-- 按以下优先级选择止损计算方式，**只选一种，输出唯一止损价**：
-  1. 若动量覆盖模式激活（上方有🚨强制覆盖指令），使用 **0.8×ATR** 从入场价计算止损（做多：入场区间下限 - 0.8×ATR；做空：入场区间上限 + 0.8×ATR）。
-  2. 否则，若系统提供了明确的关键支撑/阻力（支撑{support:.1f}，阻力{resistance:.1f}），将止损设于该关键位外侧0.2%（做多：支撑×0.998；做空：阻力×1.002）。
-  3. 否则，使用 **1.5×ATR** 从入场价计算止损。
-- **必须在reasoning中注明使用的是哪条规则（如“规则1：覆盖模式0.8×ATR止损”）。**
-- 止损价保留1位小数。
+**第五步：止损设置（强制选择，不得修改数值）**
+系统已为你计算好三个止损候选价，你必须按优先级选择**其中一个**，且**不得修改数值**：
+1. 若动量覆盖模式激活 → 必须使用 `{stop_override:.1f}`
+2. 否则，若有关键支撑/阻力 → 必须使用 `{stop_key:.1f}`
+3. 否则 → 必须使用 `{stop_default:.1f}`
+**在reasoning中只需注明选择的规则编号（如“规则1”），无需任何计算。止损价直接填入输出JSON的stop_loss字段。**
 
 ### 分批止盈规则（必须遵守）
 - 触及 TP1 时，必须平仓 **50%** 的仓位，剩余仓位止损移动至成本价。
@@ -394,7 +398,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "tp1_anchor": "TP1锚定来源",
   "take_profit_2": 第二止盈价,
   "tp2_anchor": "TP2锚定来源",
-  "reasoning": "必须包含强制分析步骤的简要结论，并说明止损依据及所用规则编号",
+  "reasoning": "必须包含强制分析步骤的简要结论，并说明止损依据及所选规则编号",
   "risk_note": "风险提示（必须包含分批止盈说明）"
 }}
 
@@ -402,10 +406,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - TP1 优先锚定最近清算密集区（强度≥3/5）或期权最大痛点，且盈利空间需≥0.8×ATR且≤3×ATR。
 - TP2 锚定下一个清算区或清算最大痛点，需与TP1保持分层距离。
 - 若有效锚点不足，可使用1.5×ATR估算。
-
-### 止损规则
-- {stop_rule}
-- 所有价格保留1位小数。
 """
 
 
