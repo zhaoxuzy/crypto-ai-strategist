@@ -71,26 +71,26 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     trend_score = trend_info.get("score", 0) if trend_info else 0
 
     # ---------- 震荡市权重（总和 100）----------
-    w_liq_r = 28      # 清算结构
-    w_pos_r = 16      # 持仓结构
-    w_cvd_r = 18      # CVD
-    w_fg_r = 4        # 恐惧贪婪
-    w_fr_r = 5        # 资金费率
-    w_taker_r = 14    # 主动吃单比率
-    w_net_r = 7       # 净持仓变化
-    w_ob_r = 5        # 订单簿失衡
-    w_macro_r = 3     # 宏观（ETH/BTC、余额）
+    w_liq_r = 28
+    w_pos_r = 16
+    w_cvd_r = 18
+    w_fg_r = 4
+    w_fr_r = 5
+    w_taker_r = 14
+    w_net_r = 7
+    w_ob_r = 5
+    w_macro_r = 3
 
     # ---------- 趋势市权重（总和 100）----------
-    w_liq_t = 22      # 清算结构
-    w_pos_t = 10      # 持仓结构
-    w_cvd_t = 25      # CVD
-    w_fg_t = 3        # 恐惧贪婪
-    w_fr_t = 4        # 资金费率
-    w_taker_t = 20    # 主动吃单比率
-    w_net_t = 5       # 净持仓变化
-    w_ob_t = 5        # 订单簿失衡
-    w_macro_t = 3     # 宏观
+    w_liq_t = 22
+    w_pos_t = 10
+    w_cvd_t = 25
+    w_fg_t = 3
+    w_fr_t = 4
+    w_taker_t = 20
+    w_net_t = 5
+    w_ob_t = 5
+    w_macro_t = 3
 
     # 根据趋势得分线性插值权重
     t = trend_score / 100.0
@@ -109,8 +109,8 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score -= 50
             det.append("⚠️极端清算禁止做多")
         elif direction == "short":
-            score += 10
-            det.append("极端清算支持做空")
+            # 极端清算不再加分，改为中性处理（防止趋势末端误判）
+            det.append("⚠️极端清算风险，做空需谨慎")
 
     # ---------- 1. 清算结构 ----------
     above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
@@ -161,7 +161,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     score += s
     if s > 2:
         det.append(f"恐惧贪婪({fg_val})")
-    # 注意：已移除 fg_val < 30 时的 -10 分惩罚
 
     # ---------- 5. 资金费率 ----------
     try:
