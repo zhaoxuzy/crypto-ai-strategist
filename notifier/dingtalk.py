@@ -59,7 +59,26 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     if direction == "neutral":
         reasoning = strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')
-        summary = reasoning[:200] + "..." if len(reasoning) > 200 else reasoning
+        # 提取第四步核心结论作为摘要，不截断原意
+        summary = reasoning
+        if "【第四步" in reasoning:
+            parts = reasoning.split("【第四步")
+            if len(parts) > 1:
+                fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
+                # 寻找“裁决”或“必须输出”所在句子，展示完整裁决理由
+                if "裁决" in fourth:
+                    lines = fourth.split("。")
+                    for line in lines:
+                        if "裁决" in line or "必须输出" in line or "neutral" in line.lower():
+                            summary = line.strip() + "。"
+                            break
+                    else:
+                        summary = fourth[:300] + "..." if len(fourth) > 300 else fourth
+                else:
+                    summary = fourth[:300] + "..." if len(fourth) > 300 else fourth
+        else:
+            summary = reasoning[:300] + "..." if len(reasoning) > 300 else reasoning
+        summary = summary.replace("【", "").replace("】", "").strip()
         return f"""## {title}
 {warning_line}当前价：${current_price:,.1f}
 
@@ -72,15 +91,36 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp2 = float(strategy.get("take_profit_2", 0))
 
     reasoning = strategy.get('reasoning', '暂无分析')
-    # 提取 reasoning 前 250 字符作为摘要
-    summary = reasoning[:250] + "..." if len(reasoning) > 250 else reasoning
+    # 摘要：提取第四步核心裁决，保持完整语义，不截断关键逻辑
+    summary = ""
+    if "【第四步" in reasoning:
+        parts = reasoning.split("【第四步")
+        if len(parts) > 1:
+            fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
+            # 寻找包含“必须输出”、“裁决”或“强制”的完整句子
+            sentences = fourth.replace("。", "。\n").split("\n")
+            for s in sentences:
+                if "必须输出" in s or "裁决" in s or "强制" in s or "输出" in s:
+                    summary = s.strip() + "。"
+                    break
+            if not summary:
+                # 取第四步前250字符，但尽量停在句号处
+                if len(fourth) > 250:
+                    last_period = fourth[:250].rfind("。")
+                    summary = fourth[:last_period+1] if last_period != -1 else fourth[:250] + "..."
+                else:
+                    summary = fourth
+    if not summary:
+        # 回退：取reasoning前250字符
+        if len(reasoning) > 250:
+            last_period = reasoning[:250].rfind("。")
+            summary = reasoning[:last_period+1] if last_period != -1 else reasoning[:250] + "..."
+        else:
+            summary = reasoning
+    summary = summary.replace("【", "").replace("】", "").strip()
 
+    # 风险提示：完整保留，一个字不截断
     risk_note = strategy.get('risk_note', '严格止损，TP1减仓50%，剩余移至成本价')
-    # 只取风险提示的第一句话
-    if "。" in risk_note:
-        risk_note = risk_note.split("。")[0] + "。"
-    elif "\n" in risk_note:
-        risk_note = risk_note.split("\n")[0]
 
     quality_desc = {"HIGH": "高质量", "MEDIUM": "中等质量", "LOW": "低质量"}.get(signal_quality, "")
 
