@@ -238,7 +238,7 @@ def main():
         # 止损候选值计算
         stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
         ref_dir = trend_info.get("direction", "bull")
-        if ref_dir == "long" or ref_dir == "bull":
+        if ref_dir in ["long", "bull"]:
             stop_candidates["rule2"] = price - 1.5 * atr
             stop_candidates["rule3"] = price - 2.0 * atr
         else:
@@ -258,7 +258,7 @@ def main():
         if stop_candidates["rule1"] == 0.0:
             stop_candidates["rule1"] = stop_candidates["rule2"]
 
-        # 止盈候选值计算
+        # 止盈候选值计算（修复做空方向错误）
         tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
         if ref_dir in ["long", "bull"]:
             tp_candidates["tp1"] = price + 2.0 * atr
@@ -288,8 +288,6 @@ def main():
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
-        if is_probe and sum(probe_history) / len(probe_history) > 0.3:
-            strategy["risk_note"] = strategy.get("risk_note", "") + " 系统告警：试探信号比例过高，请谨慎参考。"
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
