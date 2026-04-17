@@ -324,18 +324,18 @@ class CoinGlassClient:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
-           # ---------- ETH/BTC 汇率 ----------
+              # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
         """
         获取 ETH/BTC 汇率及其趋势。
-        使用 Binance 现货数据，交易对格式为 ETHUSD_USDT 和 BTCUSD_USDT。
+        使用 Binance 现货数据，交易对格式为 ETHUSDT 和 BTCUSDT。
         返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
         """
         try:
-            # Binance 现货交易对格式：BTCUSD_USDT, ETHUSD_USDT
-            params = {"exchange": "Binance", "symbol": "ETHUSD_USDT", "interval": "1h", "limit": 5}
+            # 修正1: 交易所固定为 Binance，交易对格式修正为无分隔符
+            params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
-            params["symbol"] = "BTCUSD_USDT"
+            params["symbol"] = "BTCUSDT"
             btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
 
             # 校验数据格式
