@@ -6,13 +6,13 @@ from utils.logger import logger
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        # 使用 KeyStore 代理，若直连可改为 https://open-api-v4.coinglass.com
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.delay = 6.0
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
         self._liq_zero_count = 0
         self._use_model1_fallback = False
+        self._prev_liq_data = {}  # 新增：缓存上一小时的清算关键数据
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -197,6 +197,47 @@ class CoinGlassClient:
 
         return result
 
+    def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
+        """计算清算热力图的动态趋势信号，返回信号描述列表"""
+        signals = []
+
+        # 1. 上下清算不对称性
+        total = curr["above"] + curr["below"]
+        if total > 0:
+            ratio = curr["above"] / total
+            if ratio > 0.65:
+                signals.append(f"清算压力偏空({ratio:.1%})")
+            elif ratio < 0.35:
+                signals.append(f"清算压力偏多({1-ratio:.1%})")
+
+        # 2. 最大痛点漂移（需有历史数据）
+        if prev and curr["max_pain"] > 0 and prev.get("max_pain", 0) > 0:
+            if curr["max_pain"] > prev["max_pain"] * 1.002:
+                signals.append("最大痛点上移↑")
+            elif curr["max_pain"] < prev["max_pain"] * 0.998:
+                signals.append("最大痛点下移↓")
+
+        # 3. 磁吸效应
+        cluster_price = curr["cluster_price"]
+        atr = curr.get("atr", 1)
+        if cluster_price > 0 and atr > 0:
+            distance_atr = abs(curr["current_price"] - cluster_price) / atr
+            if distance_atr < 0.5 and curr["cluster_intensity"] >= 4:
+                signals.append(f"强磁吸区(距{cluster_price:.0f}, 强度{curr['cluster_intensity']})")
+
+        # 4. 清算厚度变化
+        if prev:
+            prev_total = prev.get("above", 0) + prev.get("below", 0)
+            curr_total = curr["above"] + curr["below"]
+            if prev_total > 0 and curr_total > 0:
+                change_pct = (curr_total - prev_total) / prev_total
+                if change_pct > 0.3:
+                    signals.append(f"清算堆积加速↑({change_pct:.0%})")
+                elif change_pct < -0.3:
+                    signals.append(f"清算堆积衰减↓({-change_pct:.0%})")
+
+        return signals
+
     def get_liq_zero_count(self) -> int:
         return self._liq_zero_count
 
@@ -283,14 +324,9 @@ class CoinGlassClient:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
-    # ---------- 新指标1：ETH/BTC 汇率 ----------
+    # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
-        """
-        获取 ETH/BTC 汇率及其趋势（基于 V4 接口 /api/spot/price/history）。
-        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"}
-        """
         try:
-            # 分别获取 ETH/USDT 和 BTC/USDT 的 1H K线，计算最近4根K线的均价，再相除得到4小时均线比率
             params = {"exchange": "Binance", "symbol": "ETH-USDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=True, silent_fail=True)
             params["symbol"] = "BTC-USDT"
@@ -300,7 +336,6 @@ class CoinGlassClient:
                 logger.warning("获取 ETH/BTC 汇率数据不足")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            # 计算4小时均线 (取最近4根K线的收盘价均值)
             eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
             btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
             
@@ -311,10 +346,8 @@ class CoinGlassClient:
             btc_ma = sum(btc_close_4) / 4
             ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
             
-            # 当前汇率
             current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
             
-            # 判断趋势
             trend = "up" if current_ratio > ma_4h_ratio else "down"
             
             logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
@@ -323,22 +356,15 @@ class CoinGlassClient:
             logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
             return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-    # ---------- 新指标2：交易所钱包余额 ----------
+    # ---------- 交易所钱包余额 ----------
     def get_exchange_balances(self) -> dict:
-        """
-        获取交易所 BTC 和稳定币余额变化（基于 V4 接口 /api/exchange/balance/list）。
-        返回 dict: {"btc_flow": "in"/"out"/"neutral", "stable_flow": "in"/"out"/"neutral"}
-        """
         try:
-            # 获取 BTC 余额数据
             btc_data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
             if not isinstance(btc_data, list) or len(btc_data) == 0:
                 return {"btc_flow": "neutral", "stable_flow": "neutral"}
             
-            # 获取稳定币余额数据（以 USDT 为代表）
             stable_data = self._request("api/exchange/balance/list", {"symbol": "USDT(ETH)"}, allow_backup=False, silent_fail=True)
             
-            # 聚合所有交易所的24小时变动
             btc_total_change = 0.0
             stable_total_change = 0.0
             
@@ -449,6 +475,21 @@ class CoinGlassClient:
         heatmap_raw = self.get_liquidation_heatmap(symbol)
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
+
+        # ----- 新增：计算清算动态信号并缓存 -----
+        prev = self._prev_liq_data.get(symbol, {})
+        curr = {
+            "above": float(str(data.get("above_short_liquidation", "0")).replace(",", "")),
+            "below": float(str(data.get("below_long_liquidation", "0")).replace(",", "")),
+            "max_pain": float(data.get("max_pain_price", 0)) if data.get("max_pain_price") != "N/A" else 0,
+            "cluster_price": float(data["nearest_cluster"]["price"]) if data["nearest_cluster"]["price"] != "N/A" else 0,
+            "cluster_intensity": int(data["nearest_cluster"]["intensity"]) if data["nearest_cluster"]["intensity"] != "N/A" else 0,
+            "current_price": current_price,
+            "atr": atr if atr else 1.0
+        }
+        dynamic_signals = self._calculate_liq_dynamics(curr, prev)
+        data["liq_dynamic_signals"] = dynamic_signals
+        self._prev_liq_data[symbol] = curr
 
         # 2. 持仓量24h变化
         oi_history = self.get_open_interest_history(symbol)
