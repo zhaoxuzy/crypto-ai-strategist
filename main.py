@@ -132,19 +132,22 @@ def get_key_levels(coinglass_data: dict, ema55: float) -> dict:
 
 
 def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict) -> dict:
+    """方向倾向得分，规范化上限约100"""
     bull_score, bear_score = 0, 0
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
-    if above + below > 0:
-        if above > below * 1.3:
-            bear_score += 30
-        elif below > above * 1.3:
-            bull_score += 30
+    total = above + below
+    if total > 0:
+        ratio_above = above / total
+        if ratio_above > 0.6:
+            bear_score += 25
+        elif ratio_above < 0.4:
+            bull_score += 25
     cvd = coinglass_data.get("cvd_signal", "N/A")
     if cvd in ["bearish", "slightly_bearish"]:
-        bear_score += 25
+        bear_score += 20
     elif cvd in ["bullish", "slightly_bullish"]:
-        bull_score += 25
+        bull_score += 20
     try:
         tr = float(coinglass_data.get("taker_ratio", 0.5))
         if tr < 0.45:
@@ -156,9 +159,9 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
     try:
         tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
         if tls > 2.0:
-            bear_score += 20
+            bear_score += 15
         elif tls < 0.7:
-            bull_score += 20
+            bull_score += 15
     except:
         pass
     fg = int(macro_data.get("fear_greed", {}).get("value", 50))
@@ -166,6 +169,13 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
         bull_score += 10
     elif fg > 70:
         bear_score += 10
+    # 趋势强度调整
+    trend_dir = trend_info.get("direction", "neutral")
+    trend_score = trend_info.get("score", 0)
+    if trend_dir == "bull":
+        bull_score += int(trend_score / 10)
+    elif trend_dir == "bear":
+        bear_score += int(trend_score / 10)
     return {"bull": bull_score, "bear": bear_score}
 
 
@@ -222,7 +232,7 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
-        # 计算信号强度与评级参考（基于趋势方向，仅用于展示）
+        # 信号评级参考
         signal_strength = calculate_signal_strength(
             symbol, "long", cg_data, macro, liq_zero_count,
             cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
@@ -235,42 +245,10 @@ def main():
         else:
             signal_grade = "C"
 
-        # 止损候选值（暂用趋势方向计算，AI输出后会根据实际方向调整）
+        # 预填止损止盈（趋势方向）
         ref_dir = trend_info.get("direction", "bull")
         stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
-        if ref_dir in ["long", "bull"]:
-            stop_candidates["rule2"] = price - 1.5 * atr
-            stop_candidates["rule3"] = price - 2.0 * atr
-        else:
-            stop_candidates["rule2"] = price + 1.5 * atr
-            stop_candidates["rule3"] = price + 2.0 * atr
-
-        cluster = cg_data.get("nearest_cluster", {})
-        cluster_dir = cluster.get("direction", "")
-        cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
-        cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
-        if cluster_intensity >= 3 and cluster_price > 0:
-            if (ref_dir in ["long", "bull"] and cluster_dir == "下") or (ref_dir in ["short", "bear"] and cluster_dir == "上"):
-                if ref_dir in ["long", "bull"]:
-                    stop_candidates["rule1"] = cluster_price * 0.998
-                else:
-                    stop_candidates["rule1"] = cluster_price * 1.002
-        if stop_candidates["rule1"] == 0.0:
-            stop_candidates["rule1"] = stop_candidates["rule2"]
-
-        # 止盈候选值（暂用趋势方向计算，AI输出后会重新计算）
         tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
-        if ref_dir in ["long", "bull"]:
-            tp_candidates["tp1"] = price + 2.0 * atr
-        else:
-            tp_candidates["tp1"] = price - 2.0 * atr
-        max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
-        if max_pain > 0:
-            tp_candidates["tp2"] = max_pain
-            tp_candidates["tp2_anchor"] = "清算最大痛点"
-        else:
-            tp_candidates["tp2"] = tp_candidates["tp1"] * 1.5 if ref_dir in ["long", "bull"] else tp_candidates["tp1"] * 0.5
-            tp_candidates["tp2_anchor"] = "ATR估算"
 
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
@@ -286,16 +264,21 @@ def main():
         if not strategy:
             raise Exception("DeepSeek 返回为空")
 
-        # ========== 根据AI输出的方向重新计算止盈止损 ==========
         actual_direction = strategy.get("direction", "neutral")
+        cluster = cg_data.get("nearest_cluster", {})
+        cluster_dir = cluster.get("direction", "")
+        cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
+        cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
+        max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
+
         if actual_direction != "neutral":
-            # 重新计算止损候选值
+            # ---------- 重新计算止损候选值 ----------
             if actual_direction == "long":
                 stop_candidates["rule2"] = price - 1.5 * atr
                 stop_candidates["rule3"] = price - 2.0 * atr
                 if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "下":
                     stop_candidates["rule1"] = cluster_price * 0.998
-            else:  # short
+            else:
                 stop_candidates["rule2"] = price + 1.5 * atr
                 stop_candidates["rule3"] = price + 2.0 * atr
                 if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "上":
@@ -303,15 +286,32 @@ def main():
             if stop_candidates["rule1"] == 0.0:
                 stop_candidates["rule1"] = stop_candidates["rule2"]
 
-            # 重新计算止盈候选值
+            # ---------- 重新计算止盈候选值 ----------
             if actual_direction == "long":
                 tp_candidates["tp1"] = price + 2.0 * atr
-                tp_candidates["tp2"] = max_pain if max_pain > 0 else tp_candidates["tp1"] * 1.5
+                tp_candidates["tp1_anchor"] = "2×ATR"
+                # TP2：上方强度≥3的清算区，或 3.5×ATR
+                if cluster_intensity >= 3 and cluster_price > price and cluster_dir == "上":
+                    tp_candidates["tp2"] = cluster_price
+                    tp_candidates["tp2_anchor"] = f"上方清算区 {cluster_price:.1f}"
+                else:
+                    tp_candidates["tp2"] = price + 3.5 * atr
+                    tp_candidates["tp2_anchor"] = "3.5×ATR"
             else:
                 tp_candidates["tp1"] = price - 2.0 * atr
-                tp_candidates["tp2"] = max_pain if max_pain > 0 else tp_candidates["tp1"] * 0.5
+                tp_candidates["tp1_anchor"] = "2×ATR"
+                # TP2：下方强度≥3的清算区，或 3.5×ATR，或清算最大痛点
+                if cluster_intensity >= 3 and cluster_price < price and cluster_dir == "下":
+                    tp_candidates["tp2"] = cluster_price
+                    tp_candidates["tp2_anchor"] = f"下方清算区 {cluster_price:.1f}"
+                elif max_pain > 0 and max_pain < price:
+                    tp_candidates["tp2"] = max_pain
+                    tp_candidates["tp2_anchor"] = "清算最大痛点"
+                else:
+                    tp_candidates["tp2"] = price - 3.5 * atr
+                    tp_candidates["tp2_anchor"] = "3.5×ATR"
 
-            # 更新策略中的止盈止损为重新计算后的值（若AI未提供或提供的明显错误）
+            # 若AI未提供有效值，则用计算值填充
             if float(strategy.get("stop_loss", 0)) == 0:
                 strategy["stop_loss"] = stop_candidates["rule2"]
             if float(strategy.get("take_profit_1", 0)) == 0:
