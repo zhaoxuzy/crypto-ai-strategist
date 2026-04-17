@@ -246,7 +246,6 @@ def main():
             signal_grade = "C"
 
         # 预填止损止盈（趋势方向）
-        ref_dir = trend_info.get("direction", "bull")
         stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
         tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
 
@@ -286,12 +285,14 @@ def main():
             if stop_candidates["rule1"] == 0.0:
                 stop_candidates["rule1"] = stop_candidates["rule2"]
 
-            # ---------- 重新计算止盈候选值 ----------
+            # ---------- 重新计算止盈候选值（加入最小距离校验 1.5×ATR）----------
+            min_tp_distance = 1.5 * atr
+
             if actual_direction == "long":
                 tp_candidates["tp1"] = price + 2.0 * atr
                 tp_candidates["tp1_anchor"] = "2×ATR"
-                # TP2：上方强度≥3的清算区，或 3.5×ATR
-                if cluster_intensity >= 3 and cluster_price > price and cluster_dir == "上":
+                if (cluster_intensity >= 3 and cluster_price > price + min_tp_distance
+                        and cluster_dir == "上"):
                     tp_candidates["tp2"] = cluster_price
                     tp_candidates["tp2_anchor"] = f"上方清算区 {cluster_price:.1f}"
                 else:
@@ -300,14 +301,16 @@ def main():
             else:
                 tp_candidates["tp1"] = price - 2.0 * atr
                 tp_candidates["tp1_anchor"] = "2×ATR"
-                # TP2：下方强度≥3的清算区，或 3.5×ATR，或清算最大痛点
-                if cluster_intensity >= 3 and cluster_price < price and cluster_dir == "下":
+                tp2_set = False
+                if cluster_intensity >= 3 and cluster_price < price - min_tp_distance and cluster_dir == "下":
                     tp_candidates["tp2"] = cluster_price
                     tp_candidates["tp2_anchor"] = f"下方清算区 {cluster_price:.1f}"
-                elif max_pain > 0 and max_pain < price:
+                    tp2_set = True
+                elif max_pain > 0 and max_pain < price - min_tp_distance:
                     tp_candidates["tp2"] = max_pain
                     tp_candidates["tp2_anchor"] = "清算最大痛点"
-                else:
+                    tp2_set = True
+                if not tp2_set:
                     tp_candidates["tp2"] = price - 3.5 * atr
                     tp_candidates["tp2_anchor"] = "3.5×ATR"
 
