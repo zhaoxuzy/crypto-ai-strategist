@@ -279,7 +279,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         if 30 <= score_t <= 70:
             trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    stop_rule1 = stop_candidates.get("rule1", 0.0) if stop_candidates else 0.0
     stop_rule2 = stop_candidates.get("rule2", 0.0) if stop_candidates else 0.0
     stop_rule3 = stop_candidates.get("rule3", 0.0) if stop_candidates else 0.0
 
@@ -355,7 +354,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **🚨 强制裁决规则（你必须遵守，不得以“信号矛盾”为由输出neutral）**：
 1. 若方向倾向得分差值 ≥ 5 分，且清算动力学倾向（第一步结论）与该方向一致，则**必须**输出该方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
-2. 若价格紧贴关键位（距离<0.3×ATR），且清算动力学有明确倾向（偏多/偏空），则**必须**输出该倾向方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
+2. 若价格紧贴关键位（距离<0.3×ATR），且清算动力学有明确倾向：
+   - 若紧贴**下方支撑**且清算倾向为**偏多** → 必须输出 **long**，置信度 low，is_probe=true。
+   - 若紧贴**上方阻力**且清算倾向为**偏空** → 必须输出 **short**，置信度 low，is_probe=true。
+   - 若紧贴关键位但清算倾向与紧贴方向矛盾（如紧贴上方阻力但清算偏多），则**不得**应用本规则，需综合其他信号裁决。
 3. 若趋势得分在30-70之间（过渡期），且清算动力学倾向明确，同时方向倾向得分差值 ≥ 3 分，则**必须**输出该方向，置信度设为 low，is_probe=true。**严禁输出 neutral**。
 4. 只有当清算动力学为“中性观察”，且方向倾向得分差值 < 5 分，且不满足以上任何一条强制出手条件时，才允许输出 neutral。
 
@@ -364,8 +366,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - **规则1（同向强清算区外侧）**：
     - 做多时，同向清算区 = **下方**多头清算密集区（支撑）。若存在强度≥3的下方清算区，止损设于该区外侧（价格×0.998）。
     - 做空时，同向清算区 = **上方**空头清算密集区（阻力）。若存在强度≥3的上方清算区，止损设于该区外侧（价格×1.002）。
-  - **规则2（1.5×ATR固定止损）**：{stop_rule2:.1f}
-  - **规则3（2×ATR宽止损）**：{stop_rule3:.1f}
+  - **规则2（1.5×ATR固定止损）**：使用系统提供的固定值 {stop_rule2:.1f}，**严禁自行计算或修改**。
+  - **规则3（2×ATR宽止损）**：使用系统提供的固定值 {stop_rule3:.1f}，**严禁自行计算或修改**。
+- **止损价必须直接使用候选值，不得添加任何缓冲或自行调整。**
 - 止盈直接使用以下候选值：
   TP1：{tp1:.1f}（锚定：{tp1_anchor}）
   TP2：{tp2:.1f}（锚定：{tp2_anchor}）
