@@ -22,7 +22,7 @@ probe_history = deque(maxlen=20)
 
 EXTREME_LIQ_THRESHOLDS = {"BTC": 200_000_000, "ETH": 80_000_000, "SOL": 20_000_000}
 
-def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float) -> dict:
+def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, current_price: float, current_atr: float, liq_dynamic_signals: list = None) -> dict:
     if not klines or len(klines) < 55:
         return {"direction": "neutral", "score": 0, "confidence": "低", "signals": [], "transition": False}
     ema55 = calculate_ema(klines, 55)
@@ -59,6 +59,40 @@ def calculate_trend_strength(klines: list, cvd_signal: str, taker_ratio: float, 
         score += 5; signals.append("主动买卖均衡")
     if atr_percentile < 30:
         score = int(score * 0.7); signals.append(f"低波动(ATR百分位{atr_percentile:.0f}%)")
+
+    # ----- 新增：清算动态信号融入趋势得分 -----
+    if liq_dynamic_signals:
+        for sig in liq_dynamic_signals:
+            if "清算压力偏空" in sig:
+                score += 10
+                signals.append(sig)
+                if direction == "neutral":
+                    direction = "bear"
+            elif "清算压力偏多" in sig:
+                score += 10
+                signals.append(sig)
+                if direction == "neutral":
+                    direction = "bull"
+            elif "最大痛点上移" in sig:
+                score += 8
+                signals.append(sig)
+                if direction == "neutral":
+                    direction = "bull"
+            elif "最大痛点下移" in sig:
+                score += 8
+                signals.append(sig)
+                if direction == "neutral":
+                    direction = "bear"
+            elif "强磁吸区" in sig:
+                score += 6
+                signals.append(sig)
+            elif "清算堆积加速" in sig:
+                score += 5
+                signals.append(sig)
+            elif "清算堆积衰减" in sig:
+                score -= 3
+                signals.append(sig)
+
     score = max(0, min(100, score))
     confidence = "高" if score >= 60 else ("中" if score >= 35 else "低")
     transition = 30 <= score <= 70
@@ -171,7 +205,9 @@ def main():
         cvd_signal = cg_data.get("cvd_signal", "neutral")
         taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
 
-        trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr)
+        # 获取清算动态信号列表
+        liq_dynamic_signals = cg_data.get("liq_dynamic_signals", [])
+        trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr, liq_dynamic_signals)
         momentum_override = check_momentum_override(klines, cvd_signal, taker_ratio, price)
         key_levels = get_key_levels(cg_data, ema55)
         directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info)
@@ -210,9 +246,10 @@ def main():
         strategy["win_rate"] = signal_strength["win_rate"]
 
         if strategy.get("direction") != "neutral" and strategy["win_rate"] < MIN_WIN_RATE:
+            original_reasoning = strategy.get("reasoning", "")
             strategy["direction"] = "neutral"
             strategy["confidence"] = "low"
-            strategy["reasoning"] = f"胜率{strategy['win_rate']}%低于阈值{MIN_WIN_RATE}%，转为观望。"
+            strategy["reasoning"] = f"{original_reasoning}\n\n【系统风控拦截】预估胜率{strategy['win_rate']}%低于阈值{MIN_WIN_RATE}%，强制转为观望。"
 
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {
