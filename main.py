@@ -222,7 +222,7 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
-        # 计算信号强度与评级参考
+        # 计算信号强度与评级参考（基于趋势方向，仅用于展示）
         signal_strength = calculate_signal_strength(
             symbol, "long", cg_data, macro, liq_zero_count,
             cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
@@ -235,9 +235,9 @@ def main():
         else:
             signal_grade = "C"
 
-        # 止损候选值计算
-        stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
+        # 止损候选值（暂用趋势方向计算，AI输出后会根据实际方向调整）
         ref_dir = trend_info.get("direction", "bull")
+        stop_candidates = {"rule1": 0.0, "rule2": 0.0, "rule3": 0.0}
         if ref_dir in ["long", "bull"]:
             stop_candidates["rule2"] = price - 1.5 * atr
             stop_candidates["rule3"] = price - 2.0 * atr
@@ -258,7 +258,7 @@ def main():
         if stop_candidates["rule1"] == 0.0:
             stop_candidates["rule1"] = stop_candidates["rule2"]
 
-        # 止盈候选值计算（修复做空方向错误）
+        # 止盈候选值（暂用趋势方向计算，AI输出后会重新计算）
         tp_candidates = {"tp1": 0.0, "tp1_anchor": "未提供", "tp2": 0.0, "tp2_anchor": "未提供"}
         if ref_dir in ["long", "bull"]:
             tp_candidates["tp1"] = price + 2.0 * atr
@@ -285,6 +285,41 @@ def main():
         strategy = call_deepseek(prompt)
         if not strategy:
             raise Exception("DeepSeek 返回为空")
+
+        # ========== 根据AI输出的方向重新计算止盈止损 ==========
+        actual_direction = strategy.get("direction", "neutral")
+        if actual_direction != "neutral":
+            # 重新计算止损候选值
+            if actual_direction == "long":
+                stop_candidates["rule2"] = price - 1.5 * atr
+                stop_candidates["rule3"] = price - 2.0 * atr
+                if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "下":
+                    stop_candidates["rule1"] = cluster_price * 0.998
+            else:  # short
+                stop_candidates["rule2"] = price + 1.5 * atr
+                stop_candidates["rule3"] = price + 2.0 * atr
+                if cluster_intensity >= 3 and cluster_price > 0 and cluster_dir == "上":
+                    stop_candidates["rule1"] = cluster_price * 1.002
+            if stop_candidates["rule1"] == 0.0:
+                stop_candidates["rule1"] = stop_candidates["rule2"]
+
+            # 重新计算止盈候选值
+            if actual_direction == "long":
+                tp_candidates["tp1"] = price + 2.0 * atr
+                tp_candidates["tp2"] = max_pain if max_pain > 0 else tp_candidates["tp1"] * 1.5
+            else:
+                tp_candidates["tp1"] = price - 2.0 * atr
+                tp_candidates["tp2"] = max_pain if max_pain > 0 else tp_candidates["tp1"] * 0.5
+
+            # 更新策略中的止盈止损为重新计算后的值（若AI未提供或提供的明显错误）
+            if float(strategy.get("stop_loss", 0)) == 0:
+                strategy["stop_loss"] = stop_candidates["rule2"]
+            if float(strategy.get("take_profit_1", 0)) == 0:
+                strategy["take_profit_1"] = tp_candidates["tp1"]
+                strategy["tp1_anchor"] = tp_candidates["tp1_anchor"]
+            if float(strategy.get("take_profit_2", 0)) == 0:
+                strategy["take_profit_2"] = tp_candidates["tp2"]
+                strategy["tp2_anchor"] = tp_candidates["tp2_anchor"]
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
