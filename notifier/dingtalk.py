@@ -43,7 +43,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
     conf = strategy.get("confidence", "medium").upper()
-    win_rate = strategy.get("win_rate", 50)
     is_probe = extra.get("is_probe", False)
     signal_strength = extra.get("signal_strength", {})
     strength_score = signal_strength.get("score", 0)
@@ -52,6 +51,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
+
+    # 获取置信度等级（取代 win_rate）
+    confidence_grade = signal_strength.get("confidence_grade", "Low")
+    grade_star = {"High": "★★★", "Medium": "★★☆", "Low": "★☆☆"}.get(confidence_grade, "☆☆☆")
+    grade_display = f"{grade_star} {confidence_grade}"
 
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
@@ -69,7 +73,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         trend_text += " ⚠️过渡期"
 
-    # 信号可信度
+    # 信号可信度（基于分数，用于中性消息和仓位建议）
     if strength_score >= 75:
         credibility = "★★★★☆"
         cred_desc = "正常仓位"
@@ -117,7 +121,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 信号强度：{strength_score:.1f}/100分 | 可信度：{credibility}（{cred_desc}）
+- 信号强度：{strength_score:.1f}/100分 | 置信度：{grade_display}
 - {data_source_status}
 """
 
@@ -132,7 +136,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     alerts_str = "\n".join(alerts) if alerts else ""
 
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 预估胜率：{win_rate}%{probe_tag} 🕒 {now_str}
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 信号置信度：{grade_display}{probe_tag} 🕒 {now_str}
 **趋势强度**：{trend_text} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 策略概要
