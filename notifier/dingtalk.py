@@ -43,20 +43,18 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
-    signal_quality = strategy.get("confidence", "medium").upper()  # 原置信度，现改为信号质量
+    signal_quality = strategy.get("confidence", "medium").upper()
     is_probe = extra.get("is_probe", False)
     signal_strength = extra.get("signal_strength", {})
-    direction_score = signal_strength.get("score", 0)  # 原共振评分，现改为方向评分
+    direction_score = signal_strength.get("score", 0)
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 信号质量星级
     quality_star = {"HIGH": "★★★", "MEDIUM": "★★☆", "LOW": "★☆☆"}.get(signal_quality, "")
 
-    # 市场状态（原趋势强度，仅改名称和描述）
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
@@ -72,7 +70,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         market_state += " ⚠️过渡期"
 
-    # 信号可信度（用于仓位建议，保留）
     if direction_score >= 75:
         credibility = "★★★★☆"
         cred_desc = "正常仓位"
@@ -89,7 +86,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         credibility = "☆☆☆☆☆"
         cred_desc = "建议观望"
 
-    # 警报
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
     try:
@@ -112,13 +108,20 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
+    # 处理reasoning，在每一步之间插入空行
+    reasoning = strategy.get('reasoning', '暂无分析')
+    # 在"【第"之前插入换行，使每一步独立成段
+    import re
+    reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
+    reasoning = reasoning.strip()
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
 **市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 AI 研判
-> {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
+{reasoning}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 方向评分：{direction_score:.1f}/100分 | 信号质量：{quality_star} {signal_quality}
@@ -149,7 +152,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **信号可信度**：{credibility}（{cred_desc}）
 - **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
 ### 📈 AI 分析逻辑
-> {strategy.get('reasoning', '暂无分析')}
+{reasoning}
 ### ⚠️ 风险提示
 - {strategy.get('risk_note', '请严格设置止损')}
 ### 🔗 数据快照
