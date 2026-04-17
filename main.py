@@ -219,6 +219,35 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
+        # ---------- 新增硬拦截规则 ----------
+        hard_override_reason = ""
+
+        # 规则1：趋势末端禁止追单（趋势强度 > 85 且紧贴关键位）
+        if trend_info["score"] > 85 and near_key_level:
+            hard_override_reason = f"趋势末端紧贴关键位（趋势得分{trend_info['score']}），追单风险极高，强制观望。"
+            momentum_override["active"] = False
+
+        # 规则2：极端清算时禁止顺势开仓（若开仓方向与清算压力方向相同）
+        if extreme_liq and momentum_override.get("active"):
+            liq_bearish = above_val > below_val * 1.3
+            liq_bullish = below_val > above_val * 1.3
+            override_dir = momentum_override.get("direction")
+            if (override_dir == "short" and liq_bearish) or (override_dir == "long" and liq_bullish):
+                hard_override_reason = f"极端清算下禁止顺势开仓（清算压力与{override_dir}同向，易被反向猎杀），强制观望。"
+                momentum_override["active"] = False
+
+        # 规则3：主动买卖盘背离强制观望
+        if trend_info["direction"] == "bear" and trend_info["score"] > 60 and taker_ratio > 0.58:
+            hard_override_reason = f"主动买盘强势反抗（{taker_ratio:.2f}），空头趋势存疑，强制观望。"
+            momentum_override["active"] = False
+        elif trend_info["direction"] == "bull" and trend_info["score"] > 60 and taker_ratio < 0.42:
+            hard_override_reason = f"主动卖盘强势（{taker_ratio:.2f}），多头趋势存疑，强制观望。"
+            momentum_override["active"] = False
+
+        # 如果硬拦截触发，记录日志
+        if hard_override_reason:
+            logger.warning(f"硬拦截触发: {hard_override_reason}")
+
         # 预先计算止损候选值
         ref_dir = trend_info.get("direction", "bull")
         if momentum_override and momentum_override.get("active"):
@@ -255,6 +284,12 @@ def main():
         strategy = call_deepseek(prompt, momentum_override, extreme_liq)
         if not strategy: raise Exception("DeepSeek 返回为空")
 
+        # 如果硬拦截触发，强制覆盖AI输出
+        if hard_override_reason:
+            strategy["direction"] = "neutral"
+            strategy["confidence"] = "low"
+            strategy["reasoning"] = f"{strategy.get('reasoning', '')}\n\n【系统硬拦截】{hard_override_reason}"
+
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
         if is_probe and sum(probe_history)/len(probe_history) > 0.3:
@@ -267,7 +302,6 @@ def main():
 
         signal_strength = calculate_signal_strength(symbol, strategy["direction"], cg_data, macro, liq_zero_count, cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq)
 
-        # 移除胜率拦截逻辑，改用信号强度等级辅助判断（可自行决定是否添加基于分数的拦截）
         if not validate_strategy(strategy, price): logger.warning("策略校验未通过")
         extra = {
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"), "oi_change": cg_data.get("oi_change_24h", "N/A"),
