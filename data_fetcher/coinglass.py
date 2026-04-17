@@ -324,18 +324,19 @@ class CoinGlassClient:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
-        # ---------- ETH/BTC 汇率 ----------
+           # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
         """
         获取 ETH/BTC 汇率及其趋势。
+        使用 Binance 现货数据，交易对格式为 ETHUSD_USDT 和 BTCUSD_USDT。
         返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
         """
         try:
-            # 注意：CoinGlass 现货 symbol 必须无横线，如 BTCUSDT
-            params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
-            eth_data = self._request("api/spot/price/history", params, allow_backup=True, silent_fail=True)
-            params["symbol"] = "BTCUSDT"
-            btc_data = self._request("api/spot/price/history", params, allow_backup=True, silent_fail=True)
+            # Binance 现货交易对格式：BTCUSD_USDT, ETHUSD_USDT
+            params = {"exchange": "Binance", "symbol": "ETHUSD_USDT", "interval": "1h", "limit": 5}
+            eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
+            params["symbol"] = "BTCUSD_USDT"
+            btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
 
             # 校验数据格式
             if not isinstance(eth_data, list) or not isinstance(btc_data, list):
@@ -346,7 +347,7 @@ class CoinGlassClient:
                 logger.warning(f"ETH/BTC 汇率数据不足，ETH数据量:{len(eth_data)}，BTC数据量:{len(btc_data)}")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            # 提取收盘价（兼容 list 和 dict 两种格式）
+            # 提取收盘价（兼容 list 和 dict 两种返回格式）
             eth_close_4 = []
             for k in eth_data[-4:]:
                 if isinstance(k, list) and len(k) >= 5:
