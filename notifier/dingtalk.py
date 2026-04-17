@@ -52,7 +52,19 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # ===== 市场状态：纯中文自然语言描述 =====
+    # 共振强度星级
+    if resonance_score >= 75:
+        resonance_star = "★★★★☆"
+    elif resonance_score >= 55:
+        resonance_star = "★★★☆☆"
+    elif resonance_score >= 35:
+        resonance_star = "★★☆☆☆"
+    elif resonance_score >= 15:
+        resonance_star = "★☆☆☆☆"
+    else:
+        resonance_star = "☆☆☆☆☆"
+
+    # 市场状态：纯中文描述
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
@@ -77,22 +89,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         market_state += "（方向不明）"
 
-    # ===== 共振强度等级（星级+描述） =====
-    if resonance_score >= 75:
-        resonance_star = "★★★★☆"
-        resonance_desc = "正常仓位"
-    elif resonance_score >= 55:
-        resonance_star = "★★★☆☆"
-        resonance_desc = "中等仓位"
-    elif resonance_score >= 35:
-        resonance_star = "★★☆☆☆"
-        resonance_desc = "轻仓博弈"
-    elif resonance_score >= 15:
-        resonance_star = "★☆☆☆☆"
-        resonance_desc = "试探或观望"
+    # 策略方向文本
+    if direction == "long":
+        dir_display = "做多"
+    elif direction == "short":
+        dir_display = "做空"
     else:
-        resonance_star = "☆☆☆☆☆"
-        resonance_desc = "建议观望"
+        dir_display = "观望"
 
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
@@ -116,20 +119,26 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
+    # 处理 AI 分析逻辑：每一步之间空一行，首字母对齐
+    reasoning = strategy.get('reasoning', '暂无分析')
+    # 在"【第"前插入两个换行（产生空行），并确保段落开头无多余空格
+    import re
+    reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
+    reasoning = reasoning.strip()
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
-        return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
-**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
+        return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 共振强度：{resonance_star} 🕒 {now_str}
+📈市场状态：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 AI 研判
-> {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
+{reasoning}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 共振强度：{resonance_score:.1f}/100分 | {resonance_star} {resonance_desc}
+- 共振强度：{resonance_score:.1f}/100分 | {resonance_star}
 - {data_source_status}
 """
 
-    dir_text = "做多" if direction == "long" else "做空"
     entry_low = float(strategy.get("entry_price_low", 0))
     entry_high = float(strategy.get("entry_price_high", 0))
     stop = float(strategy.get("stop_loss", 0))
@@ -139,30 +148,34 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp2_anchor = strategy.get("tp2_anchor", "未提供")
 
     alerts_str = "\n".join(alerts) if alerts else ""
+    if alerts_str:
+        alerts_str = alerts_str + "\n"
 
-    # 标题行使用共振强度星级
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 共振强度：{resonance_star}{probe_tag} 🕒 {now_str}
-**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 策略方向：{dir_display} 共振强度：{resonance_star}{probe_tag} 🕒 {now_str}
+📈市场状态：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 策略概要
-- **方向**：{dir_text}
-- **当前价**：${current_price:,.1f}
-- **入场区间**：${entry_low:,.1f} - ${entry_high:,.1f}
-- **止损**：${stop:,.1f}
-- **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
-- **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
-- **共振强度**：{resonance_score:.1f}/100分 | {resonance_star}（{resonance_desc}）
-- **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
+- 方向：{dir_display}
+- 当前价：${current_price:,.1f}
+- 入场区间：${entry_low:,.1f} - ${entry_high:,.1f}
+- 止损：${stop:,.1f}
+- 止盈1：${tp1:,.1f}（锚定：{tp1_anchor}）
+- 止盈2：${tp2:,.1f}（锚定：{tp2_anchor}）
+- 共振强度：{resonance_score:.1f}/100分 | {resonance_star}
+- 止盈策略：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
+
 ### 📈 AI 分析逻辑
-> {strategy.get('reasoning', '暂无分析')}
+{reasoning}
+
 ### ⚠️ 风险提示
 - {strategy.get('risk_note', '请严格设置止损')}
+
 ### 🔗 数据快照
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- **共振强度明细**：{strength_details}
-- **{data_source_status}**
+- 共振强度明细：{strength_details}
+- {data_source_status}
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
 """
