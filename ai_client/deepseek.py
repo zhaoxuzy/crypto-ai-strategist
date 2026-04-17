@@ -288,6 +288,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     tp1_anchor = tp_candidates.get("tp1_anchor", "未提供") if tp_candidates else "未提供"
     tp2_anchor = tp_candidates.get("tp2_anchor", "未提供") if tp_candidates else "未提供"
 
+    entry_width = atr * 0.002  # 约0.2% ATR
+
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
 
 ⚠️ **核心要求**：
@@ -358,10 +360,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 4. 只有当清算动力学为“中性观察”，且方向倾向得分差值 < 5 分，且不满足以上任何一条强制出手条件时，才允许输出 neutral。
 
 **第五步：止损与止盈设置**
-- 止损候选值（按优先级选择其一并注明规则编号）：
-  规则1（同向强清算区外侧）：{stop_rule1:.1f}
-  规则2（1.5×ATR固定止损）：{stop_rule2:.1f}
-  规则3（2×ATR宽止损）：{stop_rule3:.1f}
+- **止损规则优先级**（你必须按顺序选择，注明规则编号）：
+  - **规则1（同向强清算区外侧）**：
+    - 做多时，同向清算区 = **下方**多头清算密集区（支撑）。若存在强度≥3的下方清算区，止损设于该区外侧（价格×0.998）。
+    - 做空时，同向清算区 = **上方**空头清算密集区（阻力）。若存在强度≥3的上方清算区，止损设于该区外侧（价格×1.002）。
+  - **规则2（1.5×ATR固定止损）**：{stop_rule2:.1f}
+  - **规则3（2×ATR宽止损）**：{stop_rule3:.1f}
 - 止盈直接使用以下候选值：
   TP1：{tp1:.1f}（锚定：{tp1_anchor}）
   TP2：{tp2:.1f}（锚定：{tp2_anchor}）
@@ -371,8 +375,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
   "is_probe": true/false,
-  "entry_price_low": {price - atr * 0.001:.1f},
-  "entry_price_high": {price + atr * 0.001:.1f},
+  "entry_price_low": {price - entry_width:.1f},
+  "entry_price_high": {price + entry_width:.1f},
   "stop_loss": 止损价,
   "take_profit_1": {tp1:.1f},
   "tp1_anchor": "{tp1_anchor}",
