@@ -46,47 +46,45 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     conf = strategy.get("confidence", "medium").upper()
     is_probe = extra.get("is_probe", False)
     signal_strength = extra.get("signal_strength", {})
-    strength_score = signal_strength.get("score", 0)
+    resonance_score = signal_strength.get("score", 0)
     strength_details = ", ".join(signal_strength.get("details", []))
     data_source_status = extra.get("data_source_status", "")
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
     probe_tag = " 🧪 试探信号" if is_probe else ""
 
+    # 置信度等级展示
     confidence_grade = signal_strength.get("confidence_grade", "Low")
     grade_star = {"High": "★★★", "Medium": "★★☆", "Low": "★☆☆"}.get(confidence_grade, "☆☆☆")
-    grade_display = f"{grade_star} {confidence_grade}"
 
+    # 市场状态（原趋势强度）
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
     trend_confidence = trend_info.get("confidence", "低")
 
     if trend_direction == "bull":
-        trend_text = f"多头倾向({trend_score}/100，可信度{trend_confidence})"
+        market_state = f"偏多震荡" if trend_score < 60 else f"多头趋势"
     elif trend_direction == "bear":
-        trend_text = f"空头倾向({trend_score}/100，可信度{trend_confidence})"
+        market_state = f"偏空震荡" if trend_score < 60 else f"空头趋势"
     else:
-        trend_text = f"无明显倾向({trend_score}/100，震荡特征)"
+        market_state = "无明显倾向"
 
     if 30 <= trend_score <= 70:
-        trend_text += " ⚠️过渡期"
+        market_state += "（过渡期）"
+    market_state += f" {trend_score}"
 
-    if strength_score >= 75:
-        credibility = "★★★★☆"
-        cred_desc = "正常仓位"
-    elif strength_score >= 55:
-        credibility = "★★★☆☆"
-        cred_desc = "中等仓位"
-    elif strength_score >= 35:
-        credibility = "★★☆☆☆"
-        cred_desc = "轻仓博弈"
-    elif strength_score >= 15:
-        credibility = "★☆☆☆☆"
-        cred_desc = "试探或观望"
+    # 共振评分等级描述
+    if resonance_score >= 75:
+        resonance_level = "极强"
+    elif resonance_score >= 55:
+        resonance_level = "强"
+    elif resonance_score >= 35:
+        resonance_level = "中"
+    elif resonance_score >= 15:
+        resonance_level = "弱"
     else:
-        credibility = "☆☆☆☆☆"
-        cred_desc = "建议观望"
+        resonance_level = "极弱"
 
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
@@ -113,13 +111,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
-**趋势强度**：{trend_text} | 波动因子：{volatility_factor:.2f}
+**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 AI 研判
 > {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 信号强度：{strength_score:.1f}/100分 | 置信度：{grade_display}
+- 共振评分：{resonance_score:.1f}/100（{resonance_level}）
 - {data_source_status}
 """
 
@@ -134,8 +132,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     alerts_str = "\n".join(alerts) if alerts else ""
 
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 信号置信度：{grade_display}{probe_tag} 🕒 {now_str}
-**趋势强度**：{trend_text} | 波动因子：{volatility_factor:.2f}
+    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 共振：{grade_star}{probe_tag} 🕒 {now_str}
+**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
 {alerts_str}
 ### 📊 策略概要
 - **方向**：{dir_text}
@@ -144,7 +142,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - **止损**：${stop:,.1f}
 - **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
 - **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
-- **信号可信度**：{credibility}（{cred_desc}）
+- **共振评分**：{resonance_score:.1f}/100（{resonance_level}）
 - **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
 ### 📈 AI 分析逻辑
 > {strategy.get('reasoning', '暂无分析')}
@@ -154,7 +152,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
 - 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- **信号强度**：{strength_score:.1f}/100分 | {strength_details}
+- **共振明细**：{strength_details}
 - **{data_source_status}**
 ---
 *本策略由DeepSeek基于实时市场数据生成，仅供参考。*
