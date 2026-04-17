@@ -323,6 +323,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 清算最大痛点：{liq_max_pain} USDT
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
   （注：强度≥3的清算区方可作为有效锚点）
+- 注意：清算金额字段可能因统计范围限制显示为0，但“最近清算密集区”仍可反映局部清算堆积，两者口径不同，以密集区为准判断支撑/阻力。
 
 **多空博弈**
 - 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（绝对值<0.01%视为中性）
