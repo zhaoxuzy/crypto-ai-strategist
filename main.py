@@ -299,6 +299,7 @@ def main():
             logger.warning("策略校验未通过")
 
         extra = {
+            "directional_scores": directional_scores,   # 新增
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
             "oi_change": cg_data.get("oi_change_24h", "N/A"),
             "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
