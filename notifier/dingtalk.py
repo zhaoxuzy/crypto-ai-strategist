@@ -41,119 +41,65 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
 def format_strategy_message(symbol: str, strategy: dict, current_price: float, extra: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
-    now_str = now_beijing.strftime("%Y-%m-%d %H:%M")
+    now_str = now_beijing.strftime("%H:%M")
     direction = strategy.get("direction", "neutral")
-    conf = strategy.get("confidence", "medium").upper()
+    signal_quality = strategy.get("confidence", "medium").upper()  # 信号质量（原置信度）
     is_probe = extra.get("is_probe", False)
-    signal_strength = extra.get("signal_strength", {})
-    resonance_score = signal_strength.get("score", 0)
-    strength_details = ", ".join(signal_strength.get("details", []))
-    data_source_status = extra.get("data_source_status", "")
-    volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
-    probe_tag = " 🧪 试探信号" if is_probe else ""
 
-    # 置信度等级展示
-    confidence_grade = signal_strength.get("confidence_grade", "Low")
-    grade_star = {"High": "★★★", "Medium": "★★☆", "Low": "★☆☆"}.get(confidence_grade, "☆☆☆")
-
-    # 市场状态（原趋势强度）
-    trend_info = extra.get("trend_info", {})
-    trend_direction = trend_info.get("direction", "neutral")
-    trend_score = trend_info.get("score", 0)
-    trend_confidence = trend_info.get("confidence", "低")
-
-    if trend_direction == "bull":
-        market_state = f"偏多震荡" if trend_score < 60 else f"多头趋势"
-    elif trend_direction == "bear":
-        market_state = f"偏空震荡" if trend_score < 60 else f"空头趋势"
+    # 标题行
+    if direction == "neutral":
+        title = f"⏸️ [{symbol}] 中性观望 🕒 {now_str}"
     else:
-        market_state = "无明显倾向"
+        dir_text = "做多" if direction == "long" else "做空"
+        probe_text = " 🧪" if is_probe else ""
+        quality_star = {"HIGH": "★★★", "MEDIUM": "★★☆", "LOW": "★☆☆"}.get(signal_quality, "")
+        title = f"{'🟢' if direction == 'long' else '🔴'} [{symbol}] {dir_text}{probe_text} {quality_star} 🕒 {now_str}"
 
-    if 30 <= trend_score <= 70:
-        market_state += "（过渡期）"
-    market_state += f" {trend_score}"
-
-    # 共振评分等级描述
-    if resonance_score >= 75:
-        resonance_level = "极强"
-    elif resonance_score >= 55:
-        resonance_level = "强"
-    elif resonance_score >= 35:
-        resonance_level = "中"
-    elif resonance_score >= 15:
-        resonance_level = "弱"
-    else:
-        resonance_level = "极弱"
-
-    alerts = []
-    funding_rate_str = extra.get("funding_rate", "0")
-    try:
-        fr = float(funding_rate_str.strip('%')) if isinstance(funding_rate_str, str) else 0
-        if fr > 0.05:
-            alerts.append("⚠️资金费率>0.05%(多头拥挤)")
-        elif fr < -0.03:
-            alerts.append("⚠️资金费率<-0.03%(空头拥挤)")
-    except:
-        pass
-
-    oi_change_str = extra.get("oi_change", "0")
-    try:
-        oi = float(oi_change_str.strip('%')) if isinstance(oi_change_str, str) else 0
-        if abs(oi) > 5:
-            alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
-    except:
-        pass
-
-    if extreme_liq:
-        alerts.append("🚨极端清算警报")
+    # 极端清算警告
+    warning_line = "🚨 **极端清算警报**\n\n" if extreme_liq else ""
 
     if direction == "neutral":
-        alerts_str = "\n".join(alerts) if alerts else ""
-        return f"""## ⏸️ [{symbol}] 短线策略：中性观望 🕒 {now_str}
-**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
-{alerts_str}
-### 📊 AI 研判
-> {strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')}
-- 当前价：${current_price:,.1f}
-- 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 共振评分：{resonance_score:.1f}/100（{resonance_level}）
-- {data_source_status}
-"""
+        reasoning = strategy.get('reasoning', '当前多空力量均衡，无明显方向偏向。')
+        summary = reasoning[:200] + "..." if len(reasoning) > 200 else reasoning
+        return f"""## {title}
+{warning_line}当前价：${current_price:,.1f}
 
-    dir_text = "做多" if direction == "long" else "做空"
-    entry_low = float(strategy.get("entry_price_low", 0))
-    entry_high = float(strategy.get("entry_price_high", 0))
+📊 {summary}"""
+
+    # 有方向时
+    entry_low = float(strategy.get("entry_price_low", current_price))
+    entry_high = float(strategy.get("entry_price_high", current_price))
     stop = float(strategy.get("stop_loss", 0))
     tp1 = float(strategy.get("take_profit_1", 0))
     tp2 = float(strategy.get("take_profit_2", 0))
-    tp1_anchor = strategy.get("tp1_anchor", "未提供")
-    tp2_anchor = strategy.get("tp2_anchor", "未提供")
 
-    alerts_str = "\n".join(alerts) if alerts else ""
+    reasoning = strategy.get('reasoning', '暂无分析')
+    # 提取裁决摘要
+    summary = reasoning
+    if "【第四步" in reasoning:
+        parts = reasoning.split("【第四步")
+        if len(parts) > 1:
+            fourth = parts[1].split("【第五步")[0] if "【第五步" in parts[1] else parts[1]
+            if "必须输出" in fourth:
+                idx = fourth.find("必须输出")
+                end = fourth.find("。", idx)
+                summary = fourth[idx:end+1] if end != -1 else fourth[idx:idx+80]
+            else:
+                summary = fourth[:120] + "..." if len(fourth) > 120 else fourth
+    summary = summary.replace("【", "").replace("】", "").strip()
 
-    return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 置信度：{conf} | 共振：{grade_star}{probe_tag} 🕒 {now_str}
-**市场状态**：{market_state} | 波动因子：{volatility_factor:.2f}
-{alerts_str}
-### 📊 策略概要
-- **方向**：{dir_text}
-- **当前价**：${current_price:,.1f}
-- **入场区间**：${entry_low:,.1f} - ${entry_high:,.1f}
-- **止损**：${stop:,.1f}
-- **止盈1**：${tp1:,.1f}（锚定：{tp1_anchor}）
-- **止盈2**：${tp2:,.1f}（锚定：{tp2_anchor}）
-- **共振评分**：{resonance_score:.1f}/100（{resonance_level}）
-- **止盈策略**：TP1减仓50%，剩余仓位止损移至成本价，博取TP2。
-### 📈 AI 分析逻辑
-> {strategy.get('reasoning', '暂无分析')}
-### ⚠️ 风险提示
-- {strategy.get('risk_note', '请严格设置止损')}
-### 🔗 数据快照
-- 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
-- 资金费率：{extra.get('funding_rate', 'N/A')}% | OI 24h：{extra.get('oi_change', 'N/A')}% | 多空比：{extra.get('ls_ratio', 'N/A')}
-- 恐惧贪婪：{extra.get('fear_greed', 'N/A')} | CVD：{extra.get('cvd_signal', 'N/A')}
-- **共振明细**：{strength_details}
-- **{data_source_status}**
----
-*本策略由DeepSeek基于实时市场数据生成，仅供参考。*
-"""
+    risk_note = strategy.get('risk_note', '严格止损，TP1减仓50%，剩余移至成本价')
+
+    # 信号质量描述
+    quality_desc = {"HIGH": "高质量", "MEDIUM": "中等质量", "LOW": "低质量"}.get(signal_quality, "")
+
+    return f"""## {title}
+{warning_line}**入场**：${entry_low:,.1f} - ${entry_high:,.1f}
+**止损**：${stop:,.1f}
+**止盈1**：${tp1:,.1f} | **止盈2**：${tp2:,.1f}
+
+📊 {summary}
+📋 信号质量：{quality_desc}
+
+⚠️ {risk_note}"""
