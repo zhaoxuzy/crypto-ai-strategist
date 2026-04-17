@@ -114,28 +114,54 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
     total = above + below
     if total > 0:
         ratio_above = above / total
-        if ratio_above > 0.6: bear_score += 25
-        elif ratio_above < 0.4: bull_score += 25
+        if ratio_above > 0.6:
+            bear_score += 25
+        elif ratio_above < 0.4:
+            bull_score += 25
     cvd = coinglass_data.get("cvd_signal", "N/A")
-    if cvd in ["bearish", "slightly_bearish"]: bear_score += 20
-    elif cvd in ["bullish", "slightly_bullish"]: bull_score += 20
+    if cvd in ["bearish", "slightly_bearish"]:
+        bear_score += 20
+    elif cvd in ["bullish", "slightly_bullish"]:
+        bull_score += 20
     try:
         tr = float(coinglass_data.get("taker_ratio", 0.5))
-        if tr < 0.45: bear_score += 15
-        elif tr > 0.55: bull_score += 15
-    except: pass
+        if tr < 0.45:
+            bear_score += 15
+        elif tr > 0.55:
+            bull_score += 15
+    except:
+        pass
     try:
         tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
-        if tls > 2.0: bear_score += 15
-        elif tls < 0.7: bull_score += 15
-    except: pass
+        if tls > 2.0:
+            bear_score += 15
+        elif tls < 0.7:
+            bull_score += 15
+    except:
+        pass
     fg = int(macro_data.get("fear_greed", {}).get("value", 50))
-    if fg < 30: bull_score += 10
-    elif fg > 70: bear_score += 10
+    if fg < 30:
+        bull_score += 10
+    elif fg > 70:
+        bear_score += 10
     trend_dir = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
-    if trend_dir == "bull": bull_score += int(trend_score / 10)
-    elif trend_dir == "bear": bear_score += int(trend_score / 10)
+    if trend_dir == "bull":
+        bull_score += int(trend_score / 10)
+    elif trend_dir == "bear":
+        bear_score += int(trend_score / 10)
+
+    # ===== 修正：ETH/BTC 汇率趋势同时影响多空得分 =====
+    eth_btc = coinglass_data.get("eth_btc_ratio", {})
+    if eth_btc:
+        trend = eth_btc.get("trend", "neutral")
+        if trend == "up":
+            bull_score += 8
+            bear_score = max(0, bear_score - 4)
+        elif trend == "down":
+            bear_score += 8
+            bull_score = max(0, bull_score - 4)
+
     return {"bull": bull_score, "bear": bear_score}
 
 
@@ -189,7 +215,6 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
-        # 信号评级参考
         signal_strength = calculate_signal_strength(
             symbol, "long", cg_data, macro, liq_zero_count,
             cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
@@ -199,7 +224,7 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 初次调用 AI 获取方向（此时止损止盈候选值为占位符）
+        # 初次调用 AI 获取方向（止损止盈候选值为占位符）
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
@@ -218,13 +243,12 @@ def main():
         cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
         max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
 
-        # ---------- 根据实际方向计算止损止盈候选值（保证非零）----------
+        # ---------- 根据实际方向计算止损止盈候选值 ----------
         if actual_direction == "long":
             stop_loss_rule2 = price - 1.5 * atr
             stop_loss_rule3 = price - 2.0 * atr
             tp1 = price + 2.0 * atr
             tp1_anchor = "2×ATR"
-            # TP2：上方更远的清算区（必须是阻力区且距离≥1.5×ATR），否则用 3.5×ATR
             if cluster_intensity >= 3 and cluster_price > price and (cluster_price - price) >= 1.5 * atr:
                 tp2 = cluster_price
                 tp2_anchor = f"上方清算区 {cluster_price:.1f}"
@@ -236,7 +260,6 @@ def main():
             stop_loss_rule3 = price + 2.0 * atr
             tp1 = price - 2.0 * atr
             tp1_anchor = "2×ATR"
-            # TP2：下方清算区（支撑）或清算最大痛点（需距离≥1.5×ATR），否则 3.5×ATR
             tp2_set = False
             if cluster_intensity >= 3 and cluster_price < price and (price - cluster_price) >= 1.5 * atr:
                 tp2 = cluster_price
