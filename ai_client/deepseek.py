@@ -92,6 +92,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score += 10
             det.append("极端清算支持做空")
 
+    # ---------- 清算结构（核心数据，转换失败则直接抛异常）----------
     above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
     total = above + below
@@ -107,10 +108,12 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         if s > 5:
             det.append(f"清算结构({ratio:.1%})")
 
+    # ---------- 持仓结构 ----------
     pos_s, pos_d = get_position_structure_score(direction, cg, macro, symbol)
     score += pos_s * (weight_pos / 32.0)
     det.extend(pos_d)
 
+    # ---------- CVD ----------
     cvd = cg.get("cvd_signal", "N/A")
     if cvd in ["bullish", "slightly_bullish"]:
         if direction == "long":
@@ -129,6 +132,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
             score -= weight_cvd * 0.5
             det.append("CVD反向")
 
+    # ---------- 恐惧贪婪 ----------
     fg_val = int(macro.get("fear_greed", {}).get("value", 50))
     if direction == "long":
         s = linear_score(fg_val, 20, 50, weight_fg, True)
@@ -138,6 +142,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     if s > 2:
         det.append(f"恐惧贪婪({fg_val})")
 
+    # ---------- 资金费率 ----------
     try:
         fr = float(cg.get("funding_rate", 0))
         if direction == "short":
@@ -150,6 +155,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
+    # ---------- 主动吃单比率 ----------
     try:
         tr = float(cg.get("taker_ratio", 0.5))
         if direction == "long":
@@ -162,6 +168,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
+    # ---------- 净持仓累积（OI百分比）----------
     try:
         np = float(cg.get("net_position_cum", 0))
         oi_usd = cg.get("option_oi_usd", "N/A")
@@ -177,6 +184,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     except Exception:
         pass
 
+    # ---------- 订单簿失衡率 ----------
     imb = cg.get("orderbook_imbalance", 0.0)
     if direction == "long":
         s = linear_score(imb, 0.1, 0.3, weight_ob, False)
@@ -186,6 +194,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     if abs(s) > 3:
         det.append(f"订单簿({imb:.2f})")
 
+    # ---------- 宏观过滤器 ----------
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
         if direction == "long" and trend == "up":
@@ -208,12 +217,14 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
         score -= 10
         det.append("⚠️极度恐惧做多门槛提高")
 
+    # 数据缺失扣分
     core_missing = sum(1 for v in [cg.get("above_short_liquidation"), cg.get("cvd_signal")] if v == "N/A")
     important_missing = sum(1 for v in [cg.get("top_long_short_ratio"), cg.get("funding_rate")] if v == "N/A")
     score -= min(15, core_missing * 5 + important_missing * 3)
 
     score = max(-20.0, min(100.0, score))
 
+    # 信号强度等级
     if score >= 75:
         level = "极强"
     elif score >= 55:
@@ -225,25 +236,25 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     else:
         level = "极弱"
 
-    if score <= 30:
-        win_rate = int(35 + score * 0.3)
-    elif score <= 60:
-        win_rate = int(45 + (score - 30) * 0.6)
+    # 置信度等级（取代虚假胜率）
+    if score >= 60:
+        confidence_grade = "High"
+    elif score >= 35:
+        confidence_grade = "Medium"
     else:
-        win_rate = int(63 + (score - 60) * 0.3)
-    win_rate = max(35, min(85, win_rate))
+        confidence_grade = "Low"
 
     if liq_zero >= 2:
         level = "极弱"
         score = max(0, score - 30)
-        win_rate = max(35, win_rate - 20)
+        confidence_grade = "Low"
 
     return {
         "level": level,
         "score": round(score, 1),
         "max_score": 100,
         "details": det,
-        "win_rate": win_rate
+        "confidence_grade": confidence_grade   # 替代 win_rate
     }
 
 
@@ -424,8 +435,8 @@ def call_deepseek(prompt: str, momentum_override: dict = None, extreme_liq: bool
             js = content[content.find('{'):content.rfind('}') + 1]
             s = json.loads(js)
 
-            for k in ["win_rate", "tp1_anchor", "tp2_anchor", "is_probe"]:
-                s.setdefault(k, 0 if k == "win_rate" else ("未提供" if "anchor" in k else False))
+            for k in ["tp1_anchor", "tp2_anchor", "is_probe"]:
+                s.setdefault(k, "未提供" if "anchor" in k else False)
 
             if momentum_override and momentum_override.get("active") and not extreme_liq:
                 req_dir = momentum_override.get("direction")
