@@ -12,7 +12,7 @@ class CoinGlassClient:
         self.backup_exchanges = ["Bybit"]
         self._liq_zero_count = 0
         self._use_model1_fallback = False
-        self._prev_liq_data = {}  # 新增：缓存上一小时的清算关键数据
+        self._prev_liq_data = {}
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -198,10 +198,8 @@ class CoinGlassClient:
         return result
 
     def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
-        """计算清算热力图的动态趋势信号，返回信号描述列表"""
         signals = []
 
-        # 1. 上下清算不对称性
         total = curr["above"] + curr["below"]
         if total > 0:
             ratio = curr["above"] / total
@@ -210,14 +208,12 @@ class CoinGlassClient:
             elif ratio < 0.35:
                 signals.append(f"清算压力偏多({1-ratio:.1%})")
 
-        # 2. 最大痛点漂移（需有历史数据）
         if prev and curr["max_pain"] > 0 and prev.get("max_pain", 0) > 0:
             if curr["max_pain"] > prev["max_pain"] * 1.002:
                 signals.append("最大痛点上移↑")
             elif curr["max_pain"] < prev["max_pain"] * 0.998:
                 signals.append("最大痛点下移↓")
 
-        # 3. 磁吸效应
         cluster_price = curr["cluster_price"]
         atr = curr.get("atr", 1)
         if cluster_price > 0 and atr > 0:
@@ -225,7 +221,6 @@ class CoinGlassClient:
             if distance_atr < 0.5 and curr["cluster_intensity"] >= 4:
                 signals.append(f"强磁吸区(距{cluster_price:.0f}, 强度{curr['cluster_intensity']})")
 
-        # 4. 清算厚度变化
         if prev:
             prev_total = prev.get("above", 0) + prev.get("below", 0)
             curr_total = curr["above"] + curr["below"]
@@ -324,58 +319,34 @@ class CoinGlassClient:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
-              # ---------- ETH/BTC 汇率 ----------
+    # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
-        """
-        获取 ETH/BTC 汇率及其趋势。
-        使用 Binance 现货数据，交易对格式为 ETHUSDT 和 BTCUSDT。
-        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
-        """
         try:
-            # 修正1: 交易所固定为 Binance，交易对格式修正为无分隔符
             params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             params["symbol"] = "BTCUSDT"
             btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
-
-            # 校验数据格式
-            if not isinstance(eth_data, list) or not isinstance(btc_data, list):
-                logger.warning("ETH/BTC 汇率数据格式异常，返回默认值")
+            
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("获取 ETH/BTC 汇率数据不足")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            if len(eth_data) < 4 or len(btc_data) < 4:
-                logger.warning(f"ETH/BTC 汇率数据不足，ETH数据量:{len(eth_data)}，BTC数据量:{len(btc_data)}")
-                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
-
-            # 提取收盘价（兼容 list 和 dict 两种返回格式）
-            eth_close_4 = []
-            for k in eth_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    eth_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    eth_close_4.append(float(k.get("close", 0)))
-            btc_close_4 = []
-            for k in btc_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    btc_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    btc_close_4.append(float(k.get("close", 0)))
-
+            eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
+            btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
+            
             if len(eth_close_4) < 4 or len(btc_close_4) < 4:
-                logger.warning("ETH/BTC 有效收盘价不足4个")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
             eth_ma = sum(eth_close_4) / 4
             btc_ma = sum(btc_close_4) / 4
             ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
-
+            
             current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
-
+            
             trend = "up" if current_ratio > ma_4h_ratio else "down"
-
+            
             logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
             return {"current_ratio": round(current_ratio, 6), "ma_4h": round(ma_4h_ratio, 6), "trend": trend}
-
         except Exception as e:
             logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
             return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
@@ -407,6 +378,85 @@ class CoinGlassClient:
         except Exception as e:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
+
+    # ---------- 因子一：恐惧贪婪指数 ----------
+    def get_fear_greed_index(self) -> dict:
+        try:
+            data = self._request("api/fear-greed-index", {}, allow_backup=False, silent_fail=True)
+            if not data:
+                import requests
+                resp = requests.get("https://api.alternative.me/fng/", timeout=10)
+                if resp.status_code == 200:
+                    alt_data = resp.json()
+                    if alt_data.get("data"):
+                        current = int(alt_data["data"][0]["value"])
+                        classification = alt_data["data"][0]["value_classification"]
+                        return {"current": current, "prev": current, "classification": classification}
+                return {"current": 50, "prev": 50, "classification": "Neutral"}
+            
+            if isinstance(data, list) and len(data) >= 2:
+                current = int(data[-1].get("value", 50))
+                prev = int(data[-2].get("value", 50))
+                classification = data[-1].get("value_classification", "Neutral")
+            elif isinstance(data, dict):
+                current = int(data.get("value", 50))
+                prev = int(data.get("prev_value", current))
+                classification = data.get("value_classification", "Neutral")
+            else:
+                current = prev = 50
+                classification = "Neutral"
+            
+            return {"current": current, "prev": prev, "classification": classification}
+        except Exception as e:
+            logger.warning(f"获取恐惧贪婪指数失败: {e}")
+            return {"current": 50, "prev": 50, "classification": "Neutral"}
+
+    # ---------- 因子二：Coinbase 溢价指数 ----------
+    def get_coinbase_premium(self) -> dict:
+        try:
+            data = self._request("api/coinbase-premium-index", {}, allow_backup=False, silent_fail=True)
+            if not data:
+                return {"premium": 0.0, "premium_usd": 0.0}
+            
+            if isinstance(data, dict):
+                premium = float(data.get("premium", 0))
+                premium_usd = float(data.get("premium_usd", 0))
+            elif isinstance(data, list) and len(data) > 0:
+                latest = data[-1] if isinstance(data[-1], dict) else data[0]
+                premium = float(latest.get("premium", 0))
+                premium_usd = float(latest.get("premium_usd", 0))
+            else:
+                premium = 0.0
+                premium_usd = 0.0
+            
+            return {"premium": premium, "premium_usd": premium_usd}
+        except Exception as e:
+            logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
+            return {"premium": 0.0, "premium_usd": 0.0}
+
+    # ---------- 因子三：稳定币市值变化 ----------
+    def get_stablecoin_market_cap_change(self) -> dict:
+        try:
+            data = self._request("api/stablecoin/market-cap", {}, allow_backup=False, silent_fail=True)
+            if not data:
+                return {"change_7d": 0.0, "current_mcap": 0.0}
+            
+            if isinstance(data, dict):
+                change_7d = float(data.get("change_7d", 0))
+                current_mcap = float(data.get("total_market_cap", 0))
+            elif isinstance(data, list) and len(data) >= 7:
+                current = float(data[-1].get("total_market_cap", 0))
+                prev_7d = float(data[-8].get("total_market_cap", 0))
+                change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
+                current_mcap = current
+            else:
+                change_7d = 0.0
+                current_mcap = 0.0
+            
+            return {"change_7d": change_7d, "current_mcap": current_mcap}
+        except Exception as e:
+            logger.warning(f"获取稳定币市值变化失败: {e}")
+            return {"change_7d": 0.0, "current_mcap": 0.0}
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -500,7 +550,7 @@ class CoinGlassClient:
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
 
-        # ----- 新增：计算清算动态信号并缓存 -----
+        # 清算动态信号
         prev = self._prev_liq_data.get(symbol, {})
         curr = {
             "above": float(str(data.get("above_short_liquidation", "0")).replace(",", "")),
@@ -710,9 +760,8 @@ class CoinGlassClient:
         data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
         data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
         data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
-       
-        # 获取 ETH/BTC 汇率趋势并存入 data
-        eth_btc_ratio = self.get_eth_btc_ratio()
-        data["eth_btc_ratio"] = eth_btc_ratio
+
+        # 14. ETH/BTC 汇率
+        data["eth_btc_ratio"] = self.get_eth_btc_ratio()
 
         return data
