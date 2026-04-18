@@ -279,7 +279,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
-- 系统提供的量化参考仅供辅助。
 - **第四步中的“强制裁决规则”具有绝对最高优先级，你必须无条件执行，不得以任何主观理由否决。**
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
@@ -343,17 +342,17 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **⚠️ 铁律**：
 - 以上规则具有**最高优先级**。一旦条件满足，你**无权**以“风险回报比”、“价格位置”、“其他步骤结论矛盾”、“个人判断”等任何理由否决。
 - 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
-- **严禁如下行为**：“虽然满足条件，但风险回报比差，我输出 neutral。” → **这是严重违规，绝对禁止。**
 
 **第五步：止损与止盈设置**
-系统已为你计算好止损和止盈候选值。你只需**按优先级选择止损规则编号**，止盈直接使用给定数值。
-- **止损候选值**（你只能从以下选择一个）：
-  - 规则2（1.5×ATR固定止损）：{stop_loss_rule2:.1f}
-  - 规则3（2.0×ATR宽止损）：{stop_loss_rule3:.1f}
-  **选择优先级**：优先规则2，若你认为波动剧烈需要更宽止损，可选规则3。**严禁自行计算或修改数值**。
-- **止盈候选值**（直接填入JSON，无需选择）：
-  TP1：{tp1:.1f}（锚定：{tp1_anchor}）
-  TP2：{tp2:.1f}（锚定：{tp2_anchor}）
+- **你必须根据清算热力图结构自行设定止损和止盈**，不再使用固定ATR倍数。
+- **止损锚定原则**：
+  - 做多：止损设在**下方最近强度≥3的多头清算密集区**外侧（价格×0.998）。若无，则参考关键支撑位（如EMA55、前低）下方0.2%处。
+  - 做空：止损设在**上方最近强度≥3的空头清算密集区**外侧（价格×1.002）。若无，则参考关键阻力位（如EMA55、前高）上方0.2%处。
+- **止盈锚定原则**：
+  - TP1：优先锚定**反向最近强度≥3的清算密集区**（做多看上方空头清算区，做空看下方多头清算区）。
+  - TP2：优先锚定**清算最大痛点**，其次为下一个强度≥3的清算密集区。
+  - 若以上锚点均不存在，你可基于市场结构（如斐波那契扩展、前高前低）灵活设定，并在reasoning中说明依据。
+- **在reasoning中必须明确写出止损和每个止盈的锚定来源**。
 
 ### 策略输出格式（严格JSON）
 {{
@@ -361,12 +360,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "confidence": "high" 或 "medium" 或 "low",
   "entry_price_low": {price - entry_width:.1f},
   "entry_price_high": {price + entry_width:.1f},
-  "stop_loss": 从候选值中选择的止损价,
-  "take_profit_1": {tp1:.1f},
-  "tp1_anchor": "{tp1_anchor}",
-  "take_profit_2": {tp2:.1f},
-  "tp2_anchor": "{tp2_anchor}",
-  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明所选止损规则编号。",
+  "stop_loss": 止损价,
+  "take_profit_1": 止盈1价,
+  "tp1_anchor": "止盈1锚定来源说明",
+  "take_profit_2": 止盈2价,
+  "tp2_anchor": "止盈2锚定来源说明",
+  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明止损止盈的具体锚定来源。",
   "risk_note": "风险提示（必须包含分批止盈说明：TP1减仓50%，剩余仓位止损移至成本价）"
 }}
 """
