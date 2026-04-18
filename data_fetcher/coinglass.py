@@ -470,7 +470,7 @@ class CoinGlassClient:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
             return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
 
-    # ---------- 因子三：稳定币市值变化 ----------
+       # ---------- 因子三：稳定币市值变化 ----------
     def get_stablecoin_market_cap_change(self) -> dict:
         """
         获取稳定币总市值 7 日变化率
@@ -479,25 +479,38 @@ class CoinGlassClient:
         try:
             logger.info("尝试获取稳定币市值变化...")
             data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
-            logger.info(f"稳定币市值原始响应（前2条）: {data[:2] if isinstance(data, list) else data}")
+            logger.info(f"稳定币市值原始响应类型: {type(data)}")
             if not data:
                 logger.warning("稳定币市值返回空数据")
                 return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
-            if isinstance(data, list) and len(data) >= 7:
-                def get_mcap(item):
-                    if isinstance(item, dict):
-                        return float(item.get("marketCap") or item.get("market_cap") or item.get("value") or 0)
-                    return 0.0
-                
-                current = get_mcap(data[-1])
-                prev_7d = get_mcap(data[-8])
-                change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
-                logger.info(f"✅ 稳定币市值变化: {change_7d:.2f}% (当前: {current:.0f}, 7日前: {prev_7d:.0f})")
-                return {"change_7d": change_7d, "current_mcap": current}
+            # 解析 data_list（新格式）
+            data_list = data.get("data_list", [])
+            if not data_list:
+                # 兼容旧格式（直接是数组）
+                if isinstance(data, list):
+                    data_list = data
+                else:
+                    logger.warning("稳定币市值数据格式未知")
+                    return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
-            logger.warning("稳定币市值数据不足7条")
-            return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+            # 需要至少7条数据
+            if len(data_list) < 7:
+                logger.warning(f"稳定币市值数据不足7条，实际 {len(data_list)} 条")
+                return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+            
+            # 提取总市值：每个元素可能是 {'USDT': xxx} 或多个币种，需要求和
+            def get_total_mcap(item):
+                if isinstance(item, dict):
+                    return sum(float(v) for v in item.values())
+                return 0.0
+            
+            current = get_total_mcap(data_list[-1])
+            prev_7d = get_total_mcap(data_list[-8]) if len(data_list) >= 8 else get_total_mcap(data_list[0])
+            
+            change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
+            logger.info(f"✅ 稳定币市值变化: {change_7d:.2f}% (当前: {current:.0f}, 7日前: {prev_7d:.0f})")
+            return {"change_7d": change_7d, "current_mcap": current}
         except Exception as e:
             logger.warning(f"获取稳定币市值变化失败: {e}")
             return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
