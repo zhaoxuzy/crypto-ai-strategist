@@ -12,9 +12,9 @@ from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
 STRATEGY_PROFILES = {
-    "BTC": {"stop_multiplier": 1.5, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.8},
-    "ETH": {"stop_multiplier": 1.8, "tp1_ratio": 2.0, "tp2_ratio": 3.5, "volatility_discount": 0.7},
-    "SOL": {"stop_multiplier": 2.5, "tp1_ratio": 2.0, "tp2_ratio": 4.0, "volatility_discount": 0.6}
+    "BTC": {"stop_multiplier": 2.0, "tp_ratio": 2.0, "volatility_discount": 0.8},
+    "ETH": {"stop_multiplier": 2.0, "tp_ratio": 2.0, "volatility_discount": 0.7},
+    "SOL": {"stop_multiplier": 2.5, "tp_ratio": 2.0, "volatility_discount": 0.6}
 }
 
 probe_history = deque(maxlen=20)
@@ -112,7 +112,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     bear_score = 0
     signals = []
     
-    # 因子一：恐惧贪婪指数
     fg = cg.get_fear_greed_index()
     fg_current = fg.get("current", 50)
     fg_prev = fg.get("prev", 50)
@@ -132,7 +131,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
             bear_score += 1
             signals.append(f"贪婪筑顶({fg_current}≤{fg_prev})")
     
-    # 因子二：Coinbase溢价指数（传入价格以计算百分比）
     premium_data = cg.get_coinbase_premium(btc_price=btc_price)
     premium_pct = premium_data.get("premium_pct", 0.0)
     
@@ -143,7 +141,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
         bear_score += 3
         signals.append(f"Coinbase折价({premium_pct:.2f}%)")
     
-    # 因子三：稳定币市值变化
     stable_data = cg.get_stablecoin_market_cap_change()
     change_7d = stable_data.get("change_7d", 0.0)
     
@@ -156,15 +153,10 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     
     total = bull_score + bear_score
     
-    if total >= 7:
-        macro_bull_contribution = 10 if bull_score > bear_score else 0
-        macro_bear_contribution = 10 if bear_score > bull_score else 0
-    elif total >= 4:
-        macro_bull_contribution = 5 if bull_score > bear_score else 0
-        macro_bear_contribution = 5 if bear_score > bull_score else 0
-    else:
-        macro_bull_contribution = 0
-        macro_bear_contribution = 0
+    # 映射到12分制
+    macro_component = round(total / 10 * 12) if total > 0 else 0
+    macro_bull_contribution = macro_component if bull_score > bear_score else 0
+    macro_bear_contribution = macro_component if bear_score > bull_score else 0
     
     return {
         "bull_score": bull_score,
@@ -176,62 +168,124 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     }
 
 
-def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float) -> dict:
-    bull_score, bear_score = 0, 0
+def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float) -> dict:
+    """
+    新100分制方向倾向得分
+    """
+    bull_score = 0
+    bear_score = 0
+    
+    # 1. 清算不对称比率（18分）
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
-    total = above + below
-    if total > 0:
-        ratio_above = above / total
-        if ratio_above > 0.6:
-            bear_score += 25
-        elif ratio_above < 0.4:
-            bull_score += 25
+    total_liq = above + below
+    if total_liq > 0:
+        ratio = above / total_liq
+        if ratio > 0.65:
+            bear_score += 18
+        elif ratio > 0.55:
+            bear_score += 10
+        elif ratio < 0.35:
+            bull_score += 18
+        elif ratio < 0.45:
+            bull_score += 10
+    
+    # 2. 趋势强度（20分）
+    trend_score = trend_info.get("score", 0)
+    trend_dir = trend_info.get("direction", "neutral")
+    trend_component = round(trend_score / 100 * 20)
+    if trend_dir == "bull":
+        bull_score += trend_component
+    elif trend_dir == "bear":
+        bear_score += trend_component
+    
+    # 3. CVD信号（15分）
     cvd = coinglass_data.get("cvd_signal", "N/A")
-    if cvd in ["bearish", "slightly_bearish"]:
-        bear_score += 20
-    elif cvd in ["bullish", "slightly_bullish"]:
-        bull_score += 20
+    if cvd == "bullish":
+        bull_score += 15
+    elif cvd == "slightly_bullish":
+        bull_score += 8
+    elif cvd == "bearish":
+        bear_score += 15
+    elif cvd == "slightly_bearish":
+        bear_score += 8
+    
+    # 4. 主动买卖盘比率（10分）
     try:
         tr = float(coinglass_data.get("taker_ratio", 0.5))
-        if tr < 0.45:
-            bear_score += 15
-        elif tr > 0.55:
-            bull_score += 15
+        if tr >= 0.55:
+            bull_score += 10
+        elif tr >= 0.50:
+            bull_score += 5
+        elif tr <= 0.45:
+            bear_score += 10
+        elif tr <= 0.50:
+            bear_score += 5
     except:
         pass
+    
+    # 5. 顶级交易员多空比（8分）
     try:
         tls = float(coinglass_data.get("top_long_short_ratio", 1.0))
-        if tls > 2.0:
-            bear_score += 15
-        elif tls < 0.7:
-            bull_score += 15
+        if tls < 0.7:
+            bull_score += 8
+        elif tls < 1.0:
+            bull_score += 3
+        elif tls > 2.0:
+            bear_score += 8
+        elif tls > 1.0:
+            bear_score += 3
     except:
         pass
-    trend_dir = trend_info.get("direction", "neutral")
-    trend_score = trend_info.get("score", 0)
-    if trend_dir == "bull":
-        bull_score += int(trend_score / 10)
-    elif trend_dir == "bear":
-        bear_score += int(trend_score / 10)
-
-    # 宏观三因子贡献
+    
+    # 6. 宏观三因子（12分）
     macro_result = compute_macro_three_factor_score(cg, macro_data, btc_price)
     bull_score += macro_result["macro_bull_contribution"]
     bear_score += macro_result["macro_bear_contribution"]
-
-    # ETH/BTC 汇率趋势
+    
+    # 7. ETH/BTC汇率趋势（10分）
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
         if trend == "up":
-            bull_score += 8
+            bull_score += 10
             bear_score = max(0, bear_score - 4)
         elif trend == "down":
-            bear_score += 8
+            bear_score += 10
             bull_score = max(0, bull_score - 4)
-
-    return {"bull": bull_score, "bear": bear_score, "macro_signals": macro_result["signals"]}
+    
+    # 8. 清算动态信号（7分）
+    liq_dynamic = coinglass_data.get("liq_dynamic_signals", [])
+    dynamic_bull = 0
+    dynamic_bear = 0
+    for sig in liq_dynamic:
+        if "清算压力偏多" in sig or "最大痛点上移" in sig:
+            dynamic_bull = max(dynamic_bull, 7)
+        elif "清算压力偏空" in sig or "最大痛点下移" in sig:
+            dynamic_bear = max(dynamic_bear, 7)
+        elif "强磁吸区" in sig:
+            if "上" in sig:
+                dynamic_bear = max(dynamic_bear, 4)
+            else:
+                dynamic_bull = max(dynamic_bull, 4)
+        elif "清算堆积加速" in sig:
+            if "偏多" in sig:
+                dynamic_bull += 3
+            else:
+                dynamic_bear += 3
+        elif "清算堆积衰减" in sig:
+            if "偏多" in sig:
+                dynamic_bull -= 3
+            else:
+                dynamic_bear -= 3
+    bull_score += min(7, max(0, dynamic_bull))
+    bear_score += min(7, max(0, dynamic_bear))
+    
+    return {
+        "bull": bull_score,
+        "bear": bear_score,
+        "macro_signals": macro_result["signals"]
+    }
 
 
 def send_error_notification(symbol: str, error_msg: str):
@@ -257,10 +311,10 @@ def main():
     try:
         price = get_current_price(okx_inst_id)
         if price <= 0: raise Exception("无法获取当前价格")
-        klines = get_klines(okx_inst_id, "1H", 70)
-        atr = calculate_atr(okx_inst_id)
+        klines = get_klines(okx_inst_id, "4H", 70)  # 使用4小时K线
+        atr = calculate_atr(okx_inst_id, timeframe="4H")
         ema55 = calculate_ema(klines, 55)
-        logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(14): {atr:.2f}, EMA55: {ema55:.1f}")
+        logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(4H): {atr:.2f}, EMA55: {ema55:.1f}")
 
         cg = CoinGlassClient()
         cg_data = cg.get_all_data(symbol, current_price=price, atr=atr)
@@ -278,7 +332,7 @@ def main():
 
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr, liq_dynamic_signals)
         key_levels = get_key_levels(cg_data, ema55)
-        directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info, cg, price)
+        directional_scores = compute_directional_scores_v2(symbol, cg_data, macro, trend_info, cg, price)
 
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
@@ -297,8 +351,7 @@ def main():
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            directional_scores=directional_scores, signal_grade=signal_grade,
-            stop_loss_rule2=0.0, stop_loss_rule3=0.0, tp1=0.0, tp2=0.0, tp1_anchor="", tp2_anchor=""
+            directional_scores=directional_scores, signal_grade=signal_grade
         )
 
         strategy = call_deepseek(prompt)
@@ -310,37 +363,30 @@ def main():
             cluster_dir = cluster.get("direction", "")
             cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
             cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
-            max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
 
+            # 兜底止损
             if float(strategy.get("stop_loss", 0)) <= 0:
                 if actual_direction == "long":
-                    strategy["stop_loss"] = round(key_levels["support"] * 0.998, 1)
+                    strategy["stop_loss"] = round(price - 2.0 * atr, 1)
                 else:
-                    strategy["stop_loss"] = round(key_levels["resistance"] * 1.002, 1)
+                    strategy["stop_loss"] = round(price + 2.0 * atr, 1)
 
-            if float(strategy.get("take_profit_1", 0)) <= 0:
+            # 兜底止盈（单目标）
+            if float(strategy.get("take_profit", 0)) <= 0:
                 if actual_direction == "long":
                     if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
-                        strategy["take_profit_1"] = round(cluster_price, 1)
-                        strategy["tp1_anchor"] = f"上方清算区 {cluster_price:.1f}"
+                        strategy["take_profit"] = round(cluster_price, 1)
+                        strategy["tp_anchor"] = f"上方清算区 {cluster_price:.1f}"
                     else:
-                        strategy["take_profit_1"] = round(price + 2.0 * atr, 1)
-                        strategy["tp1_anchor"] = "2×ATR"
+                        strategy["take_profit"] = round(price + 2.0 * atr * profile["tp_ratio"], 1)
+                        strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
                 else:
                     if cluster_intensity >= 3 and cluster_dir == "下" and cluster_price < price:
-                        strategy["take_profit_1"] = round(cluster_price, 1)
-                        strategy["tp1_anchor"] = f"下方清算区 {cluster_price:.1f}"
+                        strategy["take_profit"] = round(cluster_price, 1)
+                        strategy["tp_anchor"] = f"下方清算区 {cluster_price:.1f}"
                     else:
-                        strategy["take_profit_1"] = round(price - 2.0 * atr, 1)
-                        strategy["tp1_anchor"] = "2×ATR"
-
-            if float(strategy.get("take_profit_2", 0)) <= 0:
-                if max_pain > 0:
-                    strategy["take_profit_2"] = round(max_pain, 1)
-                    strategy["tp2_anchor"] = "清算最大痛点"
-                else:
-                    strategy["take_profit_2"] = round(price + 3.5 * atr, 1) if actual_direction == "long" else round(price - 3.5 * atr, 1)
-                    strategy["tp2_anchor"] = "3.5×ATR"
+                        strategy["take_profit"] = round(price - 2.0 * atr * profile["tp_ratio"], 1)
+                        strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
