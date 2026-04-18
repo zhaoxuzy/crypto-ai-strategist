@@ -108,25 +108,22 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
 
-    # 方向倾向差值
+    # 方向倾向得分差值、多空明细
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
     bear_score = directional_scores.get("bear", 0)
     diff = abs(bull_score - bear_score)
 
-    # 信号强度文字与星级
-    if diff >= 20:
-        star = "★★★"
+    if diff >= 18:
         strength_text = "强"
-    elif diff >= 12:
-        star = "★★☆"
+    elif diff >= 10:
         strength_text = "中"
-    elif diff >= 8:
-        star = "★☆☆"
+    elif diff >= 7:
         strength_text = "弱"
     else:
-        star = "☆☆☆"
         strength_text = "极弱"
+
+    score_detail = f"多头{bull_score}分 vs 空头{bear_score}分"
 
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
@@ -137,7 +134,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {reasoning}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 方向倾向差值：{diff}分（{strength_text}）
+- 分差：{diff}分（{strength_text}）| {score_detail}
 - {data_source_status}
 """
 
@@ -160,7 +157,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 入场区间：${entry_low:,.1f} - ${entry_high:,.1f}
 - 止损：${stop:,.1f}
 - 止盈：${tp:.1f}（锚定：{tp_anchor}）
-- 方向倾向差值：{diff}分（{strength_text}）
+- 分差：{diff}分（{strength_text}）| {score_detail}
 
 ### 📈 AI 分析逻辑
 {reasoning}
