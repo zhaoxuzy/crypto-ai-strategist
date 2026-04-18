@@ -2,7 +2,6 @@ name: Crypto Strategy Bot - BTC Only
 
 on:
   schedule:
-    # 北京时间每天 8:00-24:00 每半小时执行一次
     - cron: '0,30 0-16 * * *'
   workflow_dispatch:
     inputs:
