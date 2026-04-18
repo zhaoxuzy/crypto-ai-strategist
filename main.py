@@ -152,8 +152,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
         signals.append(f"稳定币赎回({-change_7d:.2f}%)")
     
     total = bull_score + bear_score
-    
-    # 映射到12分制
     macro_component = round(total / 10 * 12) if total > 0 else 0
     macro_bull_contribution = macro_component if bull_score > bear_score else 0
     macro_bear_contribution = macro_component if bear_score > bull_score else 0
@@ -169,9 +167,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
 
 
 def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float) -> dict:
-    """
-    新100分制方向倾向得分
-    """
     bull_score = 0
     bear_score = 0
     
@@ -288,6 +283,55 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data:
     }
 
 
+def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict, ema55: float, key_levels: dict) -> dict:
+    """返回三个入场候选区间，宽度不低于0.5×ATR"""
+    candidates = {
+        "rule1": {"low": 0.0, "high": 0.0, "anchor": ""},   # 清算区锚定
+        "rule2": {"low": 0.0, "high": 0.0, "anchor": ""},   # 关键位锚定
+        "rule3": {"low": 0.0, "high": 0.0, "anchor": ""}    # ATR追单
+    }
+    min_width = 0.5 * atr
+
+    # 规则1：同方向清算区
+    cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
+    cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
+    cluster_dir = cluster.get("direction", "")
+    if cluster_intensity >= 3 and cluster_price > 0:
+        if (direction == "long" and cluster_dir == "下") or (direction == "short" and cluster_dir == "上"):
+            width = max(min_width, cluster_price * 0.002)
+            candidates["rule1"] = {
+                "low": round(cluster_price - width/2, 1),
+                "high": round(cluster_price + width/2, 1),
+                "anchor": f"同向清算区 {cluster_price:.1f}"
+            }
+
+    # 规则2：关键位（做多用支撑，做空用阻力）
+    if direction == "long":
+        key_price = key_levels.get("support", ema55)
+    else:
+        key_price = key_levels.get("resistance", ema55)
+    width = max(min_width, key_price * 0.004)
+    candidates["rule2"] = {
+        "low": round(key_price - width/2, 1),
+        "high": round(key_price + width/2, 1),
+        "anchor": f"{'支撑' if direction == 'long' else '阻力'}位 {key_price:.1f}"
+    }
+
+    # 规则3：ATR追单
+    width = 2.0 * atr
+    if direction == "long":
+        center = price
+    else:
+        center = price
+    candidates["rule3"] = {
+        "low": round(center - width/2, 1),
+        "high": round(center + width/2, 1),
+        "anchor": "ATR追单区间 (2×ATR)"
+    }
+
+    return candidates
+
+
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
@@ -311,7 +355,7 @@ def main():
     try:
         price = get_current_price(okx_inst_id)
         if price <= 0: raise Exception("无法获取当前价格")
-        klines = get_klines(okx_inst_id, "4H", 70)  # 使用4小时K线
+        klines = get_klines(okx_inst_id, "4H", 70)
         atr = calculate_atr(okx_inst_id, timeframe="4H")
         ema55 = calculate_ema(klines, 55)
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(4H): {atr:.2f}, EMA55: {ema55:.1f}")
@@ -364,6 +408,9 @@ def main():
             cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
             cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
 
+            # 计算入场候选区间
+            entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
+
             # 兜底止损
             if float(strategy.get("stop_loss", 0)) <= 0:
                 if actual_direction == "long":
@@ -371,7 +418,7 @@ def main():
                 else:
                     strategy["stop_loss"] = round(price + 2.0 * atr, 1)
 
-            # 兜底止盈（单目标）
+            # 兜底止盈
             if float(strategy.get("take_profit", 0)) <= 0:
                 if actual_direction == "long":
                     if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
@@ -387,6 +434,11 @@ def main():
                     else:
                         strategy["take_profit"] = round(price - 2.0 * atr * profile["tp_ratio"], 1)
                         strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
+
+            # 兜底入场区间（若AI未提供）
+            if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
+                strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
+                strategy["entry_price_high"] = entry_candidates["rule3"]["high"]
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
