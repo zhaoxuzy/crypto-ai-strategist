@@ -3,7 +3,7 @@ import json
 from openai import OpenAI
 from utils.logger import logger
 
-# ---------- 连续型评分辅助函数（保留，供内部评分使用）----------
+# ---------- 连续型评分辅助函数 ----------
 def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
     if low == high: return 0.0
     if rev: return full if v <= low else (0.0 if v >= high else full * (high - v) / (high - low))
@@ -164,9 +164,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
         if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    entry_width = atr * 0.002
-
-    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策，然后制定一个持仓4-24小时的合约策略。
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策制定一份持仓4-24小时的合约策略。
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
@@ -229,31 +227,30 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - 若第一步为【偏空】，且差值 ≥ **8分** → 强制 short
   - 若第一步为【风险预警】，且差值 ≥ **12分** → 强制领先方向
   - 否则不触发强制裁决，由你综合判断或输出neutral。
-- **信号强度星级**（基于绝对差值）：
-  - 差值 ≥ 20分 → ★★★
-  - 差值 12~19分 → ★★☆
-  - 差值 8~11分 → ★☆☆
 
-**第五步：止损与止盈设置（单一目标）**
-- 优先锚定清算热力图结构：
-  - **做多**：止损设在**下方**最近强度≥3的多头清算区外侧（×0.998）；止盈设在**上方**最近强度≥3的空头清算区。
-  - **做空**：止损设在**上方**最近强度≥3的空头清算区外侧（×1.002）；止盈设在**下方**最近强度≥3的多头清算区。
-- **若无对应清算区**，则使用波动率规则：
-  - 止损 = 入场价 ± 2 × 4小时ATR
-  - 止盈 = 入场价 ± (2 × ATR) × 2 （即2:1盈亏比）
+**第五步：止损、止盈与入场区间设置**
+- **入场区间**：系统已提供三个候选区间（见下方），你必须按优先级选择一个，并在reasoning中注明所选规则。
+  - 规则1（清算区锚定）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}（锚定：{entry_candidates['rule1']['anchor']}）
+  - 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
+  - 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
+- **止损**：
+  - 优先锚定**同方向强度≥3的清算区外侧**（做多设下方×0.998，做空设上方×1.002）。
+  - 若无，则使用 **2 × 4小时ATR** 止损（做多：入场价 - 2×ATR；做空：入场价 + 2×ATR）。
+- **止盈**（单一目标）：
+  - 优先锚定**反方向强度≥3的清算区**（做多看上方空头清算区，做空看下方多头清算区）。
+  - 若无，则使用 **2:1盈亏比** 止盈（做多：入场价 + 2×止损距离；做空：入场价 - 2×止损距离）。
 - **严禁**：做多止盈低于入场价，做空止盈高于入场价。
-- 在reasoning中明确写出锚定来源（清算区或ATR倍数）。
+- 在reasoning中明确写出入场、止损、止盈的锚定来源。
 
 ### 策略输出格式（严格JSON）
 {{
   "direction": "long" 或 "short" 或 "neutral",
-  "confidence": "high" 或 "medium" 或 "low",
-  "entry_price_low": {price - entry_width:.1f},
-  "entry_price_high": {price + entry_width:.1f},
+  "entry_price_low": 入场区间下限,
+  "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明止损止盈的具体锚定来源。",
+  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明入场、止损、止盈的所选规则。",
   "risk_note": "风险提示"
 }}
 """
