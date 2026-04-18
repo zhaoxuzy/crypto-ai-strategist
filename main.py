@@ -114,7 +114,7 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     
     fg = cg.get_fear_greed_index()
     fg_current = fg.get("current", 50)
-    fg_prev = fg.get("prev", 50)
+    fg_prev = fg.get("prev", fg_current)  # 兜底：若无昨日值，默认等于当前值
     
     if fg_current <= 30:
         if fg_current > fg_prev:
@@ -284,7 +284,6 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data:
 
 
 def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict, ema55: float, key_levels: dict) -> dict:
-    """返回三个入场候选区间，宽度不低于0.5×ATR"""
     candidates = {
         "rule1": {"low": 0.0, "high": 0.0, "anchor": ""},
         "rule2": {"low": 0.0, "high": 0.0, "anchor": ""},
@@ -292,7 +291,6 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
     }
     min_width = 0.5 * atr
 
-    # 规则1：同方向清算区
     cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
     cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
     cluster_dir = cluster.get("direction", "")
@@ -305,7 +303,6 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
                 "anchor": f"同向清算区 {cluster_price:.1f}"
             }
 
-    # 规则2：关键位（做多用支撑，做空用阻力）
     if direction == "long":
         key_price = key_levels.get("support", ema55)
     else:
@@ -317,7 +314,6 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
         "anchor": f"{'支撑' if direction == 'long' else '阻力'}位 {key_price:.1f}"
     }
 
-    # 规则3：ATR追单
     width = 2.0 * atr
     center = price
     candidates["rule3"] = {
