@@ -159,10 +159,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
     macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
 
-    # 清算动态信号文本
     liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无显著动态信号"
 
-    # 交易所余额文本
     bal_text = ""
     if exchange_balances:
         btc_flow = exchange_balances.get("btc_flow", "neutral")
@@ -235,6 +233,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **第一步：清算动力学定锚**
 - 对比上下方清算金额与密集区强度。
 - **必须分析清算最大痛点**：指出最大痛点位于当前价上方还是下方，对价格构成引力还是压力。
+- **必须分析期权最大痛点**：指出其位置及与清算最大痛点的关系（同向共振或背离）。
 - **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
 - 结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
 - 结论：【偏多/偏空/风险预警/中性观察】
@@ -282,7 +281,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
      - 若空头总权重 > 多头总权重 → 必须输出【支持空头】。
      - 若两者相等且均为0 → 输出【中性】。
      - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
-- **可选补充**：在reasoning中提及ETH/BTC汇率趋势作为风险偏好背景，并引用交易所余额数据作为中长期资金流向参考。
+- **必须引用交易所钱包余额数据**：判断BTC和稳定币的净流向，作为中长期资金面背景佐证你的结论。
+- **可选补充**：在reasoning中提及ETH/BTC汇率趋势作为风险偏好背景。
 - **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
 
 **第四步：信号共振与矛盾裁决**
