@@ -107,7 +107,76 @@ def get_key_levels(coinglass_data: dict, ema55: float) -> dict:
     return {"support": support, "resistance": resistance}
 
 
-def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict) -> dict:
+def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict) -> dict:
+    bull_score = 0
+    bear_score = 0
+    signals = []
+    
+    # 因子一：恐惧贪婪指数（权重4分）
+    fg = cg.get_fear_greed_index()
+    fg_current = fg.get("current", 50)
+    fg_prev = fg.get("prev", 50)
+    
+    if fg_current <= 30:
+        if fg_current > fg_prev:
+            bull_score += 4
+            signals.append(f"极恐反弹({fg_current}↑{fg_prev})")
+        else:
+            bull_score += 2
+            signals.append(f"极恐钝化({fg_current}≤{fg_prev})")
+    elif fg_current >= 70:
+        if fg_current > fg_prev:
+            bear_score += 3
+            signals.append(f"贪婪加速({fg_current}↑{fg_prev})")
+        else:
+            bear_score += 1
+            signals.append(f"贪婪筑顶({fg_current}≤{fg_prev})")
+    
+    # 因子二：Coinbase溢价指数（权重3分）
+    premium_data = cg.get_coinbase_premium()
+    premium = premium_data.get("premium", 0.0)
+    
+    if premium > 0.15:
+        bull_score += 3
+        signals.append(f"Coinbase溢价({premium:.2f}%)")
+    elif premium < -0.15:
+        bear_score += 3
+        signals.append(f"Coinbase折价({premium:.2f}%)")
+    
+    # 因子三：稳定币市值变化（权重3分）
+    stable_data = cg.get_stablecoin_market_cap_change()
+    change_7d = stable_data.get("change_7d", 0.0)
+    
+    if change_7d > 1.0:
+        bull_score += 3
+        signals.append(f"稳定币增发({change_7d:.2f}%)")
+    elif change_7d < -1.0:
+        bear_score += 3
+        signals.append(f"稳定币赎回({-change_7d:.2f}%)")
+    
+    total = bull_score + bear_score
+    
+    if total >= 7:
+        macro_bull_contribution = 10 if bull_score > bear_score else 0
+        macro_bear_contribution = 10 if bear_score > bull_score else 0
+    elif total >= 4:
+        macro_bull_contribution = 5 if bull_score > bear_score else 0
+        macro_bear_contribution = 5 if bear_score > bull_score else 0
+    else:
+        macro_bull_contribution = 0
+        macro_bear_contribution = 0
+    
+    return {
+        "bull_score": bull_score,
+        "bear_score": bear_score,
+        "total": total,
+        "signals": signals,
+        "macro_bull_contribution": macro_bull_contribution,
+        "macro_bear_contribution": macro_bear_contribution
+    }
+
+
+def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict, cg: CoinGlassClient) -> dict:
     bull_score, bear_score = 0, 0
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(coinglass_data.get("below_long_liquidation", "0")).replace(",", ""))
@@ -139,17 +208,17 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
             bull_score += 15
     except:
         pass
-    fg = int(macro_data.get("fear_greed", {}).get("value", 50))
-    if fg < 30:
-        bull_score += 10
-    elif fg > 70:
-        bear_score += 10
     trend_dir = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
     if trend_dir == "bull":
         bull_score += int(trend_score / 10)
     elif trend_dir == "bear":
         bear_score += int(trend_score / 10)
+
+    # 宏观三因子贡献
+    macro_result = compute_macro_three_factor_score(cg, macro_data)
+    bull_score += macro_result["macro_bull_contribution"]
+    bear_score += macro_result["macro_bear_contribution"]
 
     # ETH/BTC 汇率趋势
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
@@ -162,7 +231,7 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
             bear_score += 8
             bull_score = max(0, bull_score - 4)
 
-    return {"bull": bull_score, "bear": bear_score}
+    return {"bull": bull_score, "bear": bear_score, "macro_signals": macro_result["signals"]}
 
 
 def send_error_notification(symbol: str, error_msg: str):
@@ -209,7 +278,7 @@ def main():
 
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr, liq_dynamic_signals)
         key_levels = get_key_levels(cg_data, ema55)
-        directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info)
+        directional_scores = compute_directional_scores(symbol, cg_data, macro, trend_info, cg)
 
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
@@ -217,20 +286,18 @@ def main():
 
         signal_strength = calculate_signal_strength(
             symbol, "long", cg_data, macro, liq_zero_count,
-            cg.get_eth_btc_ratio(), cg.get_exchange_balances(), trend_info, extreme_liq
+            cg_data.get("eth_btc_ratio"), cg.get_exchange_balances(), trend_info, extreme_liq
         )
         score = signal_strength["score"]
         if score >= 65: signal_grade = "A"
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 构建 Prompt，不再传入固定止损止盈候选值
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
             directional_scores=directional_scores, signal_grade=signal_grade,
-            # 以下参数不再使用，传空值保持兼容
             stop_loss_rule2=0.0, stop_loss_rule3=0.0, tp1=0.0, tp2=0.0, tp1_anchor="", tp2_anchor=""
         )
 
@@ -238,7 +305,6 @@ def main():
         if not strategy: raise Exception("DeepSeek 返回为空")
 
         actual_direction = strategy.get("direction", "neutral")
-        # 如果AI未提供止损止盈，则根据清算结构补充（兜底）
         if actual_direction != "neutral":
             cluster = cg_data.get("nearest_cluster", {})
             cluster_dir = cluster.get("direction", "")
@@ -246,14 +312,12 @@ def main():
             cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
             max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
 
-            # 兜底止损
             if float(strategy.get("stop_loss", 0)) <= 0:
                 if actual_direction == "long":
                     strategy["stop_loss"] = round(key_levels["support"] * 0.998, 1)
                 else:
                     strategy["stop_loss"] = round(key_levels["resistance"] * 1.002, 1)
 
-            # 兜底止盈1
             if float(strategy.get("take_profit_1", 0)) <= 0:
                 if actual_direction == "long":
                     if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
@@ -270,7 +334,6 @@ def main():
                         strategy["take_profit_1"] = round(price - 2.0 * atr, 1)
                         strategy["tp1_anchor"] = "2×ATR"
 
-            # 兜底止盈2
             if float(strategy.get("take_profit_2", 0)) <= 0:
                 if max_pain > 0:
                     strategy["take_profit_2"] = round(max_pain, 1)
