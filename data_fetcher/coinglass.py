@@ -442,67 +442,66 @@ class CoinGlassClient:
             logger.warning(f"获取恐惧贪婪指数失败: {e}")
             return {"current": 50, "prev": 50, "classification": "Neutral"}
 
-        # ---------- 因子二：Coinbase 溢价指数 ----------
-    def get_coinbase_premium(self) -> dict:
+          # ---------- 因子二：Coinbase 溢价指数 ----------
+    def get_coinbase_premium(self, btc_price: float = None) -> dict:
         """
         获取 Coinbase 溢价指数（Coinbase Pro 与 Binance 的 BTC 价差）
-        返回 dict: {"premium": 溢价百分比, "premium_usd": 溢价美元值}
+        返回 dict: {"premium_pct": 溢价百分比, "premium_usd": 溢价美元值}
         """
         try:
-            # 添加必需的 interval 参数（通常为 1h 或 1d，根据接口要求尝试）
             params = {"interval": "1h"}
             data = self._request("api/coinbase-premium-index", params, allow_backup=False, silent_fail=True)
             if not data:
-                return {"premium": 0.0, "premium_usd": 0.0}
+                return {"premium_pct": 0.0, "premium_usd": 0.0}
             
-            # 数据可能是单个数值、字典或列表
+            # 提取原始值（可能是美元价差）
             if isinstance(data, dict):
-                premium = float(data.get("premium", 0))
-                premium_usd = float(data.get("premium_usd", 0))
+                raw_premium = float(data.get("premium", 0))
             elif isinstance(data, list) and len(data) > 0:
-                # 取最新一条
                 latest = data[-1] if isinstance(data[-1], dict) else data[0]
                 if isinstance(latest, dict):
-                    premium = float(latest.get("premium", 0))
-                    premium_usd = float(latest.get("premium_usd", 0))
+                    raw_premium = float(latest.get("premium", 0))
                 else:
-                    premium = float(latest) if isinstance(latest, (int, float)) else 0.0
-                    premium_usd = 0.0
+                    raw_premium = float(latest) if isinstance(latest, (int, float)) else 0.0
             else:
-                premium = 0.0
-                premium_usd = 0.0
+                raw_premium = 0.0
             
-            return {"premium": premium, "premium_usd": premium_usd}
+            # 转换为百分比（若提供了 BTC 价格）
+            if btc_price and btc_price > 0:
+                premium_pct = (raw_premium / btc_price) * 100
+            else:
+                # 如果没有价格，假设原始值已经是百分比（通常不会）
+                premium_pct = raw_premium
+            
+            return {"premium_pct": premium_pct, "premium_usd": raw_premium}
         except Exception as e:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
-            return {"premium": 0.0, "premium_usd": 0.0}
+            return {"premium_pct": 0.0, "premium_usd": 0.0}
 
-        # ---------- 因子三：稳定币市值变化 ----------
+           # ---------- 因子三：稳定币市值变化 ----------
     def get_stablecoin_market_cap_change(self) -> dict:
         """
         获取稳定币总市值 7 日变化率
-        返回 dict: {"change_7d": 7日变化率, "current_mcap": 当前总市值}
+        返回 dict: {"change_7d": 7日变化率(%), "current_mcap": 当前总市值}
         """
         try:
-            # 修正后的正确端点
             data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
             if not data:
                 return {"change_7d": 0.0, "current_mcap": 0.0}
             
-            # 数据为数组，按时间顺序排列
             if isinstance(data, list) and len(data) >= 7:
-                current = float(data[-1].get("market_cap", 0))
-                prev_7d = float(data[-8].get("market_cap", 0))
+                # 尝试多种可能的字段名
+                def get_mcap(item):
+                    if isinstance(item, dict):
+                        return float(item.get("marketCap") or item.get("market_cap") or item.get("value") or 0)
+                    return 0.0
+                
+                current = get_mcap(data[-1])
+                prev_7d = get_mcap(data[-8])
                 change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
-                current_mcap = current
-            elif isinstance(data, dict):
-                change_7d = float(data.get("change_7d", 0))
-                current_mcap = float(data.get("total_market_cap", 0))
-            else:
-                change_7d = 0.0
-                current_mcap = 0.0
+                return {"change_7d": change_7d, "current_mcap": current}
             
-            return {"change_7d": change_7d, "current_mcap": current_mcap}
+            return {"change_7d": 0.0, "current_mcap": 0.0}
         except Exception as e:
             logger.warning(f"获取稳定币市值变化失败: {e}")
             return {"change_7d": 0.0, "current_mcap": 0.0}
