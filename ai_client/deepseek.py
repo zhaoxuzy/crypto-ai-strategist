@@ -138,7 +138,8 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
-                 directional_scores: dict = None, signal_grade: str = "B") -> str:
+                 directional_scores: dict = None, signal_grade: str = "B",
+                 entry_candidates: dict = None) -> str:   # 新增 entry_candidates 参数
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -164,7 +165,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
         if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策制定一份持仓4-24小时的合约策略。
+    # 处理入场候选值（若无传入则提供默认空值）
+    if entry_candidates is None:
+        entry_candidates = {
+            "rule1": {"low": 0.0, "high": 0.0, "anchor": "无"},
+            "rule2": {"low": 0.0, "high": 0.0, "anchor": "无"},
+            "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
+        }
+
+    return f"""你现在是一名具备清算动力学、多空博弈建模和链上数据量化分析能力的加密货币短线合约交易员。你必须严格扮演该角色，不得切换为通用助手或咨询顾问。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策制定一份持仓4-24小时的合约策略。。
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
