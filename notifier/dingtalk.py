@@ -114,6 +114,20 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     bear_score = directional_scores.get("bear", 0)
     diff = abs(bull_score - bear_score)
 
+    # 信号强度文字与星级
+    if diff >= 20:
+        star = "★★★"
+        strength_text = "强"
+    elif diff >= 12:
+        star = "★★☆"
+        strength_text = "中"
+    elif diff >= 8:
+        star = "★☆☆"
+        strength_text = "弱"
+    else:
+        star = "☆☆☆"
+        strength_text = "极弱"
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 🕒 {now_str}
@@ -123,7 +137,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {reasoning}
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
-- 方向倾向差值：{diff}分
+- 方向倾向差值：{diff}分（{strength_text}）
 - {data_source_status}
 """
 
@@ -146,7 +160,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 入场区间：${entry_low:,.1f} - ${entry_high:,.1f}
 - 止损：${stop:,.1f}
 - 止盈：${tp:.1f}（锚定：{tp_anchor}）
-- 方向倾向差值：{diff}分
+- 方向倾向差值：{diff}分（{strength_text}）
 
 ### 📈 AI 分析逻辑
 {reasoning}
