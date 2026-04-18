@@ -286,9 +286,9 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data:
 def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict, ema55: float, key_levels: dict) -> dict:
     """返回三个入场候选区间，宽度不低于0.5×ATR"""
     candidates = {
-        "rule1": {"low": 0.0, "high": 0.0, "anchor": ""},   # 清算区锚定
-        "rule2": {"low": 0.0, "high": 0.0, "anchor": ""},   # 关键位锚定
-        "rule3": {"low": 0.0, "high": 0.0, "anchor": ""}    # ATR追单
+        "rule1": {"low": 0.0, "high": 0.0, "anchor": ""},
+        "rule2": {"low": 0.0, "high": 0.0, "anchor": ""},
+        "rule3": {"low": 0.0, "high": 0.0, "anchor": ""}
     }
     min_width = 0.5 * atr
 
@@ -319,10 +319,7 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
 
     # 规则3：ATR追单
     width = 2.0 * atr
-    if direction == "long":
-        center = price
-    else:
-        center = price
+    center = price
     candidates["rule3"] = {
         "low": round(center - width/2, 1),
         "high": round(center + width/2, 1),
@@ -391,11 +388,18 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
+        # 先用趋势方向计算入场候选（AI可能输出不同方向，但候选值仅作占位，后续兜底会重新计算）
+        temp_direction = trend_info.get("direction", "bull")
+        if temp_direction not in ["long", "short"]:
+            temp_direction = "long" if temp_direction == "bull" else "short"
+        entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
+
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            directional_scores=directional_scores, signal_grade=signal_grade
+            directional_scores=directional_scores, signal_grade=signal_grade,
+            entry_candidates=entry_candidates
         )
 
         strategy = call_deepseek(prompt)
@@ -408,7 +412,7 @@ def main():
             cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
             cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
 
-            # 计算入场候选区间
+            # 根据实际方向重新计算入场候选区间（用于兜底）
             entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
 
             # 兜底止损
@@ -435,7 +439,7 @@ def main():
                         strategy["take_profit"] = round(price - 2.0 * atr * profile["tp_ratio"], 1)
                         strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
 
-            # 兜底入场区间（若AI未提供）
+            # 兜底入场区间
             if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
                 strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
                 strategy["entry_price_high"] = entry_candidates["rule3"]["high"]
