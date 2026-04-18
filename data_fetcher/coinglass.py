@@ -425,35 +425,37 @@ class CoinGlassClient:
         logger.error("❌ 所有恐惧贪婪指数数据源均失败，使用默认值 50")
         return {"current": 50, "prev": 50, "classification": "Neutral", "error": True}
 
-    # ---------- 因子二：Coinbase 溢价指数 ----------
+       # ---------- 因子二：Coinbase 溢价指数 ----------
     def get_coinbase_premium(self, btc_price: float = None) -> dict:
+        """
+        获取 Coinbase 溢价指数（Coinbase Pro 与 Binance 的 BTC 价差）
+        返回 dict: {"premium_pct": 溢价百分比, "premium_usd": 溢价美元值}
+        """
         try:
             params = {"interval": "1h"}
             logger.info("尝试获取 Coinbase 溢价指数...")
             data = self._request("api/coinbase-premium-index", params, allow_backup=False, silent_fail=True)
-            logger.info(f"Coinbase 溢价原始响应: {data[:2] if isinstance(data, list) else data}")
             if not data:
-                logger.warning("Coinbase 溢价返回空数据")
-                return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
+                return {"premium_pct": 0.0, "premium_usd": 0.0}
             
-            if isinstance(data, dict):
-                raw_premium = float(data.get("premium", 0))
-            elif isinstance(data, list) and len(data) > 0:
-                latest = data[-1] if isinstance(data[-1], dict) else data[0]
-                if isinstance(latest, dict):
-                    raw_premium = float(latest.get("premium", 0))
-                else:
-                    raw_premium = float(latest) if isinstance(latest, (int, float)) else 0.0
+            # 提取最新一条数据
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[-1]
+            elif isinstance(data, dict):
+                latest = data
             else:
-                raw_premium = 0.0
+                return {"premium_pct": 0.0, "premium_usd": 0.0}
             
-            if btc_price and btc_price > 0:
-                premium_pct = (raw_premium / btc_price) * 100
+            # CoinGlass 返回的 premium_rate 字段就是百分比（例如 0.0035 表示 0.35%）
+            if isinstance(latest, dict):
+                premium_rate = float(latest.get("premium_rate", 0))
+                premium_usd = float(latest.get("premium", 0))
+                # premium_rate 已经是小数形式的百分比，直接乘以 100 得到百分数
+                premium_pct = premium_rate * 100
+                logger.info(f"✅ Coinbase 溢价: {premium_pct:.4f}% (原始rate: {premium_rate}, usd: {premium_usd})")
+                return {"premium_pct": premium_pct, "premium_usd": premium_usd}
             else:
-                premium_pct = raw_premium
-            
-            logger.info(f"✅ Coinbase 溢价: {premium_pct:.4f}% (原始值: {raw_premium})")
-            return {"premium_pct": premium_pct, "premium_usd": raw_premium}
+                return {"premium_pct": 0.0, "premium_usd": 0.0}
         except Exception as e:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
             return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
