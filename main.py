@@ -151,7 +151,7 @@ def compute_directional_scores(symbol: str, coinglass_data: dict, macro_data: di
     elif trend_dir == "bear":
         bear_score += int(trend_score / 10)
 
-    # ===== 修正：ETH/BTC 汇率趋势同时影响多空得分 =====
+    # ETH/BTC 汇率趋势
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
@@ -224,12 +224,13 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 初次调用 AI 获取方向（止损止盈候选值为占位符）
+        # 构建 Prompt，不再传入固定止损止盈候选值
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
             directional_scores=directional_scores, signal_grade=signal_grade,
+            # 以下参数不再使用，传空值保持兼容
             stop_loss_rule2=0.0, stop_loss_rule3=0.0, tp1=0.0, tp2=0.0, tp1_anchor="", tp2_anchor=""
         )
 
@@ -237,55 +238,46 @@ def main():
         if not strategy: raise Exception("DeepSeek 返回为空")
 
         actual_direction = strategy.get("direction", "neutral")
-        cluster = cg_data.get("nearest_cluster", {})
-        cluster_dir = cluster.get("direction", "")
-        cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
-        cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
-        max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
-
-        # ---------- 根据实际方向计算止损止盈候选值 ----------
-        if actual_direction == "long":
-            stop_loss_rule2 = price - 1.5 * atr
-            stop_loss_rule3 = price - 2.0 * atr
-            tp1 = price + 2.0 * atr
-            tp1_anchor = "2×ATR"
-            if cluster_intensity >= 3 and cluster_price > price and (cluster_price - price) >= 1.5 * atr:
-                tp2 = cluster_price
-                tp2_anchor = f"上方清算区 {cluster_price:.1f}"
-            else:
-                tp2 = price + 3.5 * atr
-                tp2_anchor = "3.5×ATR"
-        elif actual_direction == "short":
-            stop_loss_rule2 = price + 1.5 * atr
-            stop_loss_rule3 = price + 2.0 * atr
-            tp1 = price - 2.0 * atr
-            tp1_anchor = "2×ATR"
-            tp2_set = False
-            if cluster_intensity >= 3 and cluster_price < price and (price - cluster_price) >= 1.5 * atr:
-                tp2 = cluster_price
-                tp2_anchor = f"下方清算区 {cluster_price:.1f}"
-                tp2_set = True
-            elif max_pain > 0 and max_pain < price and (price - max_pain) >= 1.5 * atr:
-                tp2 = max_pain
-                tp2_anchor = "清算最大痛点"
-                tp2_set = True
-            if not tp2_set:
-                tp2 = price - 3.5 * atr
-                tp2_anchor = "3.5×ATR"
-        else:
-            stop_loss_rule2 = stop_loss_rule3 = tp1 = tp2 = 0.0
-            tp1_anchor = tp2_anchor = ""
-
-        # 强制覆盖 AI 可能输出的无效止损止盈
+        # 如果AI未提供止损止盈，则根据清算结构补充（兜底）
         if actual_direction != "neutral":
+            cluster = cg_data.get("nearest_cluster", {})
+            cluster_dir = cluster.get("direction", "")
+            cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
+            cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
+            max_pain = float(cg_data.get("max_pain_price", 0)) if cg_data.get("max_pain_price", "N/A") != "N/A" else 0
+
+            # 兜底止损
             if float(strategy.get("stop_loss", 0)) <= 0:
-                strategy["stop_loss"] = round(stop_loss_rule2, 1)
+                if actual_direction == "long":
+                    strategy["stop_loss"] = round(key_levels["support"] * 0.998, 1)
+                else:
+                    strategy["stop_loss"] = round(key_levels["resistance"] * 1.002, 1)
+
+            # 兜底止盈1
             if float(strategy.get("take_profit_1", 0)) <= 0:
-                strategy["take_profit_1"] = round(tp1, 1)
-                strategy["tp1_anchor"] = tp1_anchor
+                if actual_direction == "long":
+                    if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
+                        strategy["take_profit_1"] = round(cluster_price, 1)
+                        strategy["tp1_anchor"] = f"上方清算区 {cluster_price:.1f}"
+                    else:
+                        strategy["take_profit_1"] = round(price + 2.0 * atr, 1)
+                        strategy["tp1_anchor"] = "2×ATR"
+                else:
+                    if cluster_intensity >= 3 and cluster_dir == "下" and cluster_price < price:
+                        strategy["take_profit_1"] = round(cluster_price, 1)
+                        strategy["tp1_anchor"] = f"下方清算区 {cluster_price:.1f}"
+                    else:
+                        strategy["take_profit_1"] = round(price - 2.0 * atr, 1)
+                        strategy["tp1_anchor"] = "2×ATR"
+
+            # 兜底止盈2
             if float(strategy.get("take_profit_2", 0)) <= 0:
-                strategy["take_profit_2"] = round(tp2, 1)
-                strategy["tp2_anchor"] = tp2_anchor
+                if max_pain > 0:
+                    strategy["take_profit_2"] = round(max_pain, 1)
+                    strategy["tp2_anchor"] = "清算最大痛点"
+                else:
+                    strategy["take_profit_2"] = round(price + 3.5 * atr, 1) if actual_direction == "long" else round(price - 3.5 * atr, 1)
+                    strategy["tp2_anchor"] = "3.5×ATR"
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
@@ -299,7 +291,6 @@ def main():
             logger.warning("策略校验未通过")
 
         extra = {
-            "directional_scores": directional_scores,   # 新增
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
             "oi_change": cg_data.get("oi_change_24h", "N/A"),
             "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
@@ -308,7 +299,8 @@ def main():
             "data_source_status": data_source_status, "trend_info": trend_info,
             "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
             "is_probe": is_probe, "key_support": key_levels["support"],
-            "key_resistance": key_levels["resistance"]
+            "key_resistance": key_levels["resistance"],
+            "directional_scores": directional_scores
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
