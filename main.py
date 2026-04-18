@@ -402,12 +402,17 @@ def main():
             temp_direction = "long" if temp_direction == "bull" else "short"
         entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
 
+        # 获取交易所余额
+        exchange_balances = cg.get_exchange_balances()
+
         prompt = build_prompt(
             symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
             directional_scores=directional_scores, signal_grade=signal_grade,
-            entry_candidates=entry_candidates
+            entry_candidates=entry_candidates,
+            exchange_balances=exchange_balances,
+            liq_dynamic_signals=liq_dynamic_signals
         )
 
         strategy = call_deepseek(prompt)
@@ -468,7 +473,8 @@ def main():
             "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
             "is_probe": is_probe, "key_support": key_levels["support"],
             "key_resistance": key_levels["resistance"],
-            "directional_scores": directional_scores
+            "directional_scores": directional_scores,
+            "exchange_balances": exchange_balances  # 新增：传入交易所余额供钉钉展示
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
