@@ -136,6 +136,7 @@ class CoinGlassClient:
         total_long = 0.0
         total_short = 0.0
         pain_map = {}
+        x_idx_samples = set()
 
         for item in liq_data:
             if not isinstance(item, list) or len(item) < 3:
@@ -143,18 +144,18 @@ class CoinGlassClient:
             x_idx = int(item[0])
             y_idx = int(item[1])
             intensity = float(item[2])
+            x_idx_samples.add(x_idx)
 
             if y_idx < 0 or y_idx >= len(y_axis):
                 continue
 
             price = float(y_axis[y_idx])
 
-            if x_idx == 0:
-                if price < current_price:
-                    total_long += intensity
-            elif x_idx == 1:
-                if price > current_price:
-                    total_short += intensity
+            # 修正：根据价格直接归类，不再依赖不可靠的 x_idx
+            if price < current_price:
+                total_long += intensity
+            elif price > current_price:
+                total_short += intensity
 
             pain_map[price] = pain_map.get(price, 0.0) + intensity
 
@@ -162,7 +163,7 @@ class CoinGlassClient:
             logger.info("清算解析结果为零，可能当前价格附近无显著清算堆积")
             self._liq_zero_count += 1
         else:
-            logger.info(f"清算解析: 上方空头={total_short:,.0f}, 下方多头={total_long:,.0f}")
+            logger.info(f"清算解析: 上方空头={total_short:,.0f}, 下方多头={total_long:,.0f}, x_idx样本={x_idx_samples}")
             self._liq_zero_count = 0
 
         max_pain_price = None
@@ -379,13 +380,8 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 因子一：恐惧贪婪指数（带详细诊断日志）----------
+    # ---------- 因子一：恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
-        """
-        获取恐惧贪婪指数（当前值 + 昨日值用于趋势判定）
-        依次尝试：alternative.me → CoinGlass → 默认值（并记录失败原因）
-        """
-        # 源1：alternative.me
         try:
             import requests
             logger.info("尝试从 alternative.me 获取恐惧贪婪指数...")
@@ -411,7 +407,6 @@ class CoinGlassClient:
         except Exception as e:
             logger.warning(f"alternative.me 请求异常: {e}")
 
-        # 源2：CoinGlass
         try:
             logger.info("尝试从 CoinGlass 获取恐惧贪婪指数...")
             cg_data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
@@ -427,26 +422,20 @@ class CoinGlassClient:
         except Exception as e:
             logger.warning(f"CoinGlass 恐惧贪婪请求异常: {e}")
 
-        # 最终失败
         logger.error("❌ 所有恐惧贪婪指数数据源均失败，使用默认值 50")
         return {"current": 50, "prev": 50, "classification": "Neutral", "error": True}
 
     # ---------- 因子二：Coinbase 溢价指数 ----------
     def get_coinbase_premium(self, btc_price: float = None) -> dict:
-        """
-        获取 Coinbase 溢价指数（Coinbase Pro 与 Binance 的 BTC 价差）
-        返回 dict: {"premium_pct": 溢价百分比, "premium_usd": 溢价美元值}
-        """
         try:
             params = {"interval": "1h"}
             logger.info("尝试获取 Coinbase 溢价指数...")
             data = self._request("api/coinbase-premium-index", params, allow_backup=False, silent_fail=True)
-            logger.info(f"Coinbase 溢价原始响应: {data}")
+            logger.info(f"Coinbase 溢价原始响应: {data[:2] if isinstance(data, list) else data}")
             if not data:
                 logger.warning("Coinbase 溢价返回空数据")
                 return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
             
-            # 提取原始值
             if isinstance(data, dict):
                 raw_premium = float(data.get("premium", 0))
             elif isinstance(data, list) and len(data) > 0:
@@ -458,11 +447,10 @@ class CoinGlassClient:
             else:
                 raw_premium = 0.0
             
-            # 转换为百分比（若提供了 BTC 价格）
             if btc_price and btc_price > 0:
                 premium_pct = (raw_premium / btc_price) * 100
             else:
-                premium_pct = raw_premium  # 假设已经是百分比
+                premium_pct = raw_premium
             
             logger.info(f"✅ Coinbase 溢价: {premium_pct:.4f}% (原始值: {raw_premium})")
             return {"premium_pct": premium_pct, "premium_usd": raw_premium}
@@ -470,12 +458,8 @@ class CoinGlassClient:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
             return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
 
-       # ---------- 因子三：稳定币市值变化 ----------
+    # ---------- 因子三：稳定币市值变化 ----------
     def get_stablecoin_market_cap_change(self) -> dict:
-        """
-        获取稳定币总市值 7 日变化率
-        返回 dict: {"change_7d": 7日变化率(%), "current_mcap": 当前总市值}
-        """
         try:
             logger.info("尝试获取稳定币市值变化...")
             data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
@@ -484,29 +468,26 @@ class CoinGlassClient:
                 logger.warning("稳定币市值返回空数据")
                 return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
-            # 解析 data_list（新格式）
             data_list = data.get("data_list", [])
             if not data_list:
-                # 兼容旧格式（直接是数组）
                 if isinstance(data, list):
                     data_list = data
                 else:
                     logger.warning("稳定币市值数据格式未知")
                     return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
-            # 需要至少7条数据
             if len(data_list) < 7:
                 logger.warning(f"稳定币市值数据不足7条，实际 {len(data_list)} 条")
                 return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
-            # 提取总市值：每个元素可能是 {'USDT': xxx} 或多个币种，需要求和
             def get_total_mcap(item):
                 if isinstance(item, dict):
                     return sum(float(v) for v in item.values())
                 return 0.0
             
             current = get_total_mcap(data_list[-1])
-            prev_7d = get_total_mcap(data_list[-8]) if len(data_list) >= 8 else get_total_mcap(data_list[0])
+            prev_index = -8 if len(data_list) >= 8 else 0
+            prev_7d = get_total_mcap(data_list[prev_index])
             
             change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
             logger.info(f"✅ 稳定币市值变化: {change_7d:.2f}% (当前: {current:.0f}, 7日前: {prev_7d:.0f})")
@@ -542,67 +523,12 @@ class CoinGlassClient:
     def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
         return 1.0
 
-    def get_market_regime_from_klines(self, klines: list, current_price: float, atr: float) -> dict:
-        if not klines or len(klines) < 20:
-            return {"regime": "range", "details": {"reason": "K线数据不足，默认震荡市"}}
-
-        closes = []
-        highs = []
-        lows = []
-        for k in klines:
-            if len(k) >= 5:
-                closes.append(float(k[4]))
-                highs.append(float(k[2]))
-                lows.append(float(k[3]))
-
-        if len(closes) < 20:
-            return {"regime": "range", "details": {"reason": "有效K线不足"}}
-
-        ma20 = sum(closes[-20:]) / 20
-        price_deviation = (current_price - ma20) / ma20
-
-        true_ranges = []
-        for i in range(1, len(highs)):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-            true_ranges.append(tr)
-        if len(true_ranges) >= 14:
-            historical_atr = sum(true_ranges[-14:]) / 14
-        else:
-            historical_atr = atr
-
-        volatility_ratio = atr / historical_atr if historical_atr > 0 else 1.0
-
-        from data_fetcher.macro_cache import get_macro_data
-        macro = get_macro_data()
-        fg_value = int(macro.get("fear_greed", {}).get("value", 50))
-
-        if fg_value < 25 or fg_value > 75:
-            regine = "extreme"
-            reason = f"恐惧贪婪指数{fg_value}处于极端区域"
-        elif abs(price_deviation) > 0.03 and volatility_ratio > 1.3:
-            regine = "trend"
-            reason = f"价格偏离MA20 {price_deviation*100:.1f}%，波动率比值 {volatility_ratio:.2f}"
-        else:
-            regine = "range"
-            reason = "价格在均线附近，波动率正常"
-
-        return {
-            "regime": regine,
-            "details": {
-                "reason": reason,
-                "price_deviation": round(price_deviation, 4),
-                "volatility_ratio": round(volatility_ratio, 2),
-                "fg_value": fg_value
-            }
-        }
-
     def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
         if current_price is None:
             current_price = 70000.0
 
         data = {}
 
-        # 1. 清算热力图
         heatmap_raw = self.get_liquidation_heatmap(symbol)
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
@@ -621,7 +547,6 @@ class CoinGlassClient:
         data["liq_dynamic_signals"] = dynamic_signals
         self._prev_liq_data[symbol] = curr
 
-        # 2. 持仓量24h变化
         oi_history = self.get_open_interest_history(symbol)
         if not isinstance(oi_history, list) or len(oi_history) < 2:
             raise RuntimeError("持仓量数据不足，无法计算24h变化")
@@ -632,14 +557,12 @@ class CoinGlassClient:
         oi_change = f"{((last_close - prev_close) / prev_close * 100):.2f}%"
         data["oi_change_24h"] = oi_change
 
-        # 3. 资金费率
         funding_history = self.get_funding_rate_history(symbol)
         if not isinstance(funding_history, list) or len(funding_history) == 0:
             raise RuntimeError("资金费率数据为空")
         funding_rate = self._get_close_from_candle(funding_history[-1])
         data["funding_rate"] = funding_rate
 
-        # 4. 全局多空比
         ls_history = self.get_long_short_ratio_history(symbol)
         if not isinstance(ls_history, list) or len(ls_history) == 0:
             raise RuntimeError("全局多空比数据为空")
@@ -647,7 +570,6 @@ class CoinGlassClient:
         data["long_short_ratio"] = ls_ratio
         data["ls_account_ratio"] = ls_ratio
 
-        # 5. 顶级交易员多空比
         if symbol.upper() in ("BTC", "ETH"):
             top_ls_history = self.get_top_long_short_ratio_history(symbol)
             if not isinstance(top_ls_history, list) or len(top_ls_history) == 0:
@@ -664,7 +586,6 @@ class CoinGlassClient:
             logger.info(f"顶级交易员多空比接口不支持 {symbol}，将跳过此数据项")
             data["top_long_short_ratio"] = "N/A"
 
-        # 6. 期权信息
         try:
             options_info = self.get_options_info(symbol)
             if not isinstance(options_info, list) or len(options_info) == 0:
@@ -685,7 +606,6 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 7. 主动吃单比率
         taker_history = self.get_taker_volume_history(symbol)
         if not isinstance(taker_history, list) or len(taker_history) == 0:
             raise RuntimeError("主动买卖量数据为空")
@@ -696,7 +616,6 @@ class CoinGlassClient:
         taker_ratio = f"{(buy_vol / total):.2f}"
         data["taker_ratio"] = taker_ratio
 
-        # 8. 期权最大痛点
         try:
             max_pain_data = self.get_option_max_pain(symbol)
             skew_value = None
@@ -714,7 +633,6 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 9. CVD 斜率信号
         cvd_history = self.get_cvd_history(symbol)
         if not isinstance(cvd_history, list) or len(cvd_history) < 30:
             raise RuntimeError("CVD 数据不足，无法计算斜率")
@@ -751,7 +669,6 @@ class CoinGlassClient:
         data["cvd_signal"] = cvd_signal
         data["cvd_slope"] = cvd_slope
 
-        # 10. 净多净空持仓
         try:
             net_pos_history = self.get_net_position_history(symbol)
             if not isinstance(net_pos_history, list) or len(net_pos_history) == 0:
@@ -771,7 +688,6 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 11. 累计资金费率
         try:
             acc_funding = self.get_accumulated_funding_rate(symbol)
             okx_funding = "N/A"
@@ -789,7 +705,6 @@ class CoinGlassClient:
             logger.warning(f"累计资金费率获取失败: {e}")
             data["accumulated_funding_rate"] = "N/A"
 
-        # 12. 聚合主动买卖比率
         try:
             agg_taker = self.get_aggregated_taker_volume(symbol)
             if not isinstance(agg_taker, list) or len(agg_taker) == 0:
@@ -811,13 +726,11 @@ class CoinGlassClient:
             else:
                 raise
 
-        # 13. 订单簿失衡率
         orderbook_data = self.get_orderbook_imbalance(symbol)
         data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
         data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
         data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
 
-        # 14. ETH/BTC 汇率
         data["eth_btc_ratio"] = self.get_eth_btc_ratio()
 
         return data
