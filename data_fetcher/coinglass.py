@@ -379,11 +379,17 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 因子一：恐惧贪婪指数 ----------
+       # ---------- 因子一：恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
+        """
+        获取恐惧贪婪指数（当前值 + 昨日值用于趋势判定）
+        返回 dict: {"current": 当前值, "prev": 昨日值, "classification": 分类文本}
+        """
         try:
-            data = self._request("api/fear-greed-index", {}, allow_backup=False, silent_fail=True)
+            # 修正后的正确端点
+            data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
             if not data:
+                # 备选：alternative.me
                 import requests
                 resp = requests.get("https://api.alternative.me/fng/", timeout=10)
                 if resp.status_code == 200:
@@ -394,11 +400,14 @@ class CoinGlassClient:
                         return {"current": current, "prev": current, "classification": classification}
                 return {"current": 50, "prev": 50, "classification": "Neutral"}
             
+            # CoinGlass 返回的数据结构：data 为数组，每个元素包含 value、value_classification 等
             if isinstance(data, list) and len(data) >= 2:
-                current = int(data[-1].get("value", 50))
-                prev = int(data[-2].get("value", 50))
-                classification = data[-1].get("value_classification", "Neutral")
+                # 按时间倒序，第一个是最新
+                current = int(data[0].get("value", 50))
+                prev = int(data[1].get("value", 50))
+                classification = data[0].get("value_classification", "Neutral")
             elif isinstance(data, dict):
+                # 兼容可能的字典格式
                 current = int(data.get("value", 50))
                 prev = int(data.get("prev_value", current))
                 classification = data.get("value_classification", "Neutral")
@@ -434,21 +443,27 @@ class CoinGlassClient:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
             return {"premium": 0.0, "premium_usd": 0.0}
 
-    # ---------- 因子三：稳定币市值变化 ----------
+        # ---------- 因子三：稳定币市值变化 ----------
     def get_stablecoin_market_cap_change(self) -> dict:
+        """
+        获取稳定币总市值 7 日变化率
+        返回 dict: {"change_7d": 7日变化率, "current_mcap": 当前总市值}
+        """
         try:
-            data = self._request("api/stablecoin/market-cap", {}, allow_backup=False, silent_fail=True)
+            # 修正后的正确端点
+            data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
             if not data:
                 return {"change_7d": 0.0, "current_mcap": 0.0}
             
-            if isinstance(data, dict):
-                change_7d = float(data.get("change_7d", 0))
-                current_mcap = float(data.get("total_market_cap", 0))
-            elif isinstance(data, list) and len(data) >= 7:
-                current = float(data[-1].get("total_market_cap", 0))
-                prev_7d = float(data[-8].get("total_market_cap", 0))
+            # 数据为数组，按时间顺序排列
+            if isinstance(data, list) and len(data) >= 7:
+                current = float(data[-1].get("market_cap", 0))
+                prev_7d = float(data[-8].get("market_cap", 0))
                 change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
                 current_mcap = current
+            elif isinstance(data, dict):
+                change_7d = float(data.get("change_7d", 0))
+                current_mcap = float(data.get("total_market_cap", 0))
             else:
                 change_7d = 0.0
                 current_mcap = 0.0
