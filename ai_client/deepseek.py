@@ -3,7 +3,6 @@ import json
 from openai import OpenAI
 from utils.logger import logger
 
-# ---------- 连续型评分辅助函数 ----------
 def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
     if low == high: return 0.0
     if rev: return full if v <= low else (0.0 if v >= high else full * (high - v) / (high - low))
@@ -139,7 +138,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
                  directional_scores: dict = None, signal_grade: str = "B",
-                 entry_candidates: dict = None) -> str:   # 新增 entry_candidates 参数
+                 entry_candidates: dict = None) -> str:
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -165,7 +164,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
         if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    # 处理入场候选值（若无传入则提供默认空值）
     if entry_candidates is None:
         entry_candidates = {
             "rule1": {"low": 0.0, "high": 0.0, "anchor": "无"},
@@ -173,7 +171,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
         }
 
-    return f"""你现在是一名具备清算动力学、多空博弈建模和链上数据量化分析能力的加密货币短线合约交易员。你必须严格扮演该角色，不得切换为通用助手或咨询顾问。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策制定一份持仓4-24小时的合约策略。。
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
@@ -226,8 +224,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 结论：【偏多/偏空/中性】
 
 **第三步：宏观过滤器定基调**
-- 分析恐惧贪婪指数趋势、宏观三因子信号、ETH/BTC汇率趋势。
-- 结论：【支持/反对/中性】
+- 分析宏观三因子信号中的方向标签（利多/利空/偏多/偏空）。
+- **强制裁决规则**：
+  - 若信号中包含“利多”或“偏多” → 必须输出【支持多头】。
+  - 若信号中包含“利空”或“偏空” → 必须输出【支持空头】。
+  - 若同时包含多空信号或无明显信号 → 输出【中性】。
+- 恐惧贪婪指数等原始数值已内化于信号标签中，你只需依据标签裁决，无需自行解读。
 
 **第四步：信号共振与矛盾裁决**
 - 列举最支持某方向的信号和最矛盾的信号。
@@ -245,11 +247,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **止损**：
   - 优先锚定**同方向强度≥3的清算区外侧**（做多设下方×0.998，做空设上方×1.002）。
   - 若无，则使用 **2 × 4小时ATR** 止损（做多：入场价 - 2×ATR；做空：入场价 + 2×ATR）。
-- **止盈**（单一目标）：
-  - 优先锚定**反方向强度≥3的清算区**（做多看上方空头清算区，做空看下方多头清算区）。
-  - 若无，则使用 **2:1盈亏比** 止盈（做多：入场价 + 2×止损距离；做空：入场价 - 2×止损距离）。
-- **严禁**：做多止盈低于入场价，做空止盈高于入场价。
-- 在reasoning中明确写出入场、止损、止盈的锚定来源。
+- **止盈**（单一目标，严格遵守以下铁律）：
+  - **铁律**：若反方向存在强度≥3的清算区，则**必须直接使用该清算区价格作为止盈**，**严禁**以“距离过近”、“盈亏比不足”等任何理由修改或替换。
+  - 若该清算区导致的盈亏比过低（如<1:1），你应在 `risk_note` 中明确提示“盈亏比偏低，建议轻仓或观望”，但**止盈价必须如实填入清算区价格**。
+  - 只有当反方向**完全不存在**强度≥3的清算区时，才允许使用 2:1盈亏比计算止盈。
+- 在reasoning中明确写出入场、止损、止盈的锚定来源。若止盈使用了清算区，必须注明“止盈锚定X方清算区，盈亏比约X:1”。
 
 ### 策略输出格式（严格JSON）
 {{
