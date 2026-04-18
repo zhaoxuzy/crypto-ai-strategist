@@ -263,6 +263,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     diff = abs(bull_score - bear_score)
     higher_direction = "多头" if bull_score > bear_score else "空头"
 
+    # 宏观三因子信号
+    macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
+    macro_signals_text = "、".join(macro_signals) if macro_signals else "无明显信号"
+
     trend_desc = ""
     if trend_info:
         dir_t = trend_info.get('direction', 'neutral')
@@ -279,6 +283,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
+- 系统提供的量化参考仅供辅助。
 - **第四步中的“强制裁决规则”具有绝对最高优先级，你必须无条件执行，不得以任何主观理由否决。**
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
@@ -310,6 +315,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
+- **宏观三因子信号**：{macro_signals_text}
 
 **量化参考（供辅助决策）**
 - 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
@@ -326,7 +332,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 结论：【偏多/偏空/中性】
 
 **第三步：宏观过滤器定基调**
-- 分析恐惧贪婪指数、ETH/BTC汇率趋势（若有）、交易所钱包余额（若有）。
+- 分析恐惧贪婪指数的变化趋势、宏观三因子信号（极恐反弹/钝化、Coinbase溢价/折价、稳定币增发/赎回）、ETH/BTC汇率趋势、交易所钱包余额。
 - 结论：【支持/反对/中性】
 
 **第四步：信号共振与矛盾裁决**
@@ -342,6 +348,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **⚠️ 铁律**：
 - 以上规则具有**最高优先级**。一旦条件满足，你**无权**以“风险回报比”、“价格位置”、“其他步骤结论矛盾”、“个人判断”等任何理由否决。
 - 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
+- **严禁如下行为**：“虽然满足条件，但风险回报比差，我输出 neutral。” → **这是严重违规，绝对禁止。**
 
 **第五步：止损与止盈设置**
 - **你必须根据清算热力图结构自行设定止损和止盈**，不再使用固定ATR倍数。
