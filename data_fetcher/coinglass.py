@@ -319,56 +319,34 @@ class CoinGlassClient:
             logger.warning(f"获取订单簿失衡率失败: {e}")
             return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
-        # ---------- ETH/BTC 汇率 ----------
+    # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
-        """
-        获取 ETH/BTC 汇率及其趋势。
-        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
-        """
         try:
             params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             params["symbol"] = "BTCUSDT"
             btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             
-            # 校验数据格式与长度
-            if not isinstance(eth_data, list) or not isinstance(btc_data, list):
-                logger.warning("ETH/BTC 汇率数据格式异常，返回默认值")
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("获取 ETH/BTC 汇率数据不足")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            if len(eth_data) < 4 or len(btc_data) < 4:
-                logger.warning(f"ETH/BTC 汇率数据不足，ETH数据量:{len(eth_data)}，BTC数据量:{len(btc_data)}")
-                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
-
-            # 提取收盘价（兼容 list 和 dict 两种格式）
-            eth_close_4 = []
-            for k in eth_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    eth_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    eth_close_4.append(float(k.get("close", 0)))
-            btc_close_4 = []
-            for k in btc_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    btc_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    btc_close_4.append(float(k.get("close", 0)))
-
+            eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
+            btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
+            
             if len(eth_close_4) < 4 or len(btc_close_4) < 4:
-                logger.warning("ETH/BTC 有效收盘价不足4个")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
             eth_ma = sum(eth_close_4) / 4
             btc_ma = sum(btc_close_4) / 4
             ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
-
+            
             current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
-
+            
             trend = "up" if current_ratio > ma_4h_ratio else "down"
-
+            
             logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
             return {"current_ratio": round(current_ratio, 6), "ma_4h": round(ma_4h_ratio, 6), "trend": trend}
-
         except Exception as e:
             logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
             return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
@@ -401,48 +379,59 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-       # ---------- 因子一：恐惧贪婪指数 ----------
+    # ---------- 因子一：恐惧贪婪指数（带详细诊断日志）----------
     def get_fear_greed_index(self) -> dict:
         """
         获取恐惧贪婪指数（当前值 + 昨日值用于趋势判定）
-        返回 dict: {"current": 当前值, "prev": 昨日值, "classification": 分类文本}
+        依次尝试：alternative.me → CoinGlass → 默认值（并记录失败原因）
         """
+        # 源1：alternative.me
         try:
-            # 修正后的正确端点
-            data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
-            if not data:
-                # 备选：alternative.me
-                import requests
-                resp = requests.get("https://api.alternative.me/fng/", timeout=10)
-                if resp.status_code == 200:
-                    alt_data = resp.json()
-                    if alt_data.get("data"):
-                        current = int(alt_data["data"][0]["value"])
-                        classification = alt_data["data"][0]["value_classification"]
-                        return {"current": current, "prev": current, "classification": classification}
-                return {"current": 50, "prev": 50, "classification": "Neutral"}
-            
-            # CoinGlass 返回的数据结构：data 为数组，每个元素包含 value、value_classification 等
-            if isinstance(data, list) and len(data) >= 2:
-                # 按时间倒序，第一个是最新
-                current = int(data[0].get("value", 50))
-                prev = int(data[1].get("value", 50))
-                classification = data[0].get("value_classification", "Neutral")
-            elif isinstance(data, dict):
-                # 兼容可能的字典格式
-                current = int(data.get("value", 50))
-                prev = int(data.get("prev_value", current))
-                classification = data.get("value_classification", "Neutral")
+            import requests
+            logger.info("尝试从 alternative.me 获取恐惧贪婪指数...")
+            resp = requests.get("https://api.alternative.me/fng/?limit=2", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(f"alternative.me 响应数据: {data}")
+                if data.get("data") and len(data["data"]) >= 2:
+                    current = int(data["data"][0]["value"])
+                    prev = int(data["data"][1]["value"])
+                    classification = data["data"][0]["value_classification"]
+                    logger.info(f"✅ 恐惧贪婪指数 (alternative.me): 当前={current}, 昨日={prev}")
+                    return {"current": current, "prev": prev, "classification": classification}
+                elif data.get("data") and len(data["data"]) == 1:
+                    current = int(data["data"][0]["value"])
+                    classification = data["data"][0]["value_classification"]
+                    logger.info(f"✅ 恐惧贪婪指数 (alternative.me): 当前={current}, 昨日无数据")
+                    return {"current": current, "prev": current, "classification": classification}
+                else:
+                    logger.warning(f"alternative.me 返回数据格式异常: {data}")
             else:
-                current = prev = 50
-                classification = "Neutral"
-            
-            return {"current": current, "prev": prev, "classification": classification}
+                logger.warning(f"alternative.me 请求失败，状态码: {resp.status_code}")
         except Exception as e:
-            logger.warning(f"获取恐惧贪婪指数失败: {e}")
-            return {"current": 50, "prev": 50, "classification": "Neutral"}
+            logger.warning(f"alternative.me 请求异常: {e}")
 
-          # ---------- 因子二：Coinbase 溢价指数 ----------
+        # 源2：CoinGlass
+        try:
+            logger.info("尝试从 CoinGlass 获取恐惧贪婪指数...")
+            cg_data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
+            logger.info(f"CoinGlass 恐惧贪婪原始响应: {cg_data}")
+            if cg_data and isinstance(cg_data, list) and len(cg_data) >= 2:
+                current = int(cg_data[0].get("value", 50))
+                prev = int(cg_data[1].get("value", 50))
+                classification = cg_data[0].get("value_classification", "Neutral")
+                logger.info(f"✅ 恐惧贪婪指数 (CoinGlass): 当前={current}, 昨日={prev}")
+                return {"current": current, "prev": prev, "classification": classification}
+            else:
+                logger.warning("CoinGlass 恐惧贪婪数据不足或格式错误")
+        except Exception as e:
+            logger.warning(f"CoinGlass 恐惧贪婪请求异常: {e}")
+
+        # 最终失败
+        logger.error("❌ 所有恐惧贪婪指数数据源均失败，使用默认值 50")
+        return {"current": 50, "prev": 50, "classification": "Neutral", "error": True}
+
+    # ---------- 因子二：Coinbase 溢价指数 ----------
     def get_coinbase_premium(self, btc_price: float = None) -> dict:
         """
         获取 Coinbase 溢价指数（Coinbase Pro 与 Binance 的 BTC 价差）
@@ -450,11 +439,14 @@ class CoinGlassClient:
         """
         try:
             params = {"interval": "1h"}
+            logger.info("尝试获取 Coinbase 溢价指数...")
             data = self._request("api/coinbase-premium-index", params, allow_backup=False, silent_fail=True)
+            logger.info(f"Coinbase 溢价原始响应: {data}")
             if not data:
-                return {"premium_pct": 0.0, "premium_usd": 0.0}
+                logger.warning("Coinbase 溢价返回空数据")
+                return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
             
-            # 提取原始值（可能是美元价差）
+            # 提取原始值
             if isinstance(data, dict):
                 raw_premium = float(data.get("premium", 0))
             elif isinstance(data, list) and len(data) > 0:
@@ -470,27 +462,29 @@ class CoinGlassClient:
             if btc_price and btc_price > 0:
                 premium_pct = (raw_premium / btc_price) * 100
             else:
-                # 如果没有价格，假设原始值已经是百分比（通常不会）
-                premium_pct = raw_premium
+                premium_pct = raw_premium  # 假设已经是百分比
             
+            logger.info(f"✅ Coinbase 溢价: {premium_pct:.4f}% (原始值: {raw_premium})")
             return {"premium_pct": premium_pct, "premium_usd": raw_premium}
         except Exception as e:
             logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
-            return {"premium_pct": 0.0, "premium_usd": 0.0}
+            return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
 
-           # ---------- 因子三：稳定币市值变化 ----------
+    # ---------- 因子三：稳定币市值变化 ----------
     def get_stablecoin_market_cap_change(self) -> dict:
         """
         获取稳定币总市值 7 日变化率
         返回 dict: {"change_7d": 7日变化率(%), "current_mcap": 当前总市值}
         """
         try:
+            logger.info("尝试获取稳定币市值变化...")
             data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
+            logger.info(f"稳定币市值原始响应（前2条）: {data[:2] if isinstance(data, list) else data}")
             if not data:
-                return {"change_7d": 0.0, "current_mcap": 0.0}
+                logger.warning("稳定币市值返回空数据")
+                return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
             
             if isinstance(data, list) and len(data) >= 7:
-                # 尝试多种可能的字段名
                 def get_mcap(item):
                     if isinstance(item, dict):
                         return float(item.get("marketCap") or item.get("market_cap") or item.get("value") or 0)
@@ -499,12 +493,14 @@ class CoinGlassClient:
                 current = get_mcap(data[-1])
                 prev_7d = get_mcap(data[-8])
                 change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
+                logger.info(f"✅ 稳定币市值变化: {change_7d:.2f}% (当前: {current:.0f}, 7日前: {prev_7d:.0f})")
                 return {"change_7d": change_7d, "current_mcap": current}
             
-            return {"change_7d": 0.0, "current_mcap": 0.0}
+            logger.warning("稳定币市值数据不足7条")
+            return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
         except Exception as e:
             logger.warning(f"获取稳定币市值变化失败: {e}")
-            return {"change_7d": 0.0, "current_mcap": 0.0}
+            return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
 
     @staticmethod
     def _get_close_from_candle(candle) -> float:
@@ -598,7 +594,6 @@ class CoinGlassClient:
         liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
         data.update(liq_data)
 
-        # 清算动态信号
         prev = self._prev_liq_data.get(symbol, {})
         curr = {
             "above": float(str(data.get("above_short_liquidation", "0")).replace(",", "")),
