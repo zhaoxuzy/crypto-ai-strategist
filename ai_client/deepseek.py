@@ -153,7 +153,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     higher_direction = "多头" if bull_score > bear_score else "空头"
 
     macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
-    macro_signals_text = "、".join(macro_signals) if macro_signals else "无明显信号"
+    macro_signal_lines = []
+    for s in macro_signals:
+        macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
+    macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
 
     trend_desc = ""
     if trend_info:
@@ -207,7 +210,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
-- **宏观三因子信号**：{macro_signals_text}
+- **宏观三因子信号**：
+{macro_signals_text}
 
 **量化参考（供辅助决策）**
 - 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
@@ -224,12 +228,16 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 结论：【偏多/偏空/中性】
 
 **第三步：宏观过滤器定基调**
-- 分析宏观三因子信号中的方向标签（利多/利空/偏多/偏空）。
-- **强制裁决规则**：
-  - 若信号中包含“利多”或“偏多” → 必须输出【支持多头】。
-  - 若信号中包含“利空”或“偏空” → 必须输出【支持空头】。
-  - 若同时包含多空信号或无明显信号 → 输出【中性】。
-- 恐惧贪婪指数等原始数值已内化于信号标签中，你只需依据标签裁决，无需自行解读。
+- 系统已提供宏观三因子信号及其权重（恐惧贪婪权重4，Coinbase溢价权重3，稳定币权重3）。
+- **强制裁决规则（你必须严格遵守）**：
+  1. 计算多头方向的总权重：将所有标注“利多”或“偏多”的信号的权重相加。
+  2. 计算空头方向的总权重：将所有标注“利空”或“偏空”的信号的权重相加。
+  3. 比较多空总权重：
+     - 若多头总权重 > 空头总权重 → 必须输出【支持多头】。
+     - 若空头总权重 > 多头总权重 → 必须输出【支持空头】。
+     - 若两者相等且均为0 → 输出【中性】。
+     - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
+- **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
 
 **第四步：信号共振与矛盾裁决**
 - 列举最支持某方向的信号和最矛盾的信号。
