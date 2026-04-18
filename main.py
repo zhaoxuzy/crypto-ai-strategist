@@ -119,37 +119,37 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     if fg_current <= 30:
         if fg_current > fg_prev:
             bull_score += 4
-            signals.append(f"极恐反弹({fg_current}↑{fg_prev})")
+            signals.append(f"极恐反弹(利多, {fg_current}↑{fg_prev})")
         else:
             bull_score += 2
-            signals.append(f"极恐钝化({fg_current}≤{fg_prev})")
+            signals.append(f"极恐钝化(偏多, {fg_current}≤{fg_prev})")
     elif fg_current >= 70:
         if fg_current > fg_prev:
             bear_score += 3
-            signals.append(f"贪婪加速({fg_current}↑{fg_prev})")
+            signals.append(f"贪婪加速(利空, {fg_current}↑{fg_prev})")
         else:
             bear_score += 1
-            signals.append(f"贪婪筑顶({fg_current}≤{fg_prev})")
+            signals.append(f"贪婪筑顶(偏空, {fg_current}≤{fg_prev})")
     
     premium_data = cg.get_coinbase_premium(btc_price=btc_price)
     premium_pct = premium_data.get("premium_pct", 0.0)
     
     if premium_pct > 0.15:
         bull_score += 3
-        signals.append(f"Coinbase溢价({premium_pct:.2f}%)")
+        signals.append(f"Coinbase溢价(利多, {premium_pct:.2f}%)")
     elif premium_pct < -0.15:
         bear_score += 3
-        signals.append(f"Coinbase折价({premium_pct:.2f}%)")
+        signals.append(f"Coinbase折价(利空, {premium_pct:.2f}%)")
     
     stable_data = cg.get_stablecoin_market_cap_change()
     change_7d = stable_data.get("change_7d", 0.0)
     
     if change_7d > 1.0:
         bull_score += 3
-        signals.append(f"稳定币增发({change_7d:.2f}%)")
+        signals.append(f"稳定币增发(利多, {change_7d:.2f}%)")
     elif change_7d < -1.0:
         bear_score += 3
-        signals.append(f"稳定币赎回({-change_7d:.2f}%)")
+        signals.append(f"稳定币赎回(利空, {-change_7d:.2f}%)")
     
     total = bull_score + bear_score
     macro_component = round(total / 10 * 12) if total > 0 else 0
@@ -388,7 +388,6 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 先用趋势方向计算入场候选（AI可能输出不同方向，但候选值仅作占位，后续兜底会重新计算）
         temp_direction = trend_info.get("direction", "bull")
         if temp_direction not in ["long", "short"]:
             temp_direction = "long" if temp_direction == "bull" else "short"
@@ -412,17 +411,14 @@ def main():
             cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
             cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
 
-            # 根据实际方向重新计算入场候选区间（用于兜底）
             entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
 
-            # 兜底止损
             if float(strategy.get("stop_loss", 0)) <= 0:
                 if actual_direction == "long":
                     strategy["stop_loss"] = round(price - 2.0 * atr, 1)
                 else:
                     strategy["stop_loss"] = round(price + 2.0 * atr, 1)
 
-            # 兜底止盈
             if float(strategy.get("take_profit", 0)) <= 0:
                 if actual_direction == "long":
                     if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
@@ -439,7 +435,6 @@ def main():
                         strategy["take_profit"] = round(price - 2.0 * atr * profile["tp_ratio"], 1)
                         strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
 
-            # 兜底入场区间
             if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
                 strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
                 strategy["entry_price_high"] = entry_candidates["rule3"]["high"]
@@ -449,7 +444,6 @@ def main():
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
-            strategy["confidence"] = "low"
             strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
 
         if not validate_strategy(strategy, price):
