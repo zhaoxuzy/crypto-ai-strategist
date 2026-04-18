@@ -138,7 +138,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
                  directional_scores: dict = None, signal_grade: str = "B",
-                 entry_candidates: dict = None) -> str:
+                 entry_candidates: dict = None, exchange_balances: dict = None,
+                 liq_dynamic_signals: list = None) -> str:
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -157,6 +158,16 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     for s in macro_signals:
         macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
     macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
+
+    # 清算动态信号文本
+    liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无显著动态信号"
+
+    # 交易所余额文本
+    bal_text = ""
+    if exchange_balances:
+        btc_flow = exchange_balances.get("btc_flow", "neutral")
+        stable_flow = exchange_balances.get("stable_flow", "neutral")
+        bal_text = f"BTC 24h净变动: {exchange_balances.get('btc_change', 0):.0f} ({btc_flow})，稳定币24h净变动: {exchange_balances.get('stable_change', 0):.0f} ({stable_flow})"
 
     trend_desc = ""
     if trend_info:
@@ -192,20 +203,22 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **清算压力**
 - 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
-- 清算最大痛点：{liq_max_pain} USDT
+- 清算最大痛点：{liq_max_pain} USDT（对价格构成向下的引力/向上的阻力）
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
   （注：强度≥3的清算区方可作为有效锚点）
+- **清算动态信号**：{liq_dynamic_text}
 
 **多空博弈**
-- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（绝对值<0.01%视为中性）
+- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（>0.05%多头拥挤，<-0.03%空头拥挤）
 - 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}
-- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}
+- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}（>0.55买盘主动，<0.45卖盘主动）
+- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}（<0.7偏多，>2.0偏空）
+- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}（>0主力累积多头，<0主力累积空头）
 - 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优）
 
 **资金流向**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
+- **交易所钱包余额**：{bal_text}
 
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
@@ -220,12 +233,44 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ### 🔒 强制五步分析流程
 
 **第一步：清算动力学定锚**
-- 对比上下方清算金额与密集区强度。结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
+- 对比上下方清算金额与密集区强度。
+- **必须分析清算最大痛点**：指出最大痛点位于当前价上方还是下方，对价格构成引力还是压力。
+- **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
+- 结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
 - 结论：【偏多/偏空/风险预警/中性观察】
 
 **第二步：多空博弈找“犯错方”**
-- 分析资金费率、顶级交易员多空比、净持仓累积，找出可能被挤压的一方。
-- 结论：【偏多/偏空/中性】
+你必须基于以下指标的组合，判断市场中哪一方正在承担过度风险，可能成为被挤压的“犯错方”：
+
+**指标解读基准**：
+- **资金费率**：>0.05% 多头拥挤；<-0.03% 空头拥挤；介于之间为中性。
+- **顶级交易员多空比**：<0.7 偏多；>2.0 偏空；介于之间为中性。
+- **净持仓累积**：>0 主力累积多头；<0 主力累积空头。
+- **主动吃单比率**：>0.55 买盘主动；<0.45 卖盘主动。
+- **订单簿失衡率**：>0.2 买盘深度占优；<-0.2 卖盘深度占优。
+- **持仓量24h变化**：>+5% 资金大幅流入；<-5% 资金大幅流出。
+
+**组合解读规则（你必须按以下模板进行推理）**：
+1. **顶级交易员与净持仓同向**：
+   - 顶级偏多 + 净持仓为正 → 聪明钱与主力共振做多，空头可能为犯错方。结论：【偏多】。
+   - 顶级偏空 + 净持仓为负 → 聪明钱与主力共振做空，多头可能为犯错方。结论：【偏空】。
+2. **顶级交易员与净持仓背离**：
+   - 顶级偏多 + 净持仓为负 → 聪明钱看多但主力撤退，诱多风险。结论：【中性偏空】。
+   - 顶级偏空 + 净持仓为正 → 聪明钱看空但主力累积多头，空头可能被挤压。结论：【偏多】。
+3. **资金费率极端信号**：
+   - 费率>0.05% + 顶级偏空 → 拥挤多头可能为犯错方。结论：【偏空】。
+   - 费率<-0.03% + 顶级偏多 → 拥挤空头可能为犯错方。结论：【偏多】。
+4. **短期力量确认**：
+   - 主动吃单比率与订单簿失衡率同向时，强化对应方向结论；若背离，降级为中性。
+5. **资金流向验证**：
+   - 持仓量大幅增加（>5%）且与方向一致 → 趋势持续性增强；持仓量大幅减少 → 趋势可能衰竭。
+6. **信号矛盾或中性**：
+   - 若以上均不满足，或信号严重矛盾，结论：【中性】。
+
+**在reasoning中，你必须明确写出**：
+- 各指标当前数值及定性。
+- 应用了哪条组合规则。
+- 最终结论：【偏多/偏空/中性】。
 
 **第三步：宏观过滤器定基调**
 - 系统已提供宏观三因子信号及其权重（恐惧贪婪权重4，Coinbase溢价权重3，稳定币权重3）。
@@ -237,26 +282,25 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
      - 若空头总权重 > 多头总权重 → 必须输出【支持空头】。
      - 若两者相等且均为0 → 输出【中性】。
      - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
+- **可选补充**：在reasoning中提及ETH/BTC汇率趋势作为风险偏好背景，并引用交易所余额数据作为中长期资金流向参考。
 - **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
 
 **第四步：信号共振与矛盾裁决**
 - 列举最支持某方向的信号和最矛盾的信号。
+- **必须对比第一步与第二步的结论是否一致**：若一致则为“共振”，若背离则必须在矛盾信号中明确说明。
+- **必须引用至少一个清算动态信号**（来自第一步）作为支持/反对依据。
 - 应用以下强制裁决规则。
 
 **🚨 强制裁决规则（绝对优先级，唯一例外是 extreme_liq=true）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **8分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **8分** → **必须**输出 **short**。
-3. 若第一步结论为【风险预警】，且差值 ≥ **12分** → **必须**输出领先方向。
+1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **7分** → **必须**输出 **long**。
+2. 若第一步结论为【偏空】，且差值 ≥ **7分** → **必须**输出 **short**。
+3. 若第一步结论为【风险预警】，且差值 ≥ **10分** → **必须**输出领先方向。
 4. 若第一步结论为【中性观察】，不触发强制裁决。
 
 **⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
 - 一旦满足上述任一强制裁决条件，你**无权**以“风险回报比”、“价格紧贴关键位”、“市场结构矛盾”、“风险第一原则”等**任何理由**拒绝执行。
 - 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
 - **严禁**在满足强制裁决条件时输出 **neutral**。
-- **违规示例（绝对禁止）**：
-  - “虽然满足强制裁决条件，但风险回报比差，我输出 neutral。”
-  - “强制裁决与微观结构矛盾，遵循风险第一原则，选择不执行。”
-  - “差值达标但价格紧贴阻力，综合判断后观望。”
 
 **第五步：止损、止盈与入场区间设置**
 - **入场区间**：系统已提供三个候选区间（见下方），你必须按优先级选择一个，并在reasoning中注明所选规则。
@@ -272,11 +316,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - **严禁**将同向清算区用于止盈（做多时用下方清算区止盈、做空时用上方清算区止盈）。
   - **严禁**以“数据未提供”为由，自行创造止盈锚点（如“强磁吸区”、“价格向上反弹触及将引发空头清算”等）。
   - 若清算区导致的盈亏比过低（如<1:1），你应在 `risk_note` 中明确提示“盈亏比偏低，建议轻仓或观望”，但**止盈价必须如实填入清算区价格或公式计算值**。
-  - **违规示例（绝对禁止）**：
-    - “数据未提供上方清算区，因此将下方清算区76154.4作为止盈” → **严重违规**。
-    - “该区域为强磁吸区，价格向上反弹触及将引发空头清算，故作为止盈” → **严重违规**。
-    - “止盈锚定上方空头清算区86.7，同时止损锚定下方多头清算区86.7” → 同一清算区不能同时用于止损和止盈。
-- 在reasoning中明确写出入场、止损、止盈的锚定来源及盈亏比。若使用公式计算，必须写出完整计算过程。
+  - **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离）。
+- 在reasoning中明确写出入场、止损、止盈的锚定来源及盈亏比。
 
 ### 策略输出格式（严格JSON）
 {{
@@ -286,7 +327,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明入场、止损、止盈的所选规则。",
+  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明入场、止损、止盈的所选规则及盈亏比。",
   "risk_note": "风险提示"
 }}
 """
