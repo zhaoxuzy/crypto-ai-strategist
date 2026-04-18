@@ -1,314 +1,736 @@
 import os
-import json
-from openai import OpenAI
+import time
+import requests
 from utils.logger import logger
 
-def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
-    if low == high: return 0.0
-    if rev: return full if v <= low else (0.0 if v >= high else full * (high - v) / (high - low))
-    else: return 0.0 if v <= low else (full if v >= high else full * (v - low) / (high - low))
+class CoinGlassClient:
+    def __init__(self):
+        self.api_key = os.getenv("COINGLASS_API_KEY", "")
+        self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
+        self.delay = 6.0
+        self.primary_exchange = "OKX"
+        self.backup_exchanges = ["Bybit"]
+        self._liq_zero_count = 0
+        self._use_model1_fallback = False
+        self._prev_liq_data = {}
 
-
-def get_position_structure_score(direction: str, cg: dict, macro: dict, sym: str) -> tuple:
-    s, det = 0.0, []
-    th = {"BTC": (0.7, 2.0), "ETH": (0.7, 2.0), "SOL": (0.5, 1.5)}.get(sym.upper(), (0.7, 2.0))
-    try:
-        tls = float(cg.get("top_long_short_ratio", 1))
-        if direction == "long":
-            if tls <= th[0]: s += 20.0
-            elif tls <= th[1]: s += linear_score(tls, th[0], th[1], 20, True)
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        headers = {
+            "accept": "application/json",
+            "X-Api-Key": self.api_key
+        }
+        base_params = params.copy() if params else {}
+        
+        if allow_backup:
+            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
         else:
-            if tls >= th[1]: s += 20.0
-            elif tls >= th[0]: s += linear_score(tls, th[0], th[1], 20, False)
-        if s > 1: det.append(f"顶级持仓({tls:.2f})")
-    except: pass
-    try:
-        lsa = float(cg.get("ls_account_ratio", 1))
-        if direction == "long":
-            if lsa <= 0.7: s += 12.0
-            elif lsa <= 2.0: s += linear_score(lsa, 0.7, 2.0, 12, True)
-        else:
-            if lsa >= 2.0: s += 12.0
-            elif lsa >= 0.7: s += linear_score(lsa, 0.7, 2.0, 12, False)
-        if s > 1: det.append(f"人数比({lsa:.2f})")
-    except: pass
-    return s, det
+            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
 
+        last_error = None
 
-LIQ_MIN = {"BTC": 50_000_000, "ETH": 20_000_000, "SOL": 5_000_000}
+        for exchange in exchanges_to_try:
+            current_params = base_params.copy()
+            if "exchange" in current_params and allow_backup:
+                current_params["exchange"] = exchange
+            elif "exchange" not in current_params and allow_backup:
+                current_params["exchange"] = exchange
 
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}" + 
+                                (f" (重试 {attempt+1}/{max_retries})" if attempt > 0 else ""))
+                    resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                    time.sleep(self.delay)
+                    data = resp.json()
+                    if data.get("code") in (0, "0"):
+                        return data.get("data", {})
+                    else:
+                        msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                        last_error = msg
+                        if attempt < max_retries - 1:
+                            if "rate limit" in str(msg).lower():
+                                wait_time = 10 * (attempt + 1)
+                            else:
+                                wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"{msg}，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
+                            break
+                except requests.exceptions.Timeout as e:
+                    last_error = f"请求超时: {e}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)
+                        logger.warning(f"请求超时，{wait_time}秒后重试... ({attempt+1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
+                        break
+                except Exception as e:
+                    last_error = f"请求异常: {e}"
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)
+                        logger.warning(f"请求异常，{wait_time}秒后重试... ({attempt+1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
+                        break
 
-def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict,
-                              liq_zero: int = 0, eth_btc: dict = None, bal: dict = None,
-                              trend_info: dict = None, extreme_liq: bool = False) -> dict:
-    score, det = 0.0, []
-    trend_score = trend_info.get("score", 0) if trend_info else 0
-    w_liq_r, w_pos_r, w_cvd_r, w_fg_r, w_fr_r, w_taker_r, w_net_r, w_ob_r, w_macro_r = 25, 29, 11, 7, 4, 7, 5, 11, 8
-    w_liq_t, w_pos_t, w_cvd_t, w_fg_t, w_fr_t, w_taker_t, w_net_t, w_ob_t, w_macro_t = 15, 15, 25, 5, 3, 15, 3, 7, 5
-    t = trend_score / 100.0
-    weight_liq = int(w_liq_r * (1 - t) + w_liq_t * t)
-    weight_pos = int(w_pos_r * (1 - t) + w_pos_t * t)
-    weight_cvd = int(w_cvd_r * (1 - t) + w_cvd_t * t)
-    weight_fg = int(w_fg_r * (1 - t) + w_fg_t * t)
-    weight_fr = int(w_fr_r * (1 - t) + w_fr_t * t)
-    weight_taker = int(w_taker_r * (1 - t) + w_taker_t * t)
-    weight_net = int(w_net_r * (1 - t) + w_net_t * t)
-    weight_ob = int(w_ob_r * (1 - t) + w_ob_t * t)
-    weight_macro = int(w_macro_r * (1 - t) + w_macro_t * t)
+        if silent_fail:
+            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+            return {}
+        raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    if extreme_liq:
-        if direction == "long": score -= 50; det.append("⚠️极端清算禁止做多")
-        elif direction == "short": score += 10; det.append("极端清算支持做空")
+    # ---------- 清算热力图 ----------
+    def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        params = {
+            "exchange": "OKX",
+            "symbol": f"{symbol}-USDT-SWAP",
+            "range": "3d"
+        }
+        data = self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
+        if data and data.get("liquidation_leverage_data"):
+            self._use_model1_fallback = False
+            return data
 
-    above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
-    below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
-    total = above + below
-    if total > 0:
-        ratio = above / total
-        raw = linear_score(ratio, 0.2, 0.5, weight_liq, True) if direction == "long" else linear_score(ratio, 0.5, 0.8, weight_liq, False)
-        s = raw * min(1.0, total / LIQ_MIN.get(symbol.upper(), 50_000_000))
-        score += s
-        if s > 5: det.append(f"清算结构({ratio:.1%})")
+        logger.warning("model2 返回空数据，尝试 model1 备用")
+        params["range"] = "24h"
+        data = self._request("api/futures/liquidation/heatmap/model1", params, allow_backup=True, silent_fail=True)
+        if data and data.get("liquidation_leverage_data"):
+            self._use_model1_fallback = True
+            return data
+        return {}
 
-    pos_s, pos_d = get_position_structure_score(direction, cg, macro, symbol)
-    score += pos_s * (weight_pos / 32.0)
-    det.extend(pos_d)
-
-    cvd = cg.get("cvd_signal", "N/A")
-    if cvd in ["bullish", "slightly_bullish"]:
-        if direction == "long": score += weight_cvd if cvd == "bullish" else weight_cvd * 0.7; det.append(f"CVD:{cvd}")
-        else: score -= weight_cvd * 0.5; det.append("CVD反向")
-    elif cvd in ["bearish", "slightly_bearish"]:
-        if direction == "short": score += weight_cvd if cvd == "bearish" else weight_cvd * 0.7; det.append(f"CVD:{cvd}")
-        else: score -= weight_cvd * 0.5; det.append("CVD反向")
-
-    fg_val = int(macro.get("fear_greed", {}).get("value", 50))
-    s = linear_score(fg_val, 20, 50, weight_fg, True) if direction == "long" else linear_score(fg_val, 50, 80, weight_fg, False)
-    score += s
-    if s > 2: det.append(f"恐惧贪婪({fg_val})")
-
-    try:
-        fr = float(cg.get("funding_rate", 0))
-        s = linear_score(fr, 0.02, 0.08, weight_fr, False) if direction == "short" else linear_score(fr, -0.08, -0.01, weight_fr, True)
-        score += s
-        if abs(s) > 1: det.append(f"费率({fr:.4f})")
-    except: pass
-
-    try:
-        tr = float(cg.get("taker_ratio", 0.5))
-        s = linear_score(tr, 0.5, 0.65, weight_taker, False) if direction == "long" else linear_score(tr, 0.35, 0.5, weight_taker, True)
-        score += s
-        if s > 2: det.append(f"主动买卖({tr:.2f})")
-    except: pass
-
-    try:
-        np = float(cg.get("net_position_cum", 0))
-        oi = float(cg.get("option_oi_usd", 1)) if cg.get("option_oi_usd", "N/A") != "N/A" else 1.0
-        pct = (np / oi * 100) if oi > 0 else 0.0
-        s = linear_score(pct, 1.0, 3.0, weight_net, False) if direction == "long" else linear_score(pct, -3.0, -1.0, weight_net, True)
-        score += s
-        if abs(s) > 1: det.append(f"净持仓({pct:.1f}%)")
-    except: pass
-
-    imb = cg.get("orderbook_imbalance", 0.0)
-    s = linear_score(imb, 0.1, 0.3, weight_ob, False) if direction == "long" else linear_score(imb, -0.3, -0.1, weight_ob, True)
-    score += s
-    if abs(s) > 3: det.append(f"订单簿({imb:.2f})")
-
-    if eth_btc:
-        trend = eth_btc.get("trend", "neutral")
-        if direction == "long" and trend == "up": score += weight_macro; det.append(f"ETH/BTC上升(+{weight_macro})")
-        elif direction == "short" and trend == "down": score += weight_macro; det.append(f"ETH/BTC下降(+{weight_macro})")
-    if bal:
-        btc_flow, stable_flow = bal.get("btc_flow", "neutral"), bal.get("stable_flow", "neutral")
-        if direction == "long" and stable_flow == "in" and btc_flow == "out": score += weight_macro; det.append(f"余额:稳定币流入&BTC流出(+{weight_macro})")
-        elif direction == "short" and stable_flow == "out" and btc_flow == "in": score += weight_macro; det.append(f"余额:稳定币流出&BTC流入(+{weight_macro})")
-
-    if fg_val < 30 and direction == "long": score -= 10; det.append("⚠️极度恐惧做多门槛提高")
-    core_missing = sum(1 for v in [cg.get("above_short_liquidation"), cg.get("cvd_signal")] if v == "N/A")
-    important_missing = sum(1 for v in [cg.get("top_long_short_ratio"), cg.get("funding_rate")] if v == "N/A")
-    score -= min(15, core_missing * 5 + important_missing * 3)
-    score = max(-20.0, min(100.0, score))
-    level = "极强" if score >= 75 else ("强" if score >= 55 else ("中" if score >= 35 else ("弱" if score >= 15 else "极弱")))
-    confidence_grade = "High" if score >= 60 else ("Medium" if score >= 35 else "Low")
-    return {"level": level, "score": round(score, 1), "max_score": 100, "details": det, "confidence_grade": confidence_grade}
-
-
-def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
-                 profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
-                 extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
-                 directional_scores: dict = None, signal_grade: str = "B",
-                 entry_candidates: dict = None) -> str:
-    fg = macro_data.get("fear_greed", {})
-    cluster = coinglass_data.get("nearest_cluster", {})
-    liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
-    option_pain = coinglass_data.get("skew", "N/A")
-    warning_text = f"\n{liq_warning}\n" if liq_warning else ""
-    data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
-    extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n" if extreme_liq else "")
-
-    bull_score = directional_scores.get("bull", 0) if directional_scores else 0
-    bear_score = directional_scores.get("bear", 0) if directional_scores else 0
-    diff = abs(bull_score - bear_score)
-    higher_direction = "多头" if bull_score > bear_score else "空头"
-
-    macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
-    macro_signal_lines = []
-    for s in macro_signals:
-        macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
-    macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
-
-    trend_desc = ""
-    if trend_info:
-        dir_t = trend_info.get('direction', 'neutral')
-        score_t = trend_info.get('score', 0)
-        conf_t = trend_info.get('confidence', '低')
-        signals_t = ", ".join(trend_info.get('signals', []))
-        trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
-        if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
-
-    if entry_candidates is None:
-        entry_candidates = {
-            "rule1": {"low": 0.0, "high": 0.0, "anchor": "无"},
-            "rule2": {"low": 0.0, "high": 0.0, "anchor": "无"},
-            "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
+    def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
+        result = {
+            "above_short_liquidation": "0",
+            "below_long_liquidation": "0",
+            "max_pain_price": "N/A",
+            "nearest_cluster": {"direction": "N/A", "price": "N/A", "intensity": "N/A"}
         }
 
-    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
+        if not isinstance(raw_data, dict):
+            logger.warning("清算数据不是字典，无法解析")
+            return result
 
-⚠️ **核心要求**：
-- 不得跳过任何步骤，每步必须给出明确结论。
-- 系统提供的量化参考仅供辅助。
-- **第四步中的“强制裁决规则”具有绝对最高优先级，你必须无条件执行，不得以任何主观理由否决。**
+        y_axis = raw_data.get("y_axis")
+        liq_data = raw_data.get("liquidation_leverage_data")
 
-{warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
+        if not y_axis or not liq_data:
+            logger.warning(f"清算矩阵数据不完整: y_axis={bool(y_axis)}, liq_data={bool(liq_data)}")
+            return result
 
-### 核心市场数据
-**价格与波动**
-- 当前价格：{price} USDT
-- 4小时ATR：{atr} USDT
-- 波动因子：{volatility_factor:.2f}
+        if not isinstance(liq_data, list):
+            logger.warning("liquidation_leverage_data 不是列表")
+            return result
 
-**清算压力**
-- 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
-- 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
-- 清算最大痛点：{liq_max_pain} USDT
-- 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
-  （注：强度≥3的清算区方可作为有效锚点）
+        if len(liq_data) == 0:
+            logger.info("清算数据列表为空，可能当前时间段无显著清算压力")
+            self._liq_zero_count += 1
+            return result
 
-**多空博弈**
-- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（绝对值<0.01%视为中性）
-- 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}
-- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}
-- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优）
+        total_long = 0.0
+        total_short = 0.0
+        pain_map = {}
+        x_idx_samples = set()
 
-**资金流向**
-- CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
+        for item in liq_data:
+            if not isinstance(item, list) or len(item) < 3:
+                continue
+            x_idx = int(item[0])
+            y_idx = int(item[1])
+            intensity = float(item[2])
+            x_idx_samples.add(x_idx)
 
-**期权与宏观**
-- 期权最大痛点：{option_pain} USDT
-- 恐惧贪婪指数：{fg.get('value', '50')}
-- **宏观三因子信号**：
-{macro_signals_text}
+            if y_idx < 0 or y_idx >= len(y_axis):
+                continue
 
-**量化参考（供辅助决策）**
-- 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
-- 系统信号评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
+            price = float(y_axis[y_idx])
 
-### 🔒 强制五步分析流程
+            # 修正：根据价格直接归类，不再依赖不可靠的 x_idx
+            if price < current_price:
+                total_long += intensity
+            elif price > current_price:
+                total_short += intensity
 
-**第一步：清算动力学定锚**
-- 对比上下方清算金额与密集区强度。结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
-- 结论：【偏多/偏空/风险预警/中性观察】
+            pain_map[price] = pain_map.get(price, 0.0) + intensity
 
-**第二步：多空博弈找“犯错方”**
-- 分析资金费率、顶级交易员多空比、净持仓累积，找出可能被挤压的一方。
-- 结论：【偏多/偏空/中性】
+        if total_long == 0 and total_short == 0:
+            logger.info("清算解析结果为零，可能当前价格附近无显著清算堆积")
+            self._liq_zero_count += 1
+        else:
+            logger.info(f"清算解析: 上方空头={total_short:,.0f}, 下方多头={total_long:,.0f}, x_idx样本={x_idx_samples}")
+            self._liq_zero_count = 0
 
-**第三步：宏观过滤器定基调**
-- 系统已提供宏观三因子信号及其权重（恐惧贪婪权重4，Coinbase溢价权重3，稳定币权重3）。
-- **强制裁决规则（你必须严格遵守）**：
-  1. 计算多头方向的总权重：将所有标注“利多”或“偏多”的信号的权重相加。
-  2. 计算空头方向的总权重：将所有标注“利空”或“偏空”的信号的权重相加。
-  3. 比较多空总权重：
-     - 若多头总权重 > 空头总权重 → 必须输出【支持多头】。
-     - 若空头总权重 > 多头总权重 → 必须输出【支持空头】。
-     - 若两者相等且均为0 → 输出【中性】。
-     - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
-- **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
+        max_pain_price = None
+        max_pain_value = 0.0
+        for price, val in pain_map.items():
+            if val > max_pain_value:
+                max_pain_value = val
+                max_pain_price = price
 
-**第四步：信号共振与矛盾裁决**
-- 列举最支持某方向的信号和最矛盾的信号。
-- 应用以下强制裁决规则。
+        nearest_cluster_price = None
+        nearest_cluster_distance = float('inf')
+        for price, val in pain_map.items():
+            if val > 0:
+                distance = abs(price - current_price)
+                if distance < nearest_cluster_distance:
+                    nearest_cluster_distance = distance
+                    nearest_cluster_price = price
 
-**🚨 强制裁决规则（绝对优先级，唯一例外是 extreme_liq=true）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **8分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **8分** → **必须**输出 **short**。
-3. 若第一步结论为【风险预警】，且差值 ≥ **12分** → **必须**输出领先方向。
-4. 若第一步结论为【中性观察】，不触发强制裁决。
+        result["above_short_liquidation"] = f"{total_short:,.0f}"
+        result["below_long_liquidation"] = f"{total_long:,.0f}"
+        if max_pain_price is not None and max_pain_value > 0:
+            result["max_pain_price"] = f"{max_pain_price:.1f}"
+        if nearest_cluster_price is not None:
+            direction = "上" if nearest_cluster_price > current_price else "下"
+            intensity_val = pain_map.get(nearest_cluster_price, 0)
+            intensity = min(5, int(intensity_val / 5000000) + 1) if intensity_val > 0 else 1
+            result["nearest_cluster"] = {
+                "direction": direction,
+                "price": f"{nearest_cluster_price:.1f}",
+                "intensity": str(intensity)
+            }
 
-**⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
-- 一旦满足上述任一强制裁决条件，你**无权**以“风险回报比”、“价格紧贴关键位”、“市场结构矛盾”、“风险第一原则”等**任何理由**拒绝执行。
-- 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
-- **严禁**在满足强制裁决条件时输出 **neutral**。
-- **违规示例（绝对禁止）**：
-  - “虽然满足强制裁决条件，但风险回报比差，我输出 neutral。”
-  - “强制裁决与微观结构矛盾，遵循风险第一原则，选择不执行。”
-  - “差值达标但价格紧贴阻力，综合判断后观望。”
+        return result
 
-**第五步：止损、止盈与入场区间设置**
-- **入场区间**：系统已提供三个候选区间（见下方），你必须按优先级选择一个，并在reasoning中注明所选规则。
-  - 规则1（清算区锚定）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}（锚定：{entry_candidates['rule1']['anchor']}）
-  - 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
-  - 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
-- **止损**：
-  - 优先锚定**同方向强度≥3的清算区外侧**（做多设下方×0.998，做空设上方×1.002）。
-  - 若无，则使用 **2 × 4小时ATR** 止损（做多：入场价 - 2×ATR；做空：入场价 + 2×ATR）。
-- **止盈**（单一目标，严格遵守以下铁律）：
-  - **铁律**：若反方向存在强度≥3的清算区，则**必须直接使用该清算区价格作为止盈**，**严禁**以“距离过近”、“盈亏比不足”等任何理由修改或替换。
-  - 若该清算区导致的盈亏比过低（如<1:1），你应在 `risk_note` 中明确提示“盈亏比偏低，建议轻仓或观望”，但**止盈价必须如实填入清算区价格**。
-  - 只有当反方向**完全不存在**强度≥3的清算区时，才允许使用 2:1盈亏比计算止盈。
-- 在reasoning中明确写出入场、止损、止盈的锚定来源。若止盈使用了清算区，必须注明“止盈锚定X方清算区，盈亏比约X:1”。
+    def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
+        signals = []
 
-### 策略输出格式（严格JSON）
-{{
-  "direction": "long" 或 "short" 或 "neutral",
-  "entry_price_low": 入场区间下限,
-  "entry_price_high": 入场区间上限,
-  "stop_loss": 止损价,
-  "take_profit": 止盈价,
-  "tp_anchor": "止盈锚定来源说明",
-  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明入场、止损、止盈的所选规则。",
-  "risk_note": "风险提示"
-}}
-"""
+        total = curr["above"] + curr["below"]
+        if total > 0:
+            ratio = curr["above"] / total
+            if ratio > 0.65:
+                signals.append(f"清算压力偏空({ratio:.1%})")
+            elif ratio < 0.35:
+                signals.append(f"清算压力偏多({1-ratio:.1%})")
 
+        if prev and curr["max_pain"] > 0 and prev.get("max_pain", 0) > 0:
+            if curr["max_pain"] > prev["max_pain"] * 1.002:
+                signals.append("最大痛点上移↑")
+            elif curr["max_pain"] < prev["max_pain"] * 0.998:
+                signals.append("最大痛点下移↓")
 
-def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
-    for _ in range(max_retries):
+        cluster_price = curr["cluster_price"]
+        atr = curr.get("atr", 1)
+        if cluster_price > 0 and atr > 0:
+            distance_atr = abs(curr["current_price"] - cluster_price) / atr
+            if distance_atr < 0.5 and curr["cluster_intensity"] >= 4:
+                signals.append(f"强磁吸区(距{cluster_price:.0f}, 强度{curr['cluster_intensity']})")
+
+        if prev:
+            prev_total = prev.get("above", 0) + prev.get("below", 0)
+            curr_total = curr["above"] + curr["below"]
+            if prev_total > 0 and curr_total > 0:
+                change_pct = (curr_total - prev_total) / prev_total
+                if change_pct > 0.3:
+                    signals.append(f"清算堆积加速↑({change_pct:.0%})")
+                elif change_pct < -0.3:
+                    signals.append(f"清算堆积衰减↓({-change_pct:.0%})")
+
+        return signals
+
+    def get_liq_zero_count(self) -> int:
+        return self._liq_zero_count
+
+    def get_liq_zero_warning(self) -> str:
+        if self._liq_zero_count >= 2:
+            return "⚠️ 系统告警：连续两次未获取到有效清算数据，已启用备用模型。"
+        return ""
+
+    def get_data_source_status(self) -> str:
+        if self._use_model1_fallback:
+            return "清算数据源：model1（备用）"
+        return "清算数据源：model2（主用）"
+
+    # ---------- 持仓量 ----------
+    def get_open_interest_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/open-interest/history", params, allow_backup=True)
+
+    # ---------- 资金费率 ----------
+    def get_funding_rate_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
+        return self._request("api/futures/funding-rate/history", params, allow_backup=True)
+
+    # ---------- 全局多空比 ----------
+    def get_long_short_ratio_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
+
+    # ---------- 顶级交易员多空比 ----------
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
+
+    # ---------- 期权信息 ----------
+    def get_options_info(self, symbol: str = "BTC"):
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+        return self._request("api/option/info", params, allow_backup=False, silent_fail=True)
+
+    # ---------- 主动买卖量 ----------
+    def get_taker_volume_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/taker-buy-sell-volume/history", params, allow_backup=True)
+
+    # ---------- 期权最大痛点 ----------
+    def get_option_max_pain(self, symbol: str = "BTC"):
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+        return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
+
+    # ---------- CVD ----------
+    def get_cvd_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
+        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+
+    # ---------- 净持仓 ----------
+    def get_net_position_history(self, symbol: str = "BTC"):
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        return self._request("api/futures/v2/net-position/history", params, allow_backup=True, silent_fail=True)
+
+    # ---------- 累计资金费率 ----------
+    def get_accumulated_funding_rate(self, symbol: str = "BTC"):
+        params = {"symbol": symbol.upper(), "range": "24h"}
+        return self._request("api/futures/funding-rate/accumulated-exchange-list", params, allow_backup=False, silent_fail=True)
+
+    # ---------- 聚合主动买卖 ----------
+    def get_aggregated_taker_volume(self, symbol: str = "BTC"):
+        params = {"symbol": symbol.upper(), "interval": "1h", "limit": 24, "exchange_list": "OKX"}
+        return self._request("api/futures/aggregated-taker-buy-sell-volume/history", params, allow_backup=False, silent_fail=True)
+
+    # ---------- 订单簿失衡率 ----------
+    def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
         try:
-            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1200)
-            content = resp.choices[0].message.content
-            js = content[content.find('{'):content.rfind('}') + 1]
-            s = json.loads(js)
-            s.setdefault("tp_anchor", "未提供")
-            return s
+            params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 1}
+            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+                bids_usd = float(latest.get("bids_usd", 0))
+                asks_usd = float(latest.get("asks_usd", 0))
+                total = bids_usd + asks_usd
+                if total > 0:
+                    imbalance = (bids_usd - asks_usd) / total
+                    return {"imbalance": round(imbalance, 4), "bids_usd": bids_usd, "asks_usd": asks_usd}
+            return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
         except Exception as e:
-            logger.warning(f"DeepSeek调用失败: {e}")
-    return {}
+            logger.warning(f"获取订单簿失衡率失败: {e}")
+            return {"imbalance": 0.0, "bids_usd": 0.0, "asks_usd": 0.0}
 
+    # ---------- ETH/BTC 汇率 ----------
+    def get_eth_btc_ratio(self) -> dict:
+        try:
+            params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
+            eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
+            params["symbol"] = "BTCUSDT"
+            btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
+            
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("获取 ETH/BTC 汇率数据不足")
+                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-def validate_strategy(s: dict, price: float) -> bool:
-    if s.get("direction") not in ["long", "short", "neutral"]: return False
-    if s["direction"] == "neutral": return True
-    try:
-        entry_low = float(s.get("entry_price_low", 0))
-        entry_high = float(s.get("entry_price_high", 0))
-        stop = float(s.get("stop_loss", 0))
-        if s["direction"] == "long" and stop >= entry_low: return False
-        if s["direction"] == "short" and stop <= entry_high: return False
-    except: return False
-    return True
+            eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
+            btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
+            
+            if len(eth_close_4) < 4 or len(btc_close_4) < 4:
+                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
+
+            eth_ma = sum(eth_close_4) / 4
+            btc_ma = sum(btc_close_4) / 4
+            ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
+            
+            current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
+            
+            trend = "up" if current_ratio > ma_4h_ratio else "down"
+            
+            logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
+            return {"current_ratio": round(current_ratio, 6), "ma_4h": round(ma_4h_ratio, 6), "trend": trend}
+        except Exception as e:
+            logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
+            return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
+
+    # ---------- 交易所钱包余额 ----------
+    def get_exchange_balances(self) -> dict:
+        try:
+            btc_data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
+            if not isinstance(btc_data, list) or len(btc_data) == 0:
+                return {"btc_flow": "neutral", "stable_flow": "neutral"}
+            
+            stable_data = self._request("api/exchange/balance/list", {"symbol": "USDT(ETH)"}, allow_backup=False, silent_fail=True)
+            
+            btc_total_change = 0.0
+            stable_total_change = 0.0
+            
+            for ex in btc_data:
+                btc_total_change += float(ex.get("balance_change_1d", 0))
+            
+            if isinstance(stable_data, list):
+                for ex in stable_data:
+                    stable_total_change += float(ex.get("balance_change_1d", 0))
+            
+            btc_flow = "in" if btc_total_change > 10 else ("out" if btc_total_change < -10 else "neutral")
+            stable_flow = "in" if stable_total_change > 1000000 else ("out" if stable_total_change < -1000000 else "neutral")
+            
+            logger.info(f"交易所余额: BTC净变动={btc_total_change:.0f} ({btc_flow}), 稳定币净变动={stable_total_change:.0f} ({stable_flow})")
+            return {"btc_flow": btc_flow, "stable_flow": stable_flow, "btc_change": btc_total_change, "stable_change": stable_total_change}
+        except Exception as e:
+            logger.warning(f"获取交易所余额失败: {e}")
+            return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
+
+    # ---------- 因子一：恐惧贪婪指数 ----------
+    def get_fear_greed_index(self) -> dict:
+        try:
+            import requests
+            logger.info("尝试从 alternative.me 获取恐惧贪婪指数...")
+            resp = requests.get("https://api.alternative.me/fng/?limit=2", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(f"alternative.me 响应数据: {data}")
+                if data.get("data") and len(data["data"]) >= 2:
+                    current = int(data["data"][0]["value"])
+                    prev = int(data["data"][1]["value"])
+                    classification = data["data"][0]["value_classification"]
+                    logger.info(f"✅ 恐惧贪婪指数 (alternative.me): 当前={current}, 昨日={prev}")
+                    return {"current": current, "prev": prev, "classification": classification}
+                elif data.get("data") and len(data["data"]) == 1:
+                    current = int(data["data"][0]["value"])
+                    classification = data["data"][0]["value_classification"]
+                    logger.info(f"✅ 恐惧贪婪指数 (alternative.me): 当前={current}, 昨日无数据")
+                    return {"current": current, "prev": current, "classification": classification}
+                else:
+                    logger.warning(f"alternative.me 返回数据格式异常: {data}")
+            else:
+                logger.warning(f"alternative.me 请求失败，状态码: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"alternative.me 请求异常: {e}")
+
+        try:
+            logger.info("尝试从 CoinGlass 获取恐惧贪婪指数...")
+            cg_data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
+            logger.info(f"CoinGlass 恐惧贪婪原始响应: {cg_data}")
+            if cg_data and isinstance(cg_data, list) and len(cg_data) >= 2:
+                current = int(cg_data[0].get("value", 50))
+                prev = int(cg_data[1].get("value", 50))
+                classification = cg_data[0].get("value_classification", "Neutral")
+                logger.info(f"✅ 恐惧贪婪指数 (CoinGlass): 当前={current}, 昨日={prev}")
+                return {"current": current, "prev": prev, "classification": classification}
+            else:
+                logger.warning("CoinGlass 恐惧贪婪数据不足或格式错误")
+        except Exception as e:
+            logger.warning(f"CoinGlass 恐惧贪婪请求异常: {e}")
+
+        logger.error("❌ 所有恐惧贪婪指数数据源均失败，使用默认值 50")
+        return {"current": 50, "prev": 50, "classification": "Neutral", "error": True}
+
+    # ---------- 因子二：Coinbase 溢价指数 ----------
+    def get_coinbase_premium(self, btc_price: float = None) -> dict:
+        try:
+            params = {"interval": "1h"}
+            logger.info("尝试获取 Coinbase 溢价指数...")
+            data = self._request("api/coinbase-premium-index", params, allow_backup=False, silent_fail=True)
+            logger.info(f"Coinbase 溢价原始响应: {data[:2] if isinstance(data, list) else data}")
+            if not data:
+                logger.warning("Coinbase 溢价返回空数据")
+                return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
+            
+            if isinstance(data, dict):
+                raw_premium = float(data.get("premium", 0))
+            elif isinstance(data, list) and len(data) > 0:
+                latest = data[-1] if isinstance(data[-1], dict) else data[0]
+                if isinstance(latest, dict):
+                    raw_premium = float(latest.get("premium", 0))
+                else:
+                    raw_premium = float(latest) if isinstance(latest, (int, float)) else 0.0
+            else:
+                raw_premium = 0.0
+            
+            if btc_price and btc_price > 0:
+                premium_pct = (raw_premium / btc_price) * 100
+            else:
+                premium_pct = raw_premium
+            
+            logger.info(f"✅ Coinbase 溢价: {premium_pct:.4f}% (原始值: {raw_premium})")
+            return {"premium_pct": premium_pct, "premium_usd": raw_premium}
+        except Exception as e:
+            logger.warning(f"获取 Coinbase 溢价指数失败: {e}")
+            return {"premium_pct": 0.0, "premium_usd": 0.0, "error": True}
+
+    # ---------- 因子三：稳定币市值变化 ----------
+    def get_stablecoin_market_cap_change(self) -> dict:
+        try:
+            logger.info("尝试获取稳定币市值变化...")
+            data = self._request("api/index/stableCoin-marketCap-history", {}, allow_backup=False, silent_fail=True)
+            logger.info(f"稳定币市值原始响应类型: {type(data)}")
+            if not data:
+                logger.warning("稳定币市值返回空数据")
+                return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+            
+            data_list = data.get("data_list", [])
+            if not data_list:
+                if isinstance(data, list):
+                    data_list = data
+                else:
+                    logger.warning("稳定币市值数据格式未知")
+                    return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+            
+            if len(data_list) < 7:
+                logger.warning(f"稳定币市值数据不足7条，实际 {len(data_list)} 条")
+                return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+            
+            def get_total_mcap(item):
+                if isinstance(item, dict):
+                    return sum(float(v) for v in item.values())
+                return 0.0
+            
+            current = get_total_mcap(data_list[-1])
+            prev_index = -8 if len(data_list) >= 8 else 0
+            prev_7d = get_total_mcap(data_list[prev_index])
+            
+            change_7d = ((current - prev_7d) / prev_7d * 100) if prev_7d > 0 else 0.0
+            logger.info(f"✅ 稳定币市值变化: {change_7d:.2f}% (当前: {current:.0f}, 7日前: {prev_7d:.0f})")
+            return {"change_7d": change_7d, "current_mcap": current}
+        except Exception as e:
+            logger.warning(f"获取稳定币市值变化失败: {e}")
+            return {"change_7d": 0.0, "current_mcap": 0.0, "error": True}
+
+    @staticmethod
+    def _get_close_from_candle(candle) -> float:
+        if isinstance(candle, list) and len(candle) >= 5:
+            return float(candle[4])
+        elif isinstance(candle, dict):
+            return float(candle.get("close", 0))
+        return 0.0
+
+    @staticmethod
+    def _get_buy_sell_volumes(candle):
+        if isinstance(candle, dict):
+            buy = float(candle.get("taker_buy_volume_usd", 0))
+            sell = float(candle.get("taker_sell_volume_usd", 0))
+            return buy, sell
+        return 0.0, 0.0
+
+    @staticmethod
+    def _get_aggregated_buy_sell_volumes(candle):
+        if isinstance(candle, dict):
+            buy = float(candle.get("aggregated_buy_volume_usd", 0))
+            sell = float(candle.get("aggregated_sell_volume_usd", 0))
+            return buy, sell
+        return 0.0, 0.0
+
+    def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
+        return 1.0
+
+    def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
+        if current_price is None:
+            current_price = 70000.0
+
+        data = {}
+
+        heatmap_raw = self.get_liquidation_heatmap(symbol)
+        liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
+        data.update(liq_data)
+
+        prev = self._prev_liq_data.get(symbol, {})
+        curr = {
+            "above": float(str(data.get("above_short_liquidation", "0")).replace(",", "")),
+            "below": float(str(data.get("below_long_liquidation", "0")).replace(",", "")),
+            "max_pain": float(data.get("max_pain_price", 0)) if data.get("max_pain_price") != "N/A" else 0,
+            "cluster_price": float(data["nearest_cluster"]["price"]) if data["nearest_cluster"]["price"] != "N/A" else 0,
+            "cluster_intensity": int(data["nearest_cluster"]["intensity"]) if data["nearest_cluster"]["intensity"] != "N/A" else 0,
+            "current_price": current_price,
+            "atr": atr if atr else 1.0
+        }
+        dynamic_signals = self._calculate_liq_dynamics(curr, prev)
+        data["liq_dynamic_signals"] = dynamic_signals
+        self._prev_liq_data[symbol] = curr
+
+        oi_history = self.get_open_interest_history(symbol)
+        if not isinstance(oi_history, list) or len(oi_history) < 2:
+            raise RuntimeError("持仓量数据不足，无法计算24h变化")
+        last_close = self._get_close_from_candle(oi_history[-1])
+        prev_close = self._get_close_from_candle(oi_history[-2])
+        if prev_close <= 0:
+            raise RuntimeError("持仓量数据异常，前值非正")
+        oi_change = f"{((last_close - prev_close) / prev_close * 100):.2f}%"
+        data["oi_change_24h"] = oi_change
+
+        funding_history = self.get_funding_rate_history(symbol)
+        if not isinstance(funding_history, list) or len(funding_history) == 0:
+            raise RuntimeError("资金费率数据为空")
+        funding_rate = self._get_close_from_candle(funding_history[-1])
+        data["funding_rate"] = funding_rate
+
+        ls_history = self.get_long_short_ratio_history(symbol)
+        if not isinstance(ls_history, list) or len(ls_history) == 0:
+            raise RuntimeError("全局多空比数据为空")
+        ls_ratio = self._get_close_from_candle(ls_history[-1])
+        data["long_short_ratio"] = ls_ratio
+        data["ls_account_ratio"] = ls_ratio
+
+        if symbol.upper() in ("BTC", "ETH"):
+            top_ls_history = self.get_top_long_short_ratio_history(symbol)
+            if not isinstance(top_ls_history, list) or len(top_ls_history) == 0:
+                raise RuntimeError("顶级交易员多空比数据为空")
+            latest = top_ls_history[-1]
+            if isinstance(latest, dict):
+                top_ls_ratio = latest.get("top_account_long_short_ratio")
+                if top_ls_ratio is None:
+                    raise RuntimeError("顶级交易员多空比字段缺失")
+            else:
+                raise RuntimeError("顶级交易员多空比数据格式异常")
+            data["top_long_short_ratio"] = top_ls_ratio
+        else:
+            logger.info(f"顶级交易员多空比接口不支持 {symbol}，将跳过此数据项")
+            data["top_long_short_ratio"] = "N/A"
+
+        try:
+            options_info = self.get_options_info(symbol)
+            if not isinstance(options_info, list) or len(options_info) == 0:
+                raise RuntimeError("期权信息数据为空")
+            first = options_info[0]
+            if not isinstance(first, dict):
+                raise RuntimeError("期权信息数据格式异常")
+            oi_usd = first.get("open_interest_usd")
+            if oi_usd is None:
+                raise RuntimeError("期权持仓价值字段缺失")
+            data["option_oi_usd"] = oi_usd
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 期权信息获取失败: {e}，将跳过此数据项")
+                data["option_oi_usd"] = "N/A"
+            else:
+                raise
+        data["put_call_ratio"] = "N/A"
+        data["implied_volatility"] = "N/A"
+
+        taker_history = self.get_taker_volume_history(symbol)
+        if not isinstance(taker_history, list) or len(taker_history) == 0:
+            raise RuntimeError("主动买卖量数据为空")
+        buy_vol, sell_vol = self._get_buy_sell_volumes(taker_history[-1])
+        total = buy_vol + sell_vol
+        if total <= 0:
+            raise RuntimeError("主动买卖量数据无效")
+        taker_ratio = f"{(buy_vol / total):.2f}"
+        data["taker_ratio"] = taker_ratio
+
+        try:
+            max_pain_data = self.get_option_max_pain(symbol)
+            skew_value = None
+            if isinstance(max_pain_data, list) and len(max_pain_data) > 0:
+                latest = max_pain_data[-1]
+                if isinstance(latest, dict):
+                    skew_value = latest.get("max_pain_price")
+            if skew_value is None:
+                raise RuntimeError("期权最大痛点数据缺失")
+            data["skew"] = skew_value
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 期权最大痛点获取失败: {e}，将跳过此数据项")
+                data["skew"] = "N/A"
+            else:
+                raise
+
+        cvd_history = self.get_cvd_history(symbol)
+        if not isinstance(cvd_history, list) or len(cvd_history) < 30:
+            raise RuntimeError("CVD 数据不足，无法计算斜率")
+        recent = cvd_history[-30:]
+        values = []
+        for item in recent:
+            if isinstance(item, list) and len(item) >= 5:
+                values.append(float(item[4]))
+            elif isinstance(item, dict):
+                values.append(float(item.get("close", 0)))
+            else:
+                raise RuntimeError("CVD 数据格式异常")
+        if len(values) < 2:
+            raise RuntimeError("CVD 有效数据点不足")
+        n = len(values)
+        x_mean = (n - 1) / 2
+        y_mean = sum(values) / n
+        numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
+        denominator = sum((i - x_mean) ** 2 for i in range(n))
+        if denominator == 0:
+            raise RuntimeError("CVD 斜率计算分母为零")
+        slope = numerator / denominator
+        cvd_slope = round(slope, 4)
+        if slope > 10:
+            cvd_signal = "bullish"
+        elif slope > 2:
+            cvd_signal = "slightly_bullish"
+        elif slope < -10:
+            cvd_signal = "bearish"
+        elif slope < -2:
+            cvd_signal = "slightly_bearish"
+        else:
+            cvd_signal = "neutral"
+        data["cvd_signal"] = cvd_signal
+        data["cvd_slope"] = cvd_slope
+
+        try:
+            net_pos_history = self.get_net_position_history(symbol)
+            if not isinstance(net_pos_history, list) or len(net_pos_history) == 0:
+                raise RuntimeError("净持仓数据为空")
+            latest = net_pos_history[-1]
+            if isinstance(latest, dict):
+                net_position_cum = latest.get("net_position_change_cum")
+                if net_position_cum is None:
+                    raise RuntimeError("净持仓累积字段缺失")
+                data["net_position_cum"] = round(float(net_position_cum), 2)
+            else:
+                raise RuntimeError("净持仓数据格式异常")
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 净持仓数据获取失败: {e}，将跳过")
+                data["net_position_cum"] = "N/A"
+            else:
+                raise
+
+        try:
+            acc_funding = self.get_accumulated_funding_rate(symbol)
+            okx_funding = "N/A"
+            if isinstance(acc_funding, list) and len(acc_funding) > 0:
+                for item in acc_funding:
+                    if isinstance(item, dict) and item.get("symbol") == symbol.upper():
+                        stable_list = item.get("stablecoin_margin_list", [])
+                        for ex in stable_list:
+                            if ex.get("exchange") == "OKX":
+                                okx_funding = ex.get("funding_rate")
+                                break
+                        break
+            data["accumulated_funding_rate"] = okx_funding if okx_funding is not None else "N/A"
+        except Exception as e:
+            logger.warning(f"累计资金费率获取失败: {e}")
+            data["accumulated_funding_rate"] = "N/A"
+
+        try:
+            agg_taker = self.get_aggregated_taker_volume(symbol)
+            if not isinstance(agg_taker, list) or len(agg_taker) == 0:
+                raise RuntimeError("聚合主动买卖数据为空")
+            latest_agg = agg_taker[-1]
+            if isinstance(latest_agg, dict):
+                buy_agg, sell_agg = self._get_aggregated_buy_sell_volumes(latest_agg)
+                total_agg = buy_agg + sell_agg
+                if total_agg <= 0:
+                    raise RuntimeError("聚合主动买卖数据无效")
+                agg_taker_ratio = f"{(buy_agg / total_agg):.2f}"
+                data["aggregated_taker_ratio"] = agg_taker_ratio
+            else:
+                raise RuntimeError("聚合主动买卖数据格式异常")
+        except RuntimeError as e:
+            if symbol.upper() == "SOL":
+                logger.warning(f"SOL 聚合主动买卖数据获取失败: {e}，将跳过")
+                data["aggregated_taker_ratio"] = "N/A"
+            else:
+                raise
+
+        orderbook_data = self.get_orderbook_imbalance(symbol)
+        data["orderbook_imbalance"] = orderbook_data.get("imbalance", 0.0)
+        data["orderbook_bids_usd"] = orderbook_data.get("bids_usd", 0.0)
+        data["orderbook_asks_usd"] = orderbook_data.get("asks_usd", 0.0)
+
+        data["eth_btc_ratio"] = self.get_eth_btc_ratio()
+
+        return data
