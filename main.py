@@ -6,7 +6,7 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-from data_fetcher.macro_cache import get_macro_data
+from data_fetcher.macro_cache import get_macro_data  # 仅用于数据快照展示
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
@@ -107,49 +107,50 @@ def get_key_levels(coinglass_data: dict, ema55: float) -> dict:
     return {"support": support, "resistance": resistance}
 
 
-def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_price: float) -> dict:
+def compute_macro_three_factor_score(cg: CoinGlassClient, btc_price: float) -> dict:
     bull_score = 0
     bear_score = 0
     signals = []
     
+    # 因子一：恐惧贪婪指数（实时获取）
     fg = cg.get_fear_greed_index()
     fg_current = fg.get("current", 50)
-    fg_prev = fg.get("prev", fg_current)  # 兜底：若无昨日值，默认等于当前值
+    fg_prev = fg.get("prev", fg_current)
     
     if fg_current <= 30:
         if fg_current > fg_prev:
             bull_score += 4
-            signals.append(f"极恐反弹(利多, {fg_current}↑{fg_prev})")
+            signals.append({"text": f"极恐反弹({fg_current}↑{fg_prev})", "direction": "利多", "weight": 4})
         else:
             bull_score += 2
-            signals.append(f"极恐钝化(偏多, {fg_current}≤{fg_prev})")
+            signals.append({"text": f"极恐钝化({fg_current}≤{fg_prev})", "direction": "偏多", "weight": 2})
     elif fg_current >= 70:
         if fg_current > fg_prev:
             bear_score += 3
-            signals.append(f"贪婪加速(利空, {fg_current}↑{fg_prev})")
+            signals.append({"text": f"贪婪加速({fg_current}↑{fg_prev})", "direction": "利空", "weight": 3})
         else:
             bear_score += 1
-            signals.append(f"贪婪筑顶(偏空, {fg_current}≤{fg_prev})")
+            signals.append({"text": f"贪婪筑顶({fg_current}≤{fg_prev})", "direction": "偏空", "weight": 1})
     
+    # 因子二：Coinbase溢价指数
     premium_data = cg.get_coinbase_premium(btc_price=btc_price)
     premium_pct = premium_data.get("premium_pct", 0.0)
-    
     if premium_pct > 0.15:
         bull_score += 3
-        signals.append(f"Coinbase溢价(利多, {premium_pct:.2f}%)")
+        signals.append({"text": f"Coinbase溢价({premium_pct:.2f}%)", "direction": "利多", "weight": 3})
     elif premium_pct < -0.15:
         bear_score += 3
-        signals.append(f"Coinbase折价(利空, {premium_pct:.2f}%)")
+        signals.append({"text": f"Coinbase折价({premium_pct:.2f}%)", "direction": "利空", "weight": 3})
     
+    # 因子三：稳定币市值变化
     stable_data = cg.get_stablecoin_market_cap_change()
     change_7d = stable_data.get("change_7d", 0.0)
-    
     if change_7d > 1.0:
         bull_score += 3
-        signals.append(f"稳定币增发(利多, {change_7d:.2f}%)")
+        signals.append({"text": f"稳定币增发({change_7d:.2f}%)", "direction": "利多", "weight": 3})
     elif change_7d < -1.0:
         bear_score += 3
-        signals.append(f"稳定币赎回(利空, {-change_7d:.2f}%)")
+        signals.append({"text": f"稳定币赎回({-change_7d:.2f}%)", "direction": "利空", "weight": 3})
     
     total = bull_score + bear_score
     macro_component = round(total / 10 * 12) if total > 0 else 0
@@ -166,7 +167,7 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, macro_data: dict, btc_
     }
 
 
-def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float) -> dict:
+def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float) -> dict:
     bull_score = 0
     bear_score = 0
     
@@ -234,7 +235,7 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, macro_data:
         pass
     
     # 6. 宏观三因子（12分）
-    macro_result = compute_macro_three_factor_score(cg, macro_data, btc_price)
+    macro_result = compute_macro_three_factor_score(cg, btc_price)
     bull_score += macro_result["macro_bull_contribution"]
     bear_score += macro_result["macro_bear_contribution"]
     
@@ -361,7 +362,7 @@ def main():
         if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
         volatility_factor = cg.calculate_volatility_factor(symbol)
-        macro = get_macro_data()
+        macro = get_macro_data()  # 仅用于数据快照展示
 
         cvd_signal = cg_data.get("cvd_signal", "neutral")
         taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
@@ -369,7 +370,7 @@ def main():
 
         trend_info = calculate_trend_strength(klines, cvd_signal, taker_ratio, price, atr, liq_dynamic_signals)
         key_levels = get_key_levels(cg_data, ema55)
-        directional_scores = compute_directional_scores_v2(symbol, cg_data, macro, trend_info, cg, price)
+        directional_scores = compute_directional_scores_v2(symbol, cg_data, trend_info, cg, price)
 
         above_val = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
