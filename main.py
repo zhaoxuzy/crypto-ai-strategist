@@ -6,7 +6,7 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-from data_fetcher.macro_cache import get_macro_data  # 仅用于数据快照展示
+from data_fetcher.macro_cache import get_macro_data
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
@@ -362,7 +362,7 @@ def main():
         if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
         volatility_factor = cg.calculate_volatility_factor(symbol)
-        macro = get_macro_data()  # 仅用于数据快照展示
+        macro = get_macro_data()
 
         cvd_signal = cg_data.get("cvd_signal", "neutral")
         taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
