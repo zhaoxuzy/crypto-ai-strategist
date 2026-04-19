@@ -4,7 +4,8 @@ import re
 from openai import OpenAI
 from utils.logger import logger
 
-# ==================== 原有辅助函数（保持不变） ====================
+
+# ==================== 原有辅助函数 ====================
 def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
     if low == high:
         return 0.0
@@ -182,6 +183,7 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     return {"level": level, "score": round(score, 1), "max_score": 100, "details": det, "confidence_grade": confidence_grade}
 
 
+# ==================== 原有 build_prompt（完整保留） ====================
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
@@ -190,9 +192,252 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  liq_dynamic_signals: list = None,
                  threshold_bull_bear: int = 8, threshold_warning: int = 12,
                  tp_candidates: dict = None) -> str:
-    # 该函数与您原有 build_prompt 完全一致，此处省略以节省篇幅
-    # 实际使用时请将原函数完整粘贴在此处
-    pass
+    fg = macro_data.get("fear_greed", {})
+    cluster = coinglass_data.get("nearest_cluster", {})
+    liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
+    option_pain = coinglass_data.get("skew", "N/A")
+    warning_text = f"\n{liq_warning}\n" if liq_warning else ""
+    data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
+    extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n" if extreme_liq else "")
+
+    bull_score = directional_scores.get("bull", 0) if directional_scores else 0
+    bear_score = directional_scores.get("bear", 0) if directional_scores else 0
+    diff = abs(bull_score - bear_score)
+    higher_direction = "多头" if bull_score > bear_score else "空头"
+
+    macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
+    macro_signal_lines = []
+    for s in macro_signals:
+        macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
+    macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
+
+    liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无显著动态信号"
+
+    bal_text = ""
+    if exchange_balances:
+        btc_flow = exchange_balances.get("btc_flow", "neutral")
+        stable_flow = exchange_balances.get("stable_flow", "neutral")
+        bal_text = f"BTC 24h净变动: {exchange_balances.get('btc_change', 0):.0f} ({btc_flow})，稳定币24h净变动: {exchange_balances.get('stable_change', 0):.0f} ({stable_flow})"
+
+    trend_desc = ""
+    if trend_info:
+        dir_t = trend_info.get('direction', 'neutral')
+        score_t = trend_info.get('score', 0)
+        conf_t = trend_info.get('confidence', '低')
+        signals_t = ", ".join(trend_info.get('signals', []))
+        trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
+        if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
+
+    if entry_candidates is None:
+        entry_candidates = {
+            "rule1": {"low": 0.0, "high": 0.0, "anchor": "无"},
+            "rule2": {"low": 0.0, "high": 0.0, "anchor": "无"},
+            "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
+        }
+
+    if tp_candidates is None:
+        tp_candidates = {
+            "rule1": {"price": 0.0, "anchor": "无"},
+            "rule2": {"price": 0.0, "anchor": "无"},
+            "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
+        }
+
+    eth_btc = coinglass_data.get("eth_btc_ratio", {})
+    eth_btc_trend = eth_btc.get('trend', 'N/A')
+    eth_btc_ratio = eth_btc.get('current_ratio', 0.0)
+
+    raw_view = coinglass_data.get("raw_view", {})
+
+    # 清算分布表
+    liq_profile = raw_view.get("liquidation_profile", [])
+    liq_profile_lines = []
+    for item in liq_profile[:15]:
+        dir_symbol = "⬆️" if item["direction"] == "above" else "⬇️"
+        liq_profile_lines.append(
+            f"| {item['price']:.2f} | {dir_symbol} {item['effect']} | {item['intensity']:.2f} | {item['distance_atr']:+.2f} |"
+        )
+    liq_profile_table = "\n".join(liq_profile_lines) if liq_profile_lines else "无清算数据"
+
+    top_3_zones = raw_view.get("top_3_liquidation_zones", [])
+    top_3_lines = []
+    for i, zone in enumerate(top_3_zones, 1):
+        top_3_lines.append(
+            f"{i}. {zone['price']:.2f} ({zone['effect']})，强度 {zone['intensity']:.2f}，距现价 {zone['distance_atr']:+.2f} ATR"
+        )
+    top_3_summary = "\n".join(top_3_lines) if top_3_lines else "无明显清算聚集区"
+
+    cvd_valid = raw_view.get("cvd_valid", False)
+    cvd_series = raw_view.get("cvd_series_1m", [])
+    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效（该币种无CVD数据，跳过分析）"
+
+    ls_valid = raw_view.get("ls_valid", False)
+    ls_series = raw_view.get("ls_ratio_series_1h", [])
+    ls_series_str = str(ls_series) if ls_valid else "数据无效（全为0）"
+
+    taker_series = raw_view.get("taker_ratio_series_1h", [])
+    taker_series_str = str(taker_series) if taker_series else "无数据"
+
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，进行独立的、深度的专业研判。
+
+⚠️ **核心要求**：
+- 你必须**亲自分析原始数据**，而非依赖系统给出的定性标签。
+- 你的分析必须包含**具体数值引用**和**对比判断**。
+- 你拥有最终裁决权，系统建议只作参考，必须在分析中给出明确理由。
+
+{warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
+
+### 核心市场数据
+**价格与波动**
+- 当前价格：{price} USDT
+- 4小时ATR：{atr} USDT
+- 波动因子：{volatility_factor:.2f}（>1.3高波，<0.7低波）
+
+**清算压力**
+- 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
+- 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
+- 清算最大痛点：{liq_max_pain} USDT
+- 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
+- **清算动态信号**：{liq_dynamic_text}
+
+**多空博弈**
+- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（>0.05%多头拥挤，<-0.03%空头拥挤）
+- 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
+- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}（>0.55买盘主动，<0.45卖盘主动）
+- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}（<0.7偏多，>2.0偏空）
+- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}（>0主力累积多头，<0主力累积空头）
+- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优）
+
+**资金流向**
+- CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
+- **交易所钱包余额**：{bal_text}
+
+**期权与宏观**
+- 期权最大痛点：{option_pain} USDT
+- 恐惧贪婪指数：{fg.get('value', '50')} (前值：{fg.get('prev', '50')})
+- **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
+- **宏观三因子信号**：
+{macro_signals_text}
+
+**量化参考（供辅助决策）**
+- 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
+- 系统信号评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
+
+### 📁 原始数据视图（你必须深入分析）
+
+**清算强度分布（价格 → 原始强度 → 距现价 ATR）**
+| 价格 | 作用 | 原始强度 | 距现价(ATR) |
+|------|------|----------|-------------|
+{liq_profile_table}
+
+**🔥 前三强清算区（按强度排序）**
+{top_3_summary}
+
+> ⚠️ 注：原始强度值为 CoinGlass 提供的相对量纲，数值越大代表清算压力越集中，并非美元名义金额。
+
+**CVD 序列（最近 60 分钟，1 分钟粒度，单位：千美元）**
+`{cvd_series_str}`
+
+**多空账户人数比（最近 6 小时，1 小时间隔）**
+`{ls_series_str}`
+
+**主动买卖比率（最近 6 小时，1 小时间隔）**
+`{taker_series_str}`
+
+---
+
+### 🔬 强制数据深潜任务（你必须完成，否则输出无效）
+
+**首先，评估数据质量**（在第一条观察中声明）：
+- CVD 序列是否有效？若无效，则 CVD 分析跳过。
+- 多空比序列是否全为 0？若是，则多空比分析无效。
+- 系统清算动态信号是否能在分布表中找到对应价格？若找不到，以分布表为准。
+
+**然后，逐项完成以下观察**（每条以 🔍 开头，必须包含具体数值）：
+
+1. **清算不对称的精确量化**  
+   - 计算：上方空头清算总额 ÷ 下方多头清算总额 = ？  
+   - 判断：该比值是否 ≥ 2.0（显著偏空）或 ≤ 0.5（显著偏多）？  
+   - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
+
+2. **CVD 序列的趋势与背离分析**（若数据无效则注明“数据无效，跳过”）  
+   - 观察 `cum_vol_delta` 序列的整体趋势，判断是持续为正（买方主导）、持续为负（卖方主导）还是多空拉锯。  
+   - 检查序列的**变化率**：如果正值在减小或负值在扩大，说明买方动能可能正在衰竭。  
+   - **核心任务**：对比 CVD 趋势与价格走势，判断是否存在**背离**（如价格创新高但 CVD 走平或下降，是潜在反转信号）。
+
+3. **持仓结构的矛盾挖掘**（若多空比序列无效，则仅使用顶级交易员和净持仓）  
+   - 对比顶级交易员多空比与净持仓累积的方向一致性。
+
+4. **清算动态信号的验证**  
+   - 系统信号是否在分布表中存在？若不存在，以分布表为准重新评估关键位。
+
+5. **宏观因子的边际变化**  
+   - 恐惧贪婪指数较昨日变化了多少？稳定币市值 7 日变化率是否超过 ±1%？
+
+**最终裁决要求**：
+你需要以顶尖交易员的身份，以清算动力学、多空博弈分析及量化技术分析方面的专业性对上面的数据全面复盘后给出策略，你必须用单独一行写一个【最终裁决】段落，格式为：
+`【最终裁决】综合以上分析，我决定输出 [long/short/neutral]，理由：...`
+
+**输出要求**：以上内容全部整合进 `analysis_summary` 字段。
+
+---
+
+### ⚖️ 裁决指引（你拥有最终决定权）
+
+系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
+
+**你的权力**：你可以采纳或否决，必须独立裁决。必须在 `analysis_summary` 中给出明确理由。
+
+---
+
+### 🎯 入场、止损与止盈设置
+
+**入场区间候选**：
+- 规则1（清算区）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}
+- 规则2（关键位）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}
+- 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}
+
+**止盈候选**：
+- 候选A：{tp_candidates['rule1']['price']:.1f}（{tp_candidates['rule1']['anchor']}）
+- 候选B：{tp_candidates['rule2']['price']:.1f}（{tp_candidates['rule2']['anchor']}）
+- 候选C：{tp_candidates['rule3']['price']:.1f}（{tp_candidates['rule3']['anchor']}）
+
+你可在候选C的 ±0.3×ATR 内微调。
+
+---
+
+### 策略输出格式（严格JSON）
+
+**请直接输出纯 JSON，不要用 ```json 代码块包裹。**
+
+{{
+  "direction": "long" 或 "short" 或 "neutral",
+  "confidence": "high" 或 "medium" 或 "low",
+  "entry_price_low": 入场区间下限,
+  "entry_price_high": 入场区间上限,
+  "stop_loss": 止损价,
+  "take_profit": 止盈价,
+  "tp_anchor": "止盈锚定来源说明",
+  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头。末尾包含【最终裁决】段落。",
+  "trader_commentary": "交易员主观备注（可选）",
+  "risk_note": "风险提示"
+}}
+"""
+
+
+# ==================== 原有调用函数 ====================
+def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
+    """
+    原单阶段调用函数，已弃用。请使用 call_deepseek_enhanced。
+    """
+    raise NotImplementedError("请使用 call_deepseek_enhanced 并传入结构化参数")
+
+
+def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
+    """
+    原策略验证函数，保留以供兼容。
+    """
+    is_valid, _ = validate_strategy_enhanced(s, price, atr)
+    return is_valid
 
 
 # ==================== 新增：审计与验证函数 ====================
@@ -286,7 +531,6 @@ def build_analysis_prompt(symbol: str, price: float, atr: float, coinglass_data:
     第一阶段：生成深度分析文本，末尾包含审计追踪。
     基于原有 build_prompt，但去除 JSON 输出部分，并增加审计要求。
     """
-    # 直接调用原有 build_prompt 获取大部分内容，然后稍作修改
     base_prompt = build_prompt(
         symbol, price, atr, coinglass_data, macro_data, profile, volatility_factor,
         trend_info, extreme_liq, liq_warning, data_source_status, directional_scores,
@@ -294,8 +538,7 @@ def build_analysis_prompt(symbol: str, price: float, atr: float, coinglass_data:
         threshold_bull_bear, threshold_warning, tp_candidates
     )
 
-    # 移除原有的 JSON 输出部分，并添加审计任务
-    # 查找 "### 策略输出格式（严格JSON）" 并截断
+    # 移除原有的 JSON 输出部分
     json_start = base_prompt.find("### 策略输出格式（严格JSON）")
     if json_start != -1:
         base_prompt = base_prompt[:json_start].strip()
@@ -352,6 +595,12 @@ def call_deepseek_enhanced(symbol: str, price: float, atr: float, coinglass_data
                            tp_candidates: dict = None) -> dict:
     """
     两阶段调用，包含审计和 neutral 惩罚逻辑。
+    返回格式：
+        - direction, confidence, entry_price_low, entry_price_high, stop_loss, take_profit,
+          tp_anchor, analysis_summary, trader_commentary, risk_note
+        - audit_passed: bool
+        - audit_discrepancies: list
+        - signal_weight: float (0~1)
     """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=60.0)
 
@@ -480,19 +729,3 @@ def validate_strategy_enhanced(s: dict, price: float, atr: float = None) -> tupl
         logger.warning(f"盈亏比偏低: {reward/risk:.2f} (建议≥1.5)")
 
     return True, ""
-
-
-# ==================== 兼容旧接口（可选） ====================
-def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
-    """
-    原 call_deepseek 函数已弃用，请改用 call_deepseek_enhanced。
-    """
-    raise NotImplementedError("请使用 call_deepseek_enhanced 并传入结构化参数")
-
-
-def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
-    """
-    原 validate_strategy 函数，保持可用。
-    """
-    is_valid, _ = validate_strategy_enhanced(s, price, atr)
-    return is_valid
