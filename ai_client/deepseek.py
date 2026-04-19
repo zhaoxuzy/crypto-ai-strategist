@@ -232,7 +232,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ⚠️ **核心要求**：
 - 你必须**亲自分析原始数据**，而非依赖系统给出的定性标签。
 - 你的分析必须包含**具体数值引用**和**对比判断**。
-- 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
+- 你拥有最终裁决权，系统建议只作参考，必须在分析中给出明确理由。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
@@ -324,7 +324,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - 恐惧贪婪指数较昨日变化了多少？稳定币市值 7 日变化率是否超过 ±1%？
 
 **最终裁决要求**：
-在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
+你需要以顶尖交易员的身份，以清算动力学、多空博弈分析及量化技术分析方面的专业性对上面的数据全面复盘后给出策略，你必须用单独一行写一个【最终裁决】段落，格式为：
 `【最终裁决】综合以上分析，我决定输出 [long/short/neutral]，理由：...`
 
 **输出要求**：以上内容全部整合进 `analysis_summary` 字段。
@@ -335,7 +335,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
 
-**你的权力**：你可以采纳或否决。否决时必须在 `analysis_summary` 中给出明确理由。
+**你的权力**：你可以采纳或否决，必须独立裁决。必须在 `analysis_summary` 中给出明确理由。
 
 ---
 
