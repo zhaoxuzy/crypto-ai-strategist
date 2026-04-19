@@ -192,17 +192,38 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
         }
 
-    # 从 coinglass_data 中提取 ETH/BTC 汇率数据
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
     eth_btc_trend = eth_btc.get('trend', 'N/A')
     eth_btc_ratio = eth_btc.get('current_ratio', 0.0)
 
-    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
+    # 格式化原始数据视图
+    raw_view = coinglass_data.get("raw_view", {})
+    
+    # 清算分布表
+    liq_profile_lines = []
+    for item in raw_view.get("liquidation_profile", [])[:15]:  # 最多显示15行
+        dir_symbol = "⬆️" if item["direction"] == "above" else "⬇️"
+        liq_profile_lines.append(f"| {item['price']:.1f} | {dir_symbol} | {item['intensity']:.2f} |")
+    liq_profile_table = "\n".join(liq_profile_lines) if liq_profile_lines else "无清算数据"
+    
+    # CVD序列
+    cvd_series = raw_view.get("cvd_series_1m", [])
+    cvd_series_str = str(cvd_series) if cvd_series else "无数据"
+    
+    # 多空比序列
+    ls_series = raw_view.get("ls_ratio_series_1h", [])
+    ls_series_str = str(ls_series) if ls_series else "无数据"
+    
+    # 主动买卖序列
+    taker_series = raw_view.get("taker_ratio_series_1h", [])
+    taker_series_str = str(taker_series) if taker_series else "无数据"
+
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，进行独立的、深度的专业研判。
 
 ⚠️ **核心要求**：
-- 不得跳过任何步骤，每步必须给出明确结论。
-- 系统提供的量化参考仅供辅助。
-- **第四步中的“强制裁决规则”具有绝对最高优先级，你必须无条件执行，不得以任何主观理由否决。**
+- 你必须**亲自分析原始数据**，而非依赖系统给出的定性标签。
+- 你的分析必须包含**具体数值引用**和**对比判断**。
+- 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
@@ -215,9 +236,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **清算压力**
 - 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
-- 清算最大痛点：{liq_max_pain} USDT（对价格构成向下的引力/向上的阻力）
+- 清算最大痛点：{liq_max_pain} USDT
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
-  （注：强度≥3的清算区方可作为有效锚点）
 - **清算动态信号**：{liq_dynamic_text}
 
 **多空博弈**
@@ -234,7 +254,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
-- 恐惧贪婪指数：{fg.get('value', '50')}
+- 恐惧贪婪指数：{fg.get('value', '50')} (前值：{fg.get('prev', '50')})
 - **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
 - **宏观三因子信号**：
 {macro_signals_text}
@@ -243,110 +263,90 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
 - 系统信号评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 
-### 🔒 强制五步分析流程
+### 📁 原始数据视图（你必须深入分析）
 
-**第一步：清算动力学定锚**
-- 对比上下方清算金额与密集区强度。
-- **必须分析清算最大痛点**：指出最大痛点位于当前价上方还是下方，对价格构成引力还是压力。
-  （**时效性判断**：你必须结合当前价格与最大痛点的距离、趋势强度得分，判断该最大痛点的有效性。若趋势得分<50且距离超过2×ATR，其引力/压力作用应打折扣，在结论中需注明。）
-- **必须分析期权最大痛点**：指出其位置及与清算最大痛点的关系（同向共振或背离）。
-- **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
-- **必须引用 CVD 信号**：若 CVD 为 bullish/slightly_bullish，且你判断方向偏多，则构成共振；若 CVD 与你的方向背离，必须在第四步的矛盾信号中列出。
-- **必须根据波动因子调整判断**：
-  - 波动因子 > 1.3（高波动）：趋势得分阈值可适当降低（≥60即可视为趋势较强），清算墙更易被突破。
-  - 波动因子 < 0.7（低波动）：假突破概率高，清算墙的支撑/阻力作用增强，需更谨慎。
-- 结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
-- 结论：【偏多/偏空/风险预警/中性观察】
+**清算压力分布（价格 → 强度，单位：百万美元）**
+| 价格 | 方向 | 强度 |
+|------|------|------|
+{liq_profile_table}
 
-**第二步：多空博弈找“犯错方”**
-你必须基于以下指标的组合，判断市场中哪一方正在承担过度风险，可能成为被挤压的“犯错方”：
+**CVD 序列（最近 60 分钟，1 分钟粒度，单位：千美元）**
+`{cvd_series_str}`
 
-**指标解读基准**：
-- **资金费率**：>0.05% 多头拥挤；<-0.03% 空头拥挤；介于之间为中性。
-- **顶级交易员多空比**：<0.7 偏多；>2.0 偏空；介于之间为中性。
-- **净持仓累积**：>0 主力累积多头；<0 主力累积空头。
-- **主动吃单比率**：>0.55 买盘主动；<0.45 卖盘主动。
-- **订单簿失衡率**：>0.2 买盘深度占优；<-0.2 卖盘深度占优。
-- **持仓量24h变化**：>+5% 资金大幅流入；<-5% 资金大幅流出。
+**多空账户人数比（最近 6 小时，1 小时间隔）**
+`{ls_series_str}`
 
-**组合解读规则（你必须按以下模板进行推理）**：
-1. **顶级交易员与净持仓同向**：
-   - 顶级偏多 + 净持仓为正 → 聪明钱与主力共振做多，空头可能为犯错方。结论：【偏多】。
-   - 顶级偏空 + 净持仓为负 → 聪明钱与主力共振做空，多头可能为犯错方。结论：【偏空】。
-2. **顶级交易员与净持仓背离**：
-   - 顶级偏多 + 净持仓为负 → 聪明钱看多但主力撤退，诱多风险。结论：【中性偏空】。
-   - 顶级偏空 + 净持仓为正 → 聪明钱看空但主力累积多头，空头可能被挤压。结论：【偏多】。
-3. **资金费率极端信号**：
-   - 费率>0.05% + 顶级偏空 → 拥挤多头可能为犯错方。结论：【偏空】。
-   - 费率<-0.03% + 顶级偏多 → 拥挤空头可能为犯错方。结论：【偏多】。
-4. **短期力量强制确认**：
-   - 主动吃单比率与订单簿失衡率同向时，最终结论的置信度提升一级（中性→偏多/偏空，偏多/偏空→明确多/空）；若两者背离，必须将结论降级为中性。
-5. **资金流向强制验证**：
-   - 若持仓量24h变化 > +5% 或 < -5%，必须在reasoning中明确说明其对趋势持续性的影响（增强/衰竭），并在risk_note中提示。
-6. **信号矛盾或中性**：
-   - 若以上均不满足，或信号严重矛盾，结论：【中性】。
+**主动买卖比率（最近 6 小时，1 小时间隔）**
+`{taker_series_str}`
 
-**在reasoning中，你必须明确写出**：
-- 各指标当前数值及定性。
-- 主动吃单比率和订单簿失衡率的当前数值、定性，以及它们对结论的强化/削弱作用。
-- 应用了哪条组合规则。
-- 最终结论：【偏多/偏空/中性】。
+---
 
-**第三步：宏观过滤器定基调**
-- 系统已提供宏观三因子信号及其权重（恐惧贪婪权重4，Coinbase溢价权重3，稳定币权重3）。
-- **强制裁决规则（你必须严格遵守）**：
-  1. 计算多头方向的总权重：将所有标注“利多”或“偏多”的信号的权重相加。
-  2. 计算空头方向的总权重：将所有标注“利空”或“偏空”的信号的权重相加。
-  3. 比较多空总权重：
-     - 若多头总权重 > 空头总权重 → 必须输出【支持多头】。
-     - 若空头总权重 > 多头总权重 → 必须输出【支持空头】。
-     - 若两者相等且均为0 → 输出【中性】。
-     - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
-- **必须引用交易所钱包余额数据**：判断BTC和稳定币的净流向，作为中长期资金面背景佐证你的结论。
-- **必须引用 ETH/BTC 汇率趋势**：若趋势为 up，对多头构成额外支持；若为 down，对空头构成额外支持。在reasoning中必须写明。
-- **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
+### 🔬 强制数据深潜任务（你必须完成，否则输出无效）
 
-**第四步：信号共振与矛盾裁决**
-- 列举最支持某方向的信号和最矛盾的信号。
-- **必须对比第一步与第二步的结论是否一致**：若一致则为“共振”，若背离则必须在矛盾信号中明确说明。
-- **必须引用至少一个清算动态信号**（来自第一步）作为支持/反对依据。
-- 应用以下强制裁决规则。
+在给出最终方向前，你必须逐项完成以下观察，并在 `analysis_summary` 字段中**明确写出你的发现**（每条需包含具体数值）：
 
-**🚨 强制裁决规则（绝对优先级，唯一例外是 extreme_liq=true）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **{threshold_bull_bear}分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **{threshold_bull_bear}分** → **必须**输出 **short**。
-3. 若第一步结论为【风险预警】，且差值 ≥ **{threshold_warning}分** → **必须**输出领先方向。
-4. 若第一步结论为【中性观察】，不触发强制裁决。
+1. **清算不对称的精确量化**  
+   - 计算：上方空头清算总额 ÷ 下方多头清算总额 = ？  
+   - 判断：该比值是否 ≥ 2.0（显著偏空）或 ≤ 0.5（显著偏多）？  
+   - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
 
-**📊 置信度调节规则**：
-- 若第二步短期力量（主动吃单+订单簿）与强制裁决方向背离 → confidence 必须为 low。
-- 若持仓量变化与强制裁决方向相反（如做多但OI大幅流出） → 必须在 risk_note 中警告“资金流向矛盾”。
-- 若 ETH/BTC 汇率趋势与强制裁决方向相反 → confidence 降一级（medium→low）。
+2. **CVD 序列的微观动量分析**  
+   - 将 60 分钟 CVD 序列分为前 30 分钟与后 30 分钟。  
+   - 计算两段的净变化量，判断动量是**加速、匀速还是衰减**。  
+   - 检查最后 10 分钟内是否存在与价格方向相反的 CVD 异动（例如价格涨但 CVD 连续 3 根为负）。
 
-**⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
-- 一旦满足上述任一强制裁决条件，你**无权**以“风险回报比”、“价格紧贴关键位”、“市场结构矛盾”、“风险第一原则”等**任何理由**拒绝执行。
-- 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
-- **严禁**在满足强制裁决条件时输出 **neutral**。
+3. **持仓结构的矛盾挖掘**  
+   - 对比“多空账户人数比序列”的最新值与 6 小时前的变化方向。  
+   - 对比“顶级交易员多空比”与“多空账户人数比”，判断散户与聪明钱是否方向一致。  
+   - 若一致，说明共振；若背离，指出谁更可能在犯错。
 
-**第五步：止损、止盈与入场区间设置**
-- **入场区间**：系统已提供三个候选区间（见下方），你必须按优先级选择一个，并在reasoning中注明所选规则。
-  - 规则1（清算区锚定）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}（锚定：{entry_candidates['rule1']['anchor']}）
-  - 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
-  - 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
-- **止损**：
-  - 做多：止损设在**下方**最近强度≥3的**多头清算区**外侧（价格×0.998）。若无，则使用 **2 × 4小时ATR** 止损（已根据波动因子动态调整）。
-  - 做空：止损设在**上方**最近强度≥3的**空头清算区**外侧（价格×1.002）。若无，则使用 **2 × 4小时ATR** 止损。
-- **止盈**（系统已预计算候选值，你必须按以下优先级选择）：
-  - **规则1**：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
-  - **规则2**：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
-  - **规则3**：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
-  - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”或规则1价格为0.0，则**必须**使用规则3的精确数值，**严禁**以任何理由（如“下方有支撑”、“整数关口”等）修改规则3的计算结果。
-  - **严禁**将同向清算区用于止盈，严禁自行创造止盈锚点。
-- **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离），保留一位小数。若盈亏比 < 1:1，必须在 risk_note 中明确警告。
-- 在reasoning中明确写出所选止盈规则及盈亏比。
+4. **清算动态信号的验证**  
+   - 系统给出的清算动态信号（如“最大痛点上移”）是否能在清算分布表中找到对应的价格证据？请具体指出哪个价格区间的强度变化支持该信号。
+
+5. **宏观因子的边际变化**  
+   - 恐惧贪婪指数较昨日变化了多少？是“极端情绪修复”还是“贪婪加速”？  
+   - 稳定币市值 7 日变化率的具体数值，是否超过 ±1% 的有效阈值？
+
+**输出要求**：以上 5 点观察必须整合进你的 `analysis_summary` 字段中。每条观察前用 🔍 标注。
+
+---
+
+### ⚖️ 裁决指引（你拥有最终决定权）
+
+系统基于量化模型给出以下**参考建议**：
+- 若清算结构偏多且多空分差 ≥ {threshold_bull_bear}，模型**建议**输出 `long`。
+- 若清算结构偏空且多空分差 ≥ {threshold_bull_bear}，模型**建议**输出 `short`。
+
+**你的权力**：
+- 你可以**完全采纳**上述建议。
+- 你也可以**否决**该建议，但**必须**在 `analysis_summary` 中给出明确的、基于市场微观结构的否决理由。
+- 若你选择否决，可以输出 `neutral` 或相反方向，系统将尊重你的专业判断。
+
+---
+
+### 🎯 入场、止损与止盈设置
+
+**入场区间候选**：
+- 规则1（清算区锚定）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}（锚定：{entry_candidates['rule1']['anchor']}）
+- 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
+- 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
+
+**止盈候选**：
+- 候选A（清算区锚定）：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
+- 候选B（关键位锚定）：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
+- 候选C（盈亏比公式）：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
+
+**你的权力**：
+- 你可以直接选用任一候选值。
+- 你也可以基于当前盘口深度、关键整数关口、斐波那契扩展等专业经验，在候选C的 **±0.3×ATR** 范围内微调，并在 `reasoning` 中注明微调逻辑。
+- 止损默认使用 2×ATR 或清算区外侧，你可根据波动因子微调。
+
+---
 
 ### 策略输出格式（严格JSON）
+
 **请直接输出纯 JSON，不要用 ```json 代码块包裹。**
+
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
@@ -355,8 +355,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "reasoning": "按五步法详细描述推理过程，每步用【】标题。第五步注明入场、止损、止盈的所选规则及盈亏比。",
-  "risk_note": "风险提示"
+  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头，最后总结裁决逻辑。",
+  "trader_commentary": "你的交易员主观备注，如盘中观察要点、加仓条件、仓位建议等（可选，但强烈建议填写）。",
+  "risk_note": "风险提示，按点列出。"
 }}
 """
 
@@ -370,7 +371,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1500
+                max_tokens=2000
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
@@ -397,6 +398,8 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
             s = json.loads(json_str)
             s.setdefault("tp_anchor", "未提供")
+            s.setdefault("analysis_summary", "无分析摘要")
+            s.setdefault("trader_commentary", "")
             return s
         except Exception as e:
             logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
@@ -405,14 +408,15 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
-def validate_strategy(s: dict, price: float) -> bool:
+def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
     if s.get("direction") not in ["long", "short", "neutral"]: return False
     if s["direction"] == "neutral": return True
     try:
         entry_low = float(s.get("entry_price_low", 0))
         entry_high = float(s.get("entry_price_high", 0))
         stop = float(s.get("stop_loss", 0))
-        if s["direction"] == "long" and stop >= entry_low: return False
-        if s["direction"] == "short" and stop <= entry_high: return False
+        tolerance = 0.5 * (atr if atr else price * 0.02)
+        if s["direction"] == "long" and stop >= entry_low - tolerance: return False
+        if s["direction"] == "short" and stop <= entry_high + tolerance: return False
     except: return False
     return True
