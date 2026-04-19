@@ -46,7 +46,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     # 获取数据源状态，彻底清洗所有可能引发格式的字符
     data_source_status = extra.get("data_source_status", "")
-    # 移除加粗、斜体、删除线、反引号等 Markdown 标记
     data_source_status = re.sub(r'[*_~`]', '', data_source_status)
     data_source_status = data_source_status.strip()
 
@@ -144,6 +143,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
+        data_source_line = f"\u200b{data_source_status}"
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -156,7 +156,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 分差：{diff}分（{strength_text}）| 多头{bull_score} vs 空头{bear_score}
-- {data_source_status}
+- {data_source_line}
 """
 
     entry_low = float(strategy.get("entry_price_low", 0))
@@ -221,7 +221,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
 
-    # 返回完整消息，确保清算数据源独立成行且无格式字符
+    # 在 data_source_status 前添加零宽空格，并确保前后有空行
+    data_source_line = f"\u200b{data_source_status}"
+
     return f"""{title_line}
 
 {param_card}
@@ -238,8 +240,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-{snapshot_line}  
-{data_source_status}
+{snapshot_line}
+
+{data_source_line}
+
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
 """
