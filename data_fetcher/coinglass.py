@@ -6,7 +6,6 @@ from threading import Semaphore
 from utils.logger import logger
 
 class RateLimiter:
-    """简单的速率限制器，确保最小间隔"""
     def __init__(self, min_interval: float = 3.0):
         self.min_interval = min_interval
         self._last_request_time = 0.0
@@ -128,8 +127,16 @@ class CoinGlassClient:
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
+        """多空账户人数比历史数据"""
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
+        data = self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
+        if data and isinstance(data, list):
+            logger.info(f"多空账户人数比获取成功，长度: {len(data)}")
+            if len(data) > 0:
+                logger.debug(f"第一条数据: {data[0]}")
+        else:
+            logger.warning("多空账户人数比返回为空或非列表")
+        return data
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
@@ -150,22 +157,23 @@ class CoinGlassClient:
     def get_cvd_history(self, symbol: str = "BTC"):
         """
         获取聚合合约 CVD 历史数据。
-        优先使用 /api/futures/aggregated-cvd/history 接口。
+        使用 /api/futures/aggregated-cvd/history 接口。
         """
-        # 主要方案：聚合CVD接口
         aggregated_params = {
-            "exchange": "OKX",
+            "exchange_list": "OKX",
             "symbol": symbol.upper(),
             "interval": "15m",
-            "limit": 4  # 4 * 15m = 60分钟
+            "limit": 4
         }
-        data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=True, silent_fail=True)
+        logger.info(f"尝试聚合CVD接口，参数: {aggregated_params}")
+        data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) > 0:
-            logger.info(f"{symbol} 使用聚合CVD接口成功，数据条数: {len(data)}")
-            return data
+            first_item = data[0]
+            if isinstance(first_item, dict) and "cum_vol_delta" in first_item:
+                logger.info(f"{symbol} 聚合CVD接口成功，数据条数: {len(data)}")
+                return data
 
-        # 备用方案：回退到旧的非聚合合约接口
-        logger.warning(f"{symbol} 聚合CVD接口失败，回退到旧合约CVD接口")
+        logger.warning(f"{symbol} 聚合CVD接口失败或返回无效，回退到旧合约CVD接口")
         futures_params = {
             "exchange": "OKX",
             "symbol": f"{symbol}-USDT-SWAP",
@@ -533,13 +541,16 @@ class CoinGlassClient:
             data["funding_rate"] = "N/A"
 
         ls_history = results.get("ls")
-        if ls_history and len(ls_history) > 0:
-            ls_ratio = self._get_close_from_candle(ls_history[-1])
-            data["long_short_ratio"] = ls_ratio
-            data["ls_account_ratio"] = ls_ratio
-        else:
-            data["long_short_ratio"] = "N/A"
-            data["ls_account_ratio"] = "N/A"
+        ls_series = []
+        ls_valid = False
+        if ls_history and isinstance(ls_history, list):
+            for item in ls_history[-6:]:
+                val = self._get_close_from_candle(item)
+                if val != 0:
+                    ls_valid = True
+                ls_series.append(round(val, 2))
+        if not ls_valid:
+            logger.warning(f"多空账户人数比序列全为0或无效，数据长度: {len(ls_history) if ls_history else 0}")
 
         if symbol.upper() in ("BTC", "ETH"):
             top_ls = results.get("top_ls")
@@ -592,14 +603,12 @@ class CoinGlassClient:
         cvd_valid = False
         if cvd_history and isinstance(cvd_history, list) and len(cvd_history) > 0:
             first_item = cvd_history[0]
-            # 新聚合接口格式
             if isinstance(first_item, dict) and "cum_vol_delta" in first_item:
                 for item in cvd_history:
                     val = float(item.get("cum_vol_delta", 0))
                     if val != 0:
                         cvd_valid = True
                     cvd_series.append(round(val / 1000, 0))
-            # 旧接口K线格式
             elif isinstance(first_item, list) and len(first_item) >= 5:
                 for item in cvd_history:
                     if isinstance(item, list) and len(item) >= 5:
@@ -697,24 +706,6 @@ class CoinGlassClient:
         raw_view["cvd_valid"] = cvd_valid
         raw_view["cvd_series_1m"] = cvd_series if cvd_valid else []
 
-        ls_series = []
-        ls_valid = False
-        if ls_history and isinstance(ls_history, list):
-            for item in ls_history[-6:]:
-                val = self._get_close_from_candle(item)
-                if val != 0:
-                    ls_valid = True
-                ls_series.append(round(val, 2))
-        # 如果普通多空比无效，尝试用顶级交易员多空比替代
-        if not ls_valid:
-            top_ls = results.get("top_ls")
-            if top_ls and isinstance(top_ls, list):
-                ls_series = []
-                for item in top_ls[-6:]:
-                    val = self._get_close_from_candle(item)
-                    if val != 0:
-                        ls_valid = True
-                    ls_series.append(round(val, 2))
         raw_view["ls_valid"] = ls_valid
         raw_view["ls_ratio_series_1h"] = ls_series if ls_valid else []
 
