@@ -1,10 +1,8 @@
 import os
 import json
-import re
 from openai import OpenAI
 from utils.logger import logger
 
-# ==================== 辅助函数（保持不变） ====================
 def linear_score(v: float, low: float, high: float, full: float, rev: bool = False) -> float:
     if low == high: return 0.0
     if rev: return full if v <= low else (0.0 if v >= high else full * (high - v) / (high - low))
@@ -136,7 +134,6 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     return {"level": level, "score": round(score, 1), "max_score": 100, "details": det, "confidence_grade": confidence_grade}
 
 
-# ==================== 强化版 build_prompt ====================
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
@@ -145,7 +142,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  liq_dynamic_signals: list = None,
                  threshold_bull_bear: int = 8, threshold_warning: int = 12,
                  tp_candidates: dict = None) -> str:
-    # --- 以下内容与您原始 build_prompt 完全一致，仅为了完整性列出 ---
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -231,25 +227,25 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
-    # --- 核心 Prompt 模板（强化输出格式约束）---
-    prompt_template = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，进行独立的、深度的专业研判。
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
 
 ⚠️ **核心要求**：
-- 你必须**亲自分析原始数据**，而非依赖系统给出的定性标签。
+- 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
 - 你的分析必须包含**具体数值引用**和**对比判断**。
-- 你拥有最终裁决权，系统建议只作参考，必须在分析中给出明确理由。
+- 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
-### 核心市场数据
+### 核心市场数据（你必须逐项分析）
+
 **价格与波动**
 - 当前价格：{price} USDT
 - 4小时ATR：{atr} USDT
 - 波动因子：{volatility_factor:.2f}（>1.3高波，<0.7低波）
 
 **清算压力**
-- 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
-- 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
+- 上方空头清算总额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
+- 下方多头清算总额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{liq_max_pain} USDT
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
 - **清算动态信号**：{liq_dynamic_text}
@@ -300,14 +296,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ---
 
-### 🔬 强制数据深潜任务（你必须完成，否则输出无效）
+### 🔬 强制指标逐项分析任务（你必须完成，每项均需分析，不得遗漏）
 
 **首先，评估数据质量**（在第一条观察中声明）：
-- CVD 序列是否有效？若无效，则 CVD 分析跳过。
-- 多空比序列是否全为 0？若是，则多空比分析无效。
+- CVD 序列是否有效？若无效，后续 CVD 分析跳过并注明。
+- 多空比序列是否全为 0？若是，后续多空比分析跳过并注明。
 - 系统清算动态信号是否能在分布表中找到对应价格？若找不到，以分布表为准。
 
-**然后，逐项完成以下观察**（每条以 🔍 开头，必须包含具体数值）：
+**然后，你必须逐项分析以下指标**（每条以 🔍 开头，必须包含具体数值和判断）：
 
 1. **清算不对称的精确量化**  
    - 计算：上方空头清算总额 ÷ 下方多头清算总额 = ？  
@@ -315,24 +311,42 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
 
 2. **CVD 序列的趋势与背离分析**（若数据无效则注明“数据无效，跳过”）  
-   - 观察 `cum_vol_delta` 序列的整体趋势，判断是持续为正（买方主导）、持续为负（卖方主导）还是多空拉锯。  
-   - 检查序列的**变化率**：如果正值在减小或负值在扩大，说明买方动能可能正在衰竭。  
-   - **核心任务**：对比 CVD 趋势与价格走势，判断是否存在**背离**（如价格创新高但 CVD 走平或下降，是潜在反转信号）。
+   - 观察序列整体趋势，判断买方/卖方主导程度。  
+   - 检查变化率，判断动能是加速、衰减还是持续。  
+   - **核心任务**：对比 CVD 趋势与价格走势，判断是否存在背离。
 
-3. **持仓结构的矛盾挖掘**（若多空比序列无效，则仅使用顶级交易员和净持仓）  
+3. **持仓结构的矛盾挖掘**（若多空比序列无效，则注明并跳过）  
+   - 对比多空账户人数比的最新值与 6 小时前的变化方向。  
    - 对比顶级交易员多空比与净持仓累积的方向一致性。
 
 4. **清算动态信号的验证**  
    - 系统信号是否在分布表中存在？若不存在，以分布表为准重新评估关键位。
 
 5. **宏观因子的边际变化**  
-   - 恐惧贪婪指数较昨日变化了多少？稳定币市值 7 日变化率是否超过 ±1%？
+   - 恐惧贪婪指数较昨日变化了多少？  
+   - 稳定币市值 7 日变化率是否超过 ±1%？若数据缺失则注明。
+
+6. **主动买卖比率（Taker Ratio）分析**  
+   - 当前值是多少？属于买盘主动（>0.55）、卖盘主动（<0.45）还是均衡？  
+   - 结合 6 小时序列，判断主动买卖方向是否具有持续性。
+
+7. **订单簿失衡率分析**  
+   - 当前值是多少？买盘深度占优（>0.2）、卖盘深度占优（<-0.2）还是均衡？  
+   - 该指标与主动买卖比率是否同向？若背离，说明什么？
+
+8. **ETH/BTC 汇率趋势分析**  
+   - 当前趋势是 up 还是 down？  
+   - 该趋势对 {symbol} 的方向是强化还是削弱？
+
+9. **交易所钱包余额流向分析**  
+   - BTC 是净流入还是净流出？稳定币是净流入还是净流出？  
+   - 结合两者判断中长期资金面是偏多还是偏空。
 
 **最终裁决要求**：
-你需要以顶尖交易员的身份，以清算动力学、多空博弈分析及量化技术分析方面的专业性对上面的数据全面复盘后给出策略，你必须用单独一行写一个【最终裁决】段落，格式为：
+在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
 `【最终裁决】综合以上分析，我决定输出 [long/short/neutral]，理由：...`
 
-**输出要求**：以上内容全部整合进 `analysis_summary` 字段。
+**输出要求**：以上 9 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
 
 ---
 
@@ -340,7 +354,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
 
-**你的权力**：你可以采纳或否决，必须独立裁决。必须在 `analysis_summary` 中给出明确理由。
+**你的权力**：你必须独自裁决，系统建议只做参考，必须在 `analysis_summary` 中给出明确理由。
 
 ---
 
@@ -360,31 +374,25 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ---
 
-### 🚨 最终输出格式（极其严格）
+### 策略输出格式（严格JSON）
 
-你必须**只输出**一个合法的 JSON 对象，**不得包含任何其他文字、注释、Markdown 标记或代码块符号**。如果输出任何非 JSON 内容，系统将无法解析并视为失败。
-
-JSON 必须包含以下字段，且 `analysis_summary` 必须完整包含上述强制深潜任务的详细分析内容（每条以 🔍 开头，末尾包含【最终裁决】段落）：
+**请直接输出纯 JSON，不要用 ```json 代码块包裹。**
 
 {{
   "direction": "long" 或 "short" 或 "neutral",
   "confidence": "high" 或 "medium" 或 "low",
-  "entry_price_low": 数字,
-  "entry_price_high": 数字,
-  "stop_loss": 数字,
-  "take_profit": 数字,
-  "tp_anchor": "止盈锚定说明",
-  "analysis_summary": "你的完整分析文本，必须详细、具体、包含数值引用",
-  "trader_commentary": "可选",
+  "entry_price_low": 入场区间下限,
+  "entry_price_high": 入场区间上限,
+  "stop_loss": 止损价,
+  "take_profit": 止盈价,
+  "tp_anchor": "止盈锚定来源说明",
+  "analysis_summary": "按强制指标逐项分析任务逐项撰写，每条以 🔍 开头，共9项，末尾包含【最终裁决】段落。",
+  "trader_commentary": "顶级交易员观点",
   "risk_note": "风险提示"
 }}
-
-⚠️ 再次强调：直接输出纯 JSON，不要用 ```json 包裹，不要有任何前缀或后缀文字。
 """
-    return prompt_template
 
 
-# ==================== 增强版 call_deepseek（健壮 JSON 解析） ====================
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=60.0)
     for attempt in range(max_retries):
@@ -394,88 +402,33 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=2500  # 稍微增加以保证分析内容完整
+                max_tokens=2500  # 增加 token 数以容纳 9 项分析
             )
             content = resp.choices[0].message.content
-            logger.info(f"DeepSeek 响应长度: {len(content)}")
-            logger.debug(f"原始响应前200字符: {content[:200]}")
+            logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
 
-            # --- 增强 JSON 提取 ---
             json_str = None
-            
-            # 1. 尝试直接解析整个内容（如果模型真的只输出 JSON）
-            try:
-                json.loads(content)
-                json_str = content
-                logger.info("直接解析整个内容成功")
-            except:
-                pass
-
-            # 2. 提取 ```json ... ``` 代码块
-            if not json_str:
-                match = re.search(r'```json\s*([\s\S]*?)\s*```', content)
-                if match:
-                    json_str = match.group(1).strip()
-                    logger.info("从 ```json 代码块提取 JSON")
-
-            # 3. 提取 ``` ... ``` 代码块（无语言标识）
-            if not json_str:
-                match = re.search(r'```\s*([\s\S]*?)\s*```', content)
-                if match:
-                    json_str = match.group(1).strip()
-                    logger.info("从 ``` 代码块提取 JSON")
-
-            # 4. 通用花括号匹配
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end != -1:
+                    json_str = content[start:end].strip()
             if not json_str:
                 start = content.find('{')
                 end = content.rfind('}') + 1
                 if start != -1 and end > start:
-                    json_str = content[start:end].strip()
-                    logger.info("通过花括号匹配提取 JSON")
-
+                    json_str = content[start:end]
             if not json_str:
-                logger.error(f"无法提取任何 JSON 结构，响应内容:\n{content}")
+                logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
                 if attempt == max_retries - 1:
                     raise ValueError("无法提取 JSON")
                 continue
 
-            # --- 清洗和修复 JSON 字符串 ---
-            # 移除可能的前后空白和 BOM 头
-            json_str = json_str.strip().lstrip('\ufeff')
-            # 移除尾随逗号（对象或数组末尾）
-            json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-            # 处理单引号键名（简单替换，不处理字符串内部）
-            # 尝试修复常见的 Python 风格 JSON
-            if not json_str.startswith('{'):
-                # 如果开头不是花括号，尝试再次提取
-                start = json_str.find('{')
-                if start != -1:
-                    json_str = json_str[start:]
-            
-            # 尝试解析
-            try:
-                s = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON 解析失败: {e}")
-                logger.debug(f"问题 JSON 字符串前300字符: {json_str[:300]}")
-                # 尝试替换单引号为双引号（保守，可能破坏字符串内单引号）
-                try:
-                    fixed = json_str.replace("'", '"')
-                    s = json.loads(fixed)
-                    logger.info("通过单引号替换修复成功")
-                except:
-                    # 如果还失败，记录错误并重试
-                    if attempt == max_retries - 1:
-                        raise ValueError(f"JSON 解析最终失败: {e}")
-                    continue
-
-            # 填充默认字段
+            s = json.loads(json_str)
             s.setdefault("tp_anchor", "未提供")
             s.setdefault("analysis_summary", "无分析摘要")
             s.setdefault("trader_commentary", "")
-            s.setdefault("risk_note", "")
             return s
-
         except Exception as e:
             logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
