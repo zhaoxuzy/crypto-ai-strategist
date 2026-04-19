@@ -139,7 +139,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
                  directional_scores: dict = None, signal_grade: str = "B",
                  entry_candidates: dict = None, exchange_balances: dict = None,
-                 liq_dynamic_signals: list = None) -> str:
+                 liq_dynamic_signals: list = None,
+                 threshold_bull_bear: int = 7, threshold_warning: int = 10,
+                 tp_candidates: dict = None) -> str:
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -183,6 +185,13 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
         }
 
+    if tp_candidates is None:
+        tp_candidates = {
+            "rule1": {"price": 0.0, "anchor": "无"},
+            "rule2": {"price": 0.0, "anchor": "无"},
+            "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
+        }
+
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
 
 ⚠️ **核心要求**：
@@ -196,7 +205,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **价格与波动**
 - 当前价格：{price} USDT
 - 4小时ATR：{atr} USDT
-- 波动因子：{volatility_factor:.2f}
+- 波动因子：{volatility_factor:.2f}（>1.3高波，<0.7低波）
 
 **清算压力**
 - 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
@@ -233,8 +242,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **第一步：清算动力学定锚**
 - 对比上下方清算金额与密集区强度。
 - **必须分析清算最大痛点**：指出最大痛点位于当前价上方还是下方，对价格构成引力还是压力。
+  （**时效性判断**：你必须结合当前价格与最大痛点的距离、趋势强度得分，判断该最大痛点的有效性。若趋势得分<50且距离超过2×ATR，其引力/压力作用应打折扣，在结论中需注明。）
 - **必须分析期权最大痛点**：指出其位置及与清算最大痛点的关系（同向共振或背离）。
 - **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
+- **必须根据波动因子调整判断**：
+  - 波动因子 > 1.3（高波动）：趋势得分阈值可适当降低（≥60即可视为趋势较强），清算墙更易被突破。
+  - 波动因子 < 0.7（低波动）：假突破概率高，清算墙的支撑/阻力作用增强，需更谨慎。
 - 结合趋势强度得分（{trend_info.get('score',0) if trend_info else 0}）：若趋势得分≥70，清算墙视为可被突破的“猎物”；若<50，清算墙的支撑/阻力作用增强；50-70为过渡区。
 - 结论：【偏多/偏空/风险预警/中性观察】
 
@@ -268,6 +281,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **在reasoning中，你必须明确写出**：
 - 各指标当前数值及定性。
+- 主动吃单比率和订单簿失衡率的当前数值、定性，以及它们对结论的强化/削弱作用。
 - 应用了哪条组合规则。
 - 最终结论：【偏多/偏空/中性】。
 
@@ -292,9 +306,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 应用以下强制裁决规则。
 
 **🚨 强制裁决规则（绝对优先级，唯一例外是 extreme_liq=true）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **7分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **7分** → **必须**输出 **short**。
-3. 若第一步结论为【风险预警】，且差值 ≥ **10分** → **必须**输出领先方向。
+1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **{threshold_bull_bear}分** → **必须**输出 **long**。
+2. 若第一步结论为【偏空】，且差值 ≥ **{threshold_bull_bear}分** → **必须**输出 **short**。
+3. 若第一步结论为【风险预警】，且差值 ≥ **{threshold_warning}分** → **必须**输出领先方向。
 4. 若第一步结论为【中性观察】，不触发强制裁决。
 
 **⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
@@ -308,16 +322,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
   - 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
 - **止损**：
-  - 做多：止损设在**下方**最近强度≥3的**多头清算区**外侧（价格×0.998）。若无，则使用 **2 × 4小时ATR** 止损（入场价 - 2×ATR）。
-  - 做空：止损设在**上方**最近强度≥3的**空头清算区**外侧（价格×1.002）。若无，则使用 **2 × 4小时ATR** 止损（入场价 + 2×ATR）。
-- **止盈**（单一目标，严格遵守以下铁律）：
-  - **做多时**：止盈**必须**锚定**上方**最近强度≥3的**空头清算区**。**若无上方空头清算区，则唯一合法止盈为：入场价 + 2×(入场价 - 止损价)**。**严禁**将下方清算区、清算最大痛点或其他任何价格用作止盈。
-  - **做空时**：止盈**必须**锚定**下方**最近强度≥3的**多头清算区**。**若无下方多头清算区，则唯一合法止盈为：入场价 - 2×(止损价 - 入场价)**。**严禁**将上方清算区、清算最大痛点或其他任何价格用作止盈。
-  - **严禁**将同向清算区用于止盈（做多时用下方清算区止盈、做空时用上方清算区止盈）。
-  - **严禁**以“数据未提供”为由，自行创造止盈锚点（如“强磁吸区”、“价格向上反弹触及将引发空头清算”等）。
-  - 若清算区导致的盈亏比过低（如<1:1），你应在 `risk_note` 中明确提示“盈亏比偏低，建议轻仓或观望”，但**止盈价必须如实填入清算区价格或公式计算值**。
-  - **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离）。
-- 在reasoning中明确写出入场、止损、止盈的锚定来源及盈亏比。
+  - 做多：止损设在**下方**最近强度≥3的**多头清算区**外侧（价格×0.998）。若无，则使用 **2 × 4小时ATR** 止损（已根据波动因子动态调整）。
+  - 做空：止损设在**上方**最近强度≥3的**空头清算区**外侧（价格×1.002）。若无，则使用 **2 × 4小时ATR** 止损。
+- **止盈**（系统已预计算候选值，你必须按以下优先级选择）：
+  - **规则1**：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
+  - **规则2**：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
+  - **规则3**：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
+  - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”，则**必须**改用规则3。若规则1不存在，使用规则3。
+  - **严禁**将同向清算区用于止盈，严禁自行创造止盈锚点。
+- 在reasoning中明确写出所选止盈规则及盈亏比。
 
 ### 策略输出格式（严格JSON）
 {{
