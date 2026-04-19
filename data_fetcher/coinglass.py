@@ -385,14 +385,26 @@ class CoinGlassClient:
             return float(candle.get("aggregated_buy_volume_usd", 0)), float(candle.get("aggregated_sell_volume_usd", 0))
         return 0.0, 0.0
 
-    def calculate_volatility_factor(self, symbol: str = "BTC") -> float:
-        return 1.0
+    def calculate_volatility_factor(self, symbol: str = "BTC", current_atr: float = None, klines: list = None) -> float:
+        """
+        基于 ATR 百分位计算波动因子
+        高波动(>80%分位) → 1.5
+        低波动(<20%分位) → 0.6
+        正常 → 1.0
+        """
+        if not klines or len(klines) < 20 or current_atr is None:
+            return 1.0
+        from data_fetcher.okx_rest import calculate_atr_percentile
+        percentile = calculate_atr_percentile(klines, current_atr, 20)
+        if percentile > 80:
+            return 1.5
+        elif percentile < 20:
+            return 0.6
+        else:
+            return 1.0
 
     # ---------- 并行化的 get_all_data ----------
-  # 文件开头部分保持不变（RateLimiter、__init__、_request 等）
-# ... 省略以节省篇幅，请使用上一轮提供的完整版本，仅需调整 get_all_data 部分 ...
-
-    def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
+    def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None, klines: list = None) -> dict:
         if current_price is None:
             current_price = 70000.0
 
@@ -412,7 +424,6 @@ class CoinGlassClient:
             "orderbook": lambda: self.get_orderbook_imbalance(symbol),
             "eth_btc": lambda: self.get_eth_btc_ratio(),
             "balances": lambda: self.get_exchange_balances(),
-            # 宏观三因子数据也在此统一获取
             "fg": lambda: self.get_fear_greed_index(),
             "premium": lambda: self.get_coinbase_premium(current_price),
             "stable": lambda: self.get_stablecoin_market_cap_change(),
@@ -429,9 +440,7 @@ class CoinGlassClient:
                     logger.error(f"并行获取 {key} 失败: {e}")
                     results[key] = None
 
-        # 组装 data（包含所有数据）
         data = {}
-        # 清算数据
         heatmap_raw = results.get("heatmap")
         if heatmap_raw:
             liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
@@ -439,7 +448,6 @@ class CoinGlassClient:
         else:
             data.update({"above_short_liquidation": "0", "below_long_liquidation": "0", "max_pain_price": "N/A", "nearest_cluster": {"direction": "N/A", "price": "N/A", "intensity": "N/A"}})
 
-        # 清算动态信号
         prev = self._prev_liq_data.get(symbol, {})
         curr = {
             "above": float(str(data.get("above_short_liquidation", "0")).replace(",", "")),
@@ -454,7 +462,6 @@ class CoinGlassClient:
         data["liq_dynamic_signals"] = dynamic_signals
         self._prev_liq_data[symbol] = curr
 
-        # 持仓量变化
         oi_history = results.get("oi")
         if oi_history and len(oi_history) >= 2:
             last_close = self._get_close_from_candle(oi_history[-1])
@@ -466,14 +473,12 @@ class CoinGlassClient:
         else:
             data["oi_change_24h"] = "N/A"
 
-        # 资金费率
         funding_history = results.get("funding")
         if funding_history and len(funding_history) > 0:
             data["funding_rate"] = self._get_close_from_candle(funding_history[-1])
         else:
             data["funding_rate"] = "N/A"
 
-        # 全局多空比
         ls_history = results.get("ls")
         if ls_history and len(ls_history) > 0:
             ls_ratio = self._get_close_from_candle(ls_history[-1])
@@ -483,7 +488,6 @@ class CoinGlassClient:
             data["long_short_ratio"] = "N/A"
             data["ls_account_ratio"] = "N/A"
 
-        # 顶级交易员
         if symbol.upper() in ("BTC", "ETH"):
             top_ls = results.get("top_ls")
             if top_ls and len(top_ls) > 0:
@@ -497,7 +501,6 @@ class CoinGlassClient:
         else:
             data["top_long_short_ratio"] = "N/A"
 
-        # 期权信息
         options = results.get("options")
         if options and len(options) > 0:
             first = options[0]
@@ -510,7 +513,6 @@ class CoinGlassClient:
         data["put_call_ratio"] = "N/A"
         data["implied_volatility"] = "N/A"
 
-        # 主动吃单比率
         taker = results.get("taker")
         if taker and len(taker) > 0:
             buy_vol, sell_vol = self._get_buy_sell_volumes(taker[-1])
@@ -522,7 +524,6 @@ class CoinGlassClient:
         else:
             data["taker_ratio"] = "N/A"
 
-        # 期权最大痛点
         max_pain_data = results.get("max_pain")
         if max_pain_data and len(max_pain_data) > 0:
             latest = max_pain_data[-1]
@@ -533,7 +534,6 @@ class CoinGlassClient:
         else:
             data["skew"] = "N/A"
 
-        # CVD
         cvd_history = results.get("cvd")
         if cvd_history and len(cvd_history) >= 30:
             recent = cvd_history[-30:]
@@ -569,7 +569,6 @@ class CoinGlassClient:
         else:
             data["cvd_signal"] = "N/A"
 
-        # 净持仓
         net_pos = results.get("net_pos")
         if net_pos and len(net_pos) > 0:
             latest = net_pos[-1]
@@ -580,7 +579,6 @@ class CoinGlassClient:
         else:
             data["net_position_cum"] = "N/A"
 
-        # 累计资金费率
         acc_funding = results.get("acc_funding")
         if acc_funding and len(acc_funding) > 0:
             okx_funding = "N/A"
@@ -596,7 +594,6 @@ class CoinGlassClient:
         else:
             data["accumulated_funding_rate"] = "N/A"
 
-        # 聚合主动买卖比率
         agg_taker = results.get("agg_taker")
         if agg_taker and len(agg_taker) > 0:
             latest = agg_taker[-1]
@@ -612,21 +609,18 @@ class CoinGlassClient:
         else:
             data["aggregated_taker_ratio"] = "N/A"
 
-        # 订单簿
         orderbook = results.get("orderbook")
         if orderbook:
             data["orderbook_imbalance"] = orderbook.get("imbalance", 0.0)
         else:
             data["orderbook_imbalance"] = 0.0
 
-        # ETH/BTC 汇率
         eth_btc = results.get("eth_btc")
         if eth_btc:
             data["eth_btc_ratio"] = eth_btc
         else:
             data["eth_btc_ratio"] = {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-        # 宏观三因子数据（直接存入 data，供 main.py 使用）
         fg_data = results.get("fg")
         if fg_data:
             data["fear_greed_index"] = fg_data
@@ -646,5 +640,6 @@ class CoinGlassClient:
             data["stablecoin_change"] = {"change_7d": 0.0, "current_mcap": 0.0}
 
         data["exchange_balances"] = results.get("balances", {"btc_flow": "neutral", "stable_flow": "neutral"})
+        data["volatility_factor"] = self.calculate_volatility_factor(symbol, current_atr=atr, klines=klines)
 
         return data
