@@ -343,16 +343,29 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
-    for _ in range(max_retries):
+    for attempt in range(max_retries):
         try:
-            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1200)
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1200,
+                timeout=30.0
+            )
             content = resp.choices[0].message.content
+            if not content:
+                logger.warning(f"DeepSeek 返回空内容 (尝试 {attempt+1}/{max_retries})")
+                continue
+            logger.info(f"DeepSeek 响应预览: {content[:200]}...")
             js = content[content.find('{'):content.rfind('}') + 1]
             s = json.loads(js)
             s.setdefault("tp_anchor", "未提供")
             return s
+        except json.JSONDecodeError as e:
+            logger.warning(f"DeepSeek JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"原始响应内容: {content if 'content' in locals() else '无'}")
         except Exception as e:
-            logger.warning(f"DeepSeek调用失败: {e}")
+            logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
     return {}
 
 
