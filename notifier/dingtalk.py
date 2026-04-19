@@ -260,21 +260,23 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if alerts_str:
         alerts_str = alerts_str + "\n"
 
-    # 风险提示：彻底清理序号后重新编号
+    # 风险提示：彻底清洗后重新编号
     risk_note = strategy.get('risk_note', '请严格设置止损')
-    # 1. 合并多余空白
+    # 1. 移除开头的“风险提示：”字样
+    risk_note = re.sub(r'^风险提示[：:]\s*', '', risk_note)
+    # 2. 合并多余空白
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
-    # 2. 移除所有可能的前导序号（数字+点/顿号/空格）
-    risk_note = re.sub(r'^\s*\d+[\.、\s]*', '', risk_note)
-    # 3. 按中文标点分割
+    # 3. 移除所有可能的前导序号（数字+点/顿号/空格/右括号）
+    risk_note = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', risk_note)
+    # 4. 按中文标点分割
     raw_items = re.split(r'[。；;]', risk_note)
     risk_items = []
     for item in raw_items:
         item = item.strip()
         if not item:
             continue
-        # 再次移除可能残留的内部序号（如 "2.   xxx" 中间出现）
-        item = re.sub(r'^\d+[\.、\s]*', '', item)
+        # 再次移除可能残留的内部序号（如 "2) xxx" 或 "2. xxx"）
+        item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
         if item and not re.match(r'^\d+$', item):
             risk_items.append(item)
     if not risk_items:
