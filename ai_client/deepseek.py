@@ -152,6 +152,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
     diff = abs(bull_score - bear_score)
     higher_direction = "多头" if bull_score > bear_score else "空头"
+    trend_dir = directional_scores.get("trend_direction", "neutral") if directional_scores else "neutral"
 
     macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
     macro_signal_lines = []
@@ -292,16 +293,16 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 应用以下强制裁决规则。
 
 **🚨 强制裁决规则（绝对优先级）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **7分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **7分** → **必须**输出 **short**。
+1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **{12 if trend_dir == 'bear' else 7}分** → **必须**输出 **long**。
+2. 若第一步结论为【偏空】，且差值 ≥ **{12 if trend_dir == 'bull' else 7}分** → **必须**输出 **short**。
 3. 若第一步结论为【风险预警】，且差值 ≥ **10分** → **必须**输出领先方向。
 4. 若第一步结论为【中性观察】，不触发强制裁决。
 
-**⚠️ 盈亏比否决条款（新增）**：
+**⚠️ 盈亏比否决条款**：
 - 即使满足上述强制裁决条件，若你计算出的**预期盈亏比 < 0.5:1**（即止盈距离 < 0.5×止损距离），你必须**否决强制裁决，输出 neutral**，并在reasoning中明确说明“因预期盈亏比过低（X:1 < 0.5:1）否决强制裁决”。
 - **唯一例外**：若反方向存在强度≥4的清算区且预期盈亏比≥1:1，则仍可输出方向。
 
-**⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
+**⚠️ 铁律**：
 - 一旦满足强制裁决条件且未被盈亏比否决，你**无权**以任何理由拒绝执行。
 - 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
 
