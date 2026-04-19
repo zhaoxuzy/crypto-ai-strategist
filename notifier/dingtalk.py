@@ -46,7 +46,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     # 获取数据源状态，彻底清洗所有可能引发格式的字符
     data_source_status = extra.get("data_source_status", "")
-    # 移除加粗、斜体、删除线等 Markdown 标记
+    # 移除加粗、斜体、删除线、反引号等 Markdown 标记
     data_source_status = re.sub(r'[*_~`]', '', data_source_status)
     data_source_status = data_source_status.strip()
 
@@ -221,7 +221,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
 
-    # 将清算数据源单独成行，确保没有格式字符干扰
+    # 返回完整消息，确保清算数据源独立成行且无格式字符
     return f"""{title_line}
 
 {param_card}
