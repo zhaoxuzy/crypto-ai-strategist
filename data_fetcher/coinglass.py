@@ -133,14 +133,22 @@ class CoinGlassClient:
         if data and isinstance(data, list):
             logger.info(f"多空账户人数比获取成功，长度: {len(data)}")
             if len(data) > 0:
-                logger.debug(f"第一条数据: {data[0]}")
+                logger.info(f"第一条数据样例: {data[0]}")
         else:
             logger.warning("多空账户人数比返回为空或非列表")
         return data
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
+        """大户持仓多空比历史数据（持仓量维度）"""
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
+        data = self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False, silent_fail=True)
+        if data and isinstance(data, list):
+            logger.info(f"大户持仓多空比获取成功，长度: {len(data)}")
+            if len(data) > 0:
+                logger.info(f"第一条数据样例: {data[0]}")
+        else:
+            logger.warning("大户持仓多空比返回为空或非列表")
+        return data
 
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
@@ -155,10 +163,7 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        """
-        获取聚合合约 CVD 历史数据。
-        使用 /api/futures/aggregated-cvd/history 接口。
-        """
+        """获取聚合合约 CVD 历史数据"""
         aggregated_params = {
             "exchange_list": "OKX",
             "symbol": symbol.upper(),
@@ -474,7 +479,7 @@ class CoinGlassClient:
             "oi": lambda: self.get_open_interest_history(symbol),
             "funding": lambda: self.get_funding_rate_history(symbol),
             "ls": lambda: self.get_long_short_ratio_history(symbol),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(symbol) if symbol.upper() in ("BTC", "ETH") else None,
+            "top_ls": lambda: self.get_top_long_short_ratio_history(symbol),
             "options": lambda: self.get_options_info(symbol),
             "taker": lambda: self.get_taker_volume_history(symbol),
             "max_pain": lambda: self.get_option_max_pain(symbol),
@@ -540,6 +545,7 @@ class CoinGlassClient:
         else:
             data["funding_rate"] = "N/A"
 
+        # 多空账户人数比
         ls_history = results.get("ls")
         ls_series = []
         ls_valid = False
@@ -552,14 +558,12 @@ class CoinGlassClient:
         if not ls_valid:
             logger.warning(f"多空账户人数比序列全为0或无效，数据长度: {len(ls_history) if ls_history else 0}")
 
-        if symbol.upper() in ("BTC", "ETH"):
-            top_ls = results.get("top_ls")
-            if top_ls and len(top_ls) > 0:
-                latest = top_ls[-1]
-                if isinstance(latest, dict):
-                    data["top_long_short_ratio"] = latest.get("top_account_long_short_ratio", "N/A")
-                else:
-                    data["top_long_short_ratio"] = "N/A"
+        # 大户持仓多空比（新接口）
+        top_ls = results.get("top_ls")
+        if top_ls and isinstance(top_ls, list) and len(top_ls) > 0:
+            latest = top_ls[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                data["top_long_short_ratio"] = round(float(latest["top_position_long_short_ratio"]), 2)
             else:
                 data["top_long_short_ratio"] = "N/A"
         else:
