@@ -340,7 +340,7 @@ class CoinGlassClient:
             return {"table": [], "top_3": []}
 
         # 动态调整范围：高波动时扩大范围，确保覆盖重要清算区
-        range_multiplier = 5.0 if atr > current_price * 0.02 else 4.0  # 高波动用 5×ATR，否则 4×ATR
+        range_multiplier = 5.0 if atr > current_price * 0.02 else 4.0
         lower_bound = current_price - range_multiplier * atr
         upper_bound = current_price + range_multiplier * atr
 
@@ -360,7 +360,7 @@ class CoinGlassClient:
                 distance_atr = (price - current_price) / atr
                 points.append({
                     "price": round(price, 2),
-                    "intensity": round(raw_intensity, 2),          # 保留原始值，不转换单位
+                    "intensity": round(raw_intensity, 2),
                     "direction": direction,
                     "effect": effect,
                     "distance_atr": round(distance_atr, 2)
@@ -434,12 +434,6 @@ class CoinGlassClient:
         return 0.0, 0.0
 
     def calculate_volatility_factor(self, symbol: str = "BTC", current_atr: float = None, klines: list = None) -> float:
-        """
-        基于 ATR 百分位计算波动因子
-        高波动(>80%分位) → 1.5
-        低波动(<20%分位) → 0.6
-        正常 → 1.0
-        """
         if not klines or len(klines) < 20 or current_atr is None:
             return 1.0
         from data_fetcher.okx_rest import calculate_atr_percentile
@@ -693,7 +687,7 @@ class CoinGlassClient:
         # --- 为 AI 准备原始数据视图 (raw_view) ---
         raw_view = {}
 
-        # 清算分布（结构化视图）
+        # 清算分布
         if heatmap_raw:
             liq_view = self._extract_liquidation_profile(
                 heatmap_raw, current_price, atr if atr else (current_price * 0.02)
@@ -704,26 +698,37 @@ class CoinGlassClient:
             raw_view["liquidation_profile"] = []
             raw_view["top_3_liquidation_zones"] = []
 
-        # CVD 原始序列（最近60分钟）
+        # CVD 序列（检查有效性）
+        cvd_series = []
+        cvd_valid = False
         if cvd_history and isinstance(cvd_history, list):
-            cvd_series = []
             for item in cvd_history[-60:]:
+                val = 0.0
                 if isinstance(item, list) and len(item) >= 5:
-                    cvd_series.append(round(float(item[4]) / 1000, 0))  # 千美元
+                    val = float(item[4])
                 elif isinstance(item, dict):
-                    cvd_series.append(round(float(item.get("close", 0)) / 1000, 0))
-            raw_view["cvd_series_1m"] = cvd_series
+                    val = float(item.get("close", 0))
+                if val != 0:
+                    cvd_valid = True
+                cvd_series.append(round(val / 1000, 0))
+        raw_view["cvd_valid"] = cvd_valid
+        raw_view["cvd_series_1m"] = cvd_series if cvd_valid else []
 
-        # 多空比序列（最近6小时）
+        # 多空比序列（检查有效性）
+        ls_series = []
+        ls_valid = False
         if ls_history and isinstance(ls_history, list):
-            ls_series = []
             for item in ls_history[-6:]:
-                ls_series.append(round(self._get_close_from_candle(item), 2))
-            raw_view["ls_ratio_series_1h"] = ls_series
+                val = self._get_close_from_candle(item)
+                if val != 0:
+                    ls_valid = True
+                ls_series.append(round(val, 2))
+        raw_view["ls_valid"] = ls_valid
+        raw_view["ls_ratio_series_1h"] = ls_series if ls_valid else []
 
-        # 主动买卖比率序列（最近6小时）
+        # 主动买卖比率序列
+        taker_series = []
         if taker and isinstance(taker, list):
-            taker_series = []
             for item in taker[-6:]:
                 buy, sell = self._get_buy_sell_volumes(item)
                 total = buy + sell
@@ -731,7 +736,7 @@ class CoinGlassClient:
                     taker_series.append(round(buy / total, 2))
                 else:
                     taker_series.append(0.5)
-            raw_view["taker_ratio_series_1h"] = taker_series
+        raw_view["taker_ratio_series_1h"] = taker_series
 
         data["raw_view"] = raw_view
 
