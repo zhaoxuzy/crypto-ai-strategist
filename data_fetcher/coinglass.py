@@ -2,30 +2,17 @@ import os
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 from utils.logger import logger
 
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.min_interval = 3.0  # 20 req/min
-        self._last_request_time = 0.0
-        self._rate_lock = Lock()
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
         self._liq_zero_count = 0
         self._use_model1_fallback = False
         self._prev_liq_data = {}
-
-    def _wait_for_rate_limit(self):
-        with self._rate_lock:
-            now = time.time()
-            elapsed = now - self._last_request_time
-            if elapsed < self.min_interval:
-                wait = self.min_interval - elapsed
-                time.sleep(wait)
-            self._last_request_time = time.time()
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -53,7 +40,6 @@ class CoinGlassClient:
                 try:
                     logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}" + 
                                 (f" (重试 {attempt+1}/{max_retries})" if attempt > 0 else ""))
-                    self._wait_for_rate_limit()
                     resp = requests.get(url, params=current_params, headers=headers, timeout=15)
                     data = resp.json()
                     if data.get("code") in (0, "0"):
@@ -98,7 +84,7 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败，所有尝试均无效。最后错误: {last_error}")
 
-    # ---------- 各 API 方法保持不变 ----------
+    # ---------- 各 API 方法 ----------
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "range": "3d"}
         data = self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
@@ -214,7 +200,7 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 因子一：恐惧贪婪指数（使用 alternative.me，无变更）----------
+    # ---------- 因子一：恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
         try:
             import requests as req
@@ -279,7 +265,6 @@ class CoinGlassClient:
         if current_price is None:
             current_price = 70000.0
 
-        # 定义需要并行执行的任务
         tasks = {
             "heatmap": lambda: self.get_liquidation_heatmap(symbol),
             "oi": lambda: self.get_open_interest_history(symbol),
@@ -302,7 +287,7 @@ class CoinGlassClient:
         }
 
         results = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_key = {executor.submit(task): key for key, task in tasks.items()}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -312,7 +297,7 @@ class CoinGlassClient:
                     logger.error(f"并行获取 {key} 失败: {e}")
                     results[key] = None
 
-        # 开始组装 data
+        # 组装 data
         data = {}
         heatmap_raw = results.get("heatmap")
         if heatmap_raw:
@@ -508,7 +493,6 @@ class CoinGlassClient:
         else:
             data["eth_btc_ratio"] = {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-        # 其余宏观因子数据存入 data 供外部使用
         data["fear_greed_index"] = results.get("fg", {"current": 50, "prev": 50})
         data["coinbase_premium"] = results.get("premium", {"premium_pct": 0.0})
         data["stablecoin_change"] = results.get("stable", {"change_7d": 0.0})
@@ -516,7 +500,7 @@ class CoinGlassClient:
 
         return data
 
-    # ---------- 辅助函数保持不变 ----------
+    # ---------- 辅助函数 ----------
     def _parse_liquidation_matrix(self, raw_data: dict, current_price: float) -> dict:
         result = {
             "above_short_liquidation": "0",
