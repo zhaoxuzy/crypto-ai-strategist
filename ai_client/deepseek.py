@@ -218,7 +218,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     cvd_valid = raw_view.get("cvd_valid", False)
     cvd_series = raw_view.get("cvd_series_1m", [])
-    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效（全为0）"
+    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效（该币种无CVD数据，跳过分析）"
 
     ls_valid = raw_view.get("ls_valid", False)
     ls_series = raw_view.get("ls_ratio_series_1h", [])
@@ -298,7 +298,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ### 🔬 强制数据深潜任务（你必须完成，否则输出无效）
 
 **首先，评估数据质量**（在第一条观察中声明）：
-- CVD 序列是否全为 0？若是，则 CVD 分析无效。
+- CVD 序列是否有效？若无效，则 CVD 分析跳过。
 - 多空比序列是否全为 0？若是，则多空比分析无效。
 - 系统清算动态信号是否能在分布表中找到对应价格？若找不到，以分布表为准。
 
@@ -309,9 +309,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - 判断：该比值是否 ≥ 2.0（显著偏空）或 ≤ 0.5（显著偏多）？  
    - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
 
-2. **CVD 序列的微观动量分析**（若数据无效则注明“数据无效，跳过”）  
-   - 将有效序列分为前 30 分钟与后 30 分钟，计算净变化量，判断动量是加速、匀速还是衰减。  
-   - 检查最后 10 分钟内是否存在与价格方向相反的异动。
+2. **CVD 序列的趋势与背离分析**（若数据无效则注明“数据无效，跳过”）  
+   - 观察 `cum_vol_delta` 序列的整体趋势，判断是持续为正（买方主导）、持续为负（卖方主导）还是多空拉锯。  
+   - 检查序列的**变化率**：如果正值在减小或负值在扩大，说明买方动能可能正在衰竭。  
+   - **核心任务**：对比 CVD 趋势与价格走势，判断是否存在**背离**（如价格创新高但 CVD 走平或下降，是潜在反转信号）。
 
 3. **持仓结构的矛盾挖掘**（若多空比序列无效，则仅使用顶级交易员和净持仓）  
    - 对比顶级交易员多空比与净持仓累积的方向一致性。
