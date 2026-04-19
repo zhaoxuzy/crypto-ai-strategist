@@ -48,6 +48,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
+    # 市场状态
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
@@ -72,6 +73,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         market_state += "（方向不明）"
 
+    # 策略方向文本
     if direction == "long":
         dir_display = "做多"
     elif direction == "short":
@@ -101,20 +103,56 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
+    # 原始 reasoning
     reasoning = strategy.get('reasoning', '暂无分析')
-    reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
+
+    # 移除第五步及之后的内容（保留前四步）
+    if "【第五步" in reasoning:
+        reasoning = reasoning.split("【第五步")[0].strip()
+
+    # 格式化第四步：确保裁决结论清晰，格式对齐前三步
+    # 在第四步末尾若没有明确的【裁决结论】，则从文本中提取并添加
+    if "【第四步" in reasoning:
+        parts = reasoning.split("【第四步")
+        pre = parts[0].strip()
+        fourth = parts[1].strip()
+        # 尝试提取裁决结论
+        conclusion = ""
+        if "必须输出" in fourth:
+            match = re.search(r'(必须输出\s*(long|short|neutral))', fourth, re.IGNORECASE)
+            if match:
+                conclusion = f"【裁决结论】{match.group(1)}"
+        elif "强制裁决" in fourth and "输出" in fourth:
+            # 更通用提取
+            lines = fourth.split('\n')
+            for line in lines:
+                if '输出' in line and ('long' in line or 'short' in line or 'neutral' in line):
+                    conclusion = f"【裁决结论】{line.strip()}"
+                    break
+        if not conclusion:
+            # 若未提取到，用最后一行作为结论
+            last_line = fourth.split('\n')[-1].strip()
+            if last_line:
+                conclusion = f"【裁决结论】{last_line}"
+        reasoning = pre + "\n\n【第四步】" + fourth + "\n" + conclusion
+    else:
+        reasoning = reasoning
+
+    # 对 reasoning 中的步骤标题进行格式化，每步之间空一行
+    reasoning = re.sub(r'(【第[一二三四]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
 
+    # 方向倾向得分差值、多空明细
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
     bear_score = directional_scores.get("bear", 0)
     diff = abs(bull_score - bear_score)
 
-    if diff >= 18:
+    if diff >= 22:
         strength_text = "强"
-    elif diff >= 10:
+    elif diff >= 12:
         strength_text = "中"
-    elif diff >= 7:
+    elif diff >= 8:
         strength_text = "弱"
     else:
         strength_text = "极弱"
@@ -140,9 +178,23 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     tp = float(strategy.get("take_profit", 0))
     tp_anchor = strategy.get("tp_anchor", "未提供")
 
+    # 计算盈亏比
+    risk = abs(current_price - stop) if stop != 0 else 0
+    reward = abs(tp - current_price) if tp != 0 else 0
+    rr = reward / risk if risk > 0 else 0
+    rr_str = f"盈亏比{rr:.2f}:1" if rr > 0 else "盈亏比N/A"
+
     alerts_str = "\n".join(alerts) if alerts else ""
     if alerts_str:
         alerts_str = alerts_str + "\n"
+
+    # 处理风险提示：条目化，首行对齐
+    risk_note = strategy.get('risk_note', '请严格设置止损')
+    risk_items = [item.strip() for item in risk_note.replace('；', ';').replace('。', ';').split(';') if item.strip()]
+    if not risk_items:
+        risk_items = [risk_note]
+    # 格式化为有序列表
+    risk_formatted = "\n".join([f"{i+1}. {item}" for i, item in enumerate(risk_items)])
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 🕒 {now_str}
 
@@ -152,14 +204,14 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价格：${current_price:,.1f}
 - 入场区间：${entry_low:,.1f} - ${entry_high:,.1f}
 - 止损：${stop:,.1f}
-- 止盈：${tp:.1f}（锚定：{tp_anchor}）
+- 止盈：${tp:.1f}（{rr_str}）
 - 分差：{diff}分（{strength_text}）| {score_detail}
 
 ### 📈 AI 分析逻辑
 {reasoning}
 
 ### ⚠️ 风险提示
-- {strategy.get('risk_note', '请严格设置止损')}
+{risk_formatted}
 
 ### 🔗 数据快照
 - 当前价：${current_price:,.1f} | ATR：{extra.get('atr', 0):.1f}
