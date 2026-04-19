@@ -47,61 +47,44 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
-    # 市场状态文本
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
 
     if trend_direction == "bull":
-        if trend_score >= 70:
-            market_state = "上涨趋势"
-        elif trend_score >= 30:
-            market_state = "震荡偏强"
-        else:
-            market_state = "弱势震荡"
+        if trend_score >= 70: market_state = "上涨趋势"
+        elif trend_score >= 30: market_state = "震荡偏强"
+        else: market_state = "弱势震荡"
     elif trend_direction == "bear":
-        if trend_score >= 70:
-            market_state = "下跌趋势"
-        elif trend_score >= 30:
-            market_state = "震荡偏弱"
-        else:
-            market_state = "弱势震荡"
+        if trend_score >= 70: market_state = "下跌趋势"
+        elif trend_score >= 30: market_state = "震荡偏弱"
+        else: market_state = "弱势震荡"
     else:
         market_state = "无明显方向"
 
     if 30 <= trend_score <= 70:
         market_state += "（方向不明）"
 
-    # 方向展示
     dir_emoji = "🟢" if direction == "long" else ("🔴" if direction == "short" else "⚪")
     dir_text = "做多" if direction == "long" else ("做空" if direction == "short" else "观望")
 
-    # 预警信息收集
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
     try:
         fr = float(funding_rate_str.strip('%')) if isinstance(funding_rate_str, str) else 0
-        if fr > 0.05:
-            alerts.append("⚠️资金费率>0.05%(多头拥挤)")
-        elif fr < -0.03:
-            alerts.append("⚠️资金费率<-0.03%(空头拥挤)")
-    except:
-        pass
+        if fr > 0.05: alerts.append("⚠️资金费率>0.05%(多头拥挤)")
+        elif fr < -0.03: alerts.append("⚠️资金费率<-0.03%(空头拥挤)")
+    except: pass
 
     oi_change_str = extra.get("oi_change", "0")
-    # 修复：去除已有的百分号，避免重复
-    oi_change_clean = str(oi_change_str).replace('%', '')
     try:
-        oi = float(oi_change_clean)
-        if abs(oi) > 5:
-            alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
-    except:
-        pass
+        oi = float(oi_change_str.strip('%')) if isinstance(oi_change_str, str) else 0
+        if abs(oi) > 5: alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
+    except: pass
 
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
-    # 提取 AI 分析摘要
     analysis_summary = strategy.get('analysis_summary', '')
     if not analysis_summary:
         reasoning = strategy.get('reasoning', '暂无分析')
@@ -109,53 +92,42 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
-    # --- 格式化处理：确保 AI 研判摘要列表严格对齐 ---
+    # 格式化列表
     formatted_summary = ""
     if analysis_summary:
-        # 1. 将内容按 🔍 分割为独立条目
-        # 先统一将可能的中英文数字序号规范化
-        raw_text = analysis_summary
-        # 分割条目：以 🔍 为分隔符，但保留 🔍 符号
-        parts = re.split(r'(?=🔍)', raw_text)
+        lines = analysis_summary.split('\n')
         summary_items = []
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            # 清理条目内部的多余换行，将多行合并为一行（用空格连接）
-            part = re.sub(r'\s+', ' ', part)
-            summary_items.append(part)
-        
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if line.startswith('🔍') or re.match(r'^\d+\.', line):
+                summary_items.append(line)
+            else:
+                if summary_items:
+                    summary_items[-1] += " " + line
+                else:
+                    summary_items.append(line)
         if summary_items:
-            # 生成规范列表，每行一个条目，使用 "- " 开头，确保对齐
             formatted_summary = "\n".join([f"- {item}" for item in summary_items])
         else:
             formatted_summary = analysis_summary
     else:
         formatted_summary = "无分析摘要"
 
-    # 交易员备注
     trader_commentary = strategy.get('trader_commentary', '')
 
-    # 方向倾向得分差值
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
     bear_score = directional_scores.get("bear", 0)
     diff = abs(bull_score - bear_score)
 
-    if diff >= 22:
-        strength_text = "强"
-    elif diff >= 12:
-        strength_text = "中"
-    elif diff >= 8:
-        strength_text = "弱"
-    else:
-        strength_text = "极弱"
+    if diff >= 22: strength_text = "强"
+    elif diff >= 12: strength_text = "中"
+    elif diff >= 8: strength_text = "弱"
+    else: strength_text = "极弱"
 
-    # 标题行
     title_line = f"## {dir_emoji} {dir_text} {symbol}  |  {now_beijing.strftime('%m-%d %H:%M')}"
 
-    # 对于 neutral 方向，使用简化模板
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         return f"""{title_line}
@@ -163,7 +135,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
 {alerts_str}
 
---- 
 ### 🧠 AI 研判摘要
 {formatted_summary}
 
@@ -173,7 +144,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - {data_source_status}
 """
 
-    # 非 neutral 方向的完整模板
     entry_low = float(strategy.get("entry_price_low", 0))
     entry_high = float(strategy.get("entry_price_high", 0))
     stop = float(strategy.get("stop_loss", 0))
@@ -184,12 +154,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     rr = reward / risk if risk > 0 else 0
     rr_str = f"{rr:.2f}:1" if rr > 0 else "N/A"
 
-    # 趋势进度条
     bar_len = int(min(100, trend_score) / 10)
     trend_bar = "`" + "█" * bar_len + "░" * (10 - bar_len) + "`"
     trend_state_desc = f"{trend_bar} {trend_score}/100"
 
-    # 交易指令卡
     param_card = f"""
 > ### 📋 交易指令
 > **现价**：`{current_price:.1f}`  
@@ -199,7 +167,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > **盈亏比**：**{rr_str}**
 """
 
-    # 风险提示清洗并编号
     risk_note = strategy.get('risk_note', '请严格设置止损')
     risk_note = re.sub(r'^风险提示[：:]\s*', '', risk_note)
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
@@ -207,8 +174,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     risk_items = []
     for item in raw_items:
         item = item.strip()
-        if not item:
-            continue
+        if not item: continue
         item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
         if item and not re.match(r'^\d+$', item):
             risk_items.append(item)
@@ -216,20 +182,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         risk_items = ["请严格设置止损"]
     risk_formatted = "\n> ".join([f"{i+1}. {item}" for i, item in enumerate(risk_items)])
 
-    # 预警行
     alerts_str = "  ".join(alerts) if alerts else ""
 
-    # 交易员备注块
     trader_block = ""
     if trader_commentary:
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
-
-    # 数据快照中的 OI 显示修复（避免双百分号）
-    oi_display = extra.get('oi_change', 'N/A')
-    if isinstance(oi_display, str) and oi_display.endswith('%'):
-        oi_display = oi_display  # 保留单个百分号
-    else:
-        oi_display = f"{oi_display}%" if oi_display != 'N/A' else 'N/A'
 
     return f"""{title_line}
 
@@ -240,14 +197,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
 {alerts_str}
 
---- 
 ### 🧠 AI 研判摘要
 {formatted_summary}
 {trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-📎 `ATR {extra.get('atr',0):.1f}` · `费率 {extra.get('funding_rate','N/A')}%` · `OI {oi_display}` · `CVD {extra.get('cvd_signal','N/A')}` · `贪婪 {extra.get('fear_greed','N/A')}`  
+📎 `ATR {extra.get('atr',0):.1f}` · `费率 {extra.get('funding_rate','N/A')}%` · `OI {extra.get('oi_change','N/A')}%` · `CVD {extra.get('cvd_signal','N/A')}` · `贪婪 {extra.get('fear_greed','N/A')}`  
 {data_source_status}
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
