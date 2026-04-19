@@ -595,12 +595,6 @@ def call_deepseek_enhanced(symbol: str, price: float, atr: float, coinglass_data
                            tp_candidates: dict = None) -> dict:
     """
     两阶段调用，包含审计和 neutral 惩罚逻辑。
-    返回格式：
-        - direction, confidence, entry_price_low, entry_price_high, stop_loss, take_profit,
-          tp_anchor, analysis_summary, trader_commentary, risk_note
-        - audit_passed: bool
-        - audit_discrepancies: list
-        - signal_weight: float (0~1)
     """
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=60.0)
 
@@ -656,15 +650,79 @@ def call_deepseek_enhanced(symbol: str, price: float, atr: float, coinglass_data
             if attempt == 2:
                 raise
 
-       # 提取 JSON
-    json_str = None
-    if "```json" in content:
-        ...
-    if not json_str:
-        raise ValueError("无法从响应中提取有效 JSON")
+    # ==================== 提取 JSON（增强版） ====================
+    logger.info(f"决策响应原始内容前500字符:\n{content[:500]}")
 
-    result = json.loads(json_str)
-    result.setdefault(...)
+    json_str = None
+
+    # 1. 尝试从 ```json ... ``` 中提取
+    if "```json" in content:
+        start = content.find("```json") + 7
+        end = content.find("```", start)
+        if end != -1:
+            json_str = content[start:end].strip()
+            logger.info("从 ```json 代码块中提取 JSON")
+
+    # 2. 尝试从 ``` ... ``` 中提取（无语言标识）
+    if not json_str and "```" in content:
+        start = content.find("```") + 3
+        end = content.find("```", start)
+        if end != -1:
+            json_str = content[start:end].strip()
+            logger.info("从 ``` 代码块中提取 JSON")
+
+    # 3. 通用花括号匹配
+    if not json_str:
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start != -1 and end > start:
+            json_str = content[start:end].strip()
+            logger.info("通过花括号匹配提取 JSON")
+
+    # 4. 清洗提取出的字符串
+    if json_str:
+        # 移除尾随逗号
+        import re
+        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+        logger.info(f"清洗后的 JSON 前200字符: {json_str[:200]}")
+
+    # 5. 解析 JSON
+    result = None
+    if json_str:
+        try:
+            result = json.loads(json_str)
+            logger.info("JSON 解析成功")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON 解析失败: {e}")
+            logger.error(f"问题 JSON 字符串: {json_str[:500]}")
+            # 尝试修复：将单引号替换为双引号
+            try:
+                fixed = json_str.replace("'", '"')
+                result = json.loads(fixed)
+                logger.info("通过单引号替换修复 JSON 解析成功")
+            except:
+                pass
+
+    if result is None:
+        logger.error(f"无法提取有效 JSON，完整响应内容:\n{content}")
+        raise ValueError(f"无法从响应中提取有效 JSON。响应预览: {content[:300]}")
+
+    # 填充默认字段
+    result.setdefault("tp_anchor", "未提供")
+    result.setdefault("analysis_summary", analysis_text)
+    result.setdefault("trader_commentary", "")
+    result.setdefault("risk_note", "")
+
+    data_quality = {
+        "cvd_valid": raw_view.get("cvd_valid", False),
+        "lsr_valid": not all(v == 0 for v in raw_view.get("ls_ratio_series_1h", []))
+    }
+    signal_weight = evaluate_neutral_penalty(result, data_quality)
+    result["audit_passed"] = audit_result["passed"]
+    result["audit_discrepancies"] = audit_result["discrepancies"]
+    result["signal_weight"] = signal_weight
+
+    return result
 
 # ==================== 增强版策略验证 ====================
 def validate_strategy_enhanced(s: dict, price: float, atr: float = None) -> tuple:
