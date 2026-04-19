@@ -73,7 +73,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         market_state += "（方向不明）"
 
-    # 策略方向文本
     if direction == "long":
         dir_display = "做多"
     elif direction == "short":
@@ -106,39 +105,55 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     # 原始 reasoning
     reasoning = strategy.get('reasoning', '暂无分析')
 
-    # 移除第五步及之后的内容（保留前四步）
+    # 1. 移除第五步及之后的内容
     if "【第五步" in reasoning:
         reasoning = reasoning.split("【第五步")[0].strip()
 
-    # 格式化第四步：确保裁决结论清晰，格式对齐前三步
-    # 在第四步末尾若没有明确的【裁决结论】，则从文本中提取并添加
+    # 2. 补全第三步结论（若缺失）
+    if "【第三步" in reasoning:
+        parts = reasoning.split("【第三步")
+        pre = parts[0].strip()
+        third = parts[1].split("【第四步")[0].strip() if "【第四步" in parts[1] else parts[1].strip()
+        # 若第三步末尾没有【支持多头/空头/中性】，自动提取权重比较结果追加
+        if not re.search(r'【支持(多头|空头|中性)】', third):
+            if "多头总权重 > 空头总权重" in third:
+                third += "\n【支持多头】"
+            elif "空头总权重 > 多头总权重" in third:
+                third += "\n【支持空头】"
+            elif "两者相等" in third:
+                third += "\n【中性】"
+        reasoning = pre + "\n\n【第三步】" + third
+
+    # 3. 确保第四步有明确的裁决结论（与前三步格式对齐）
     if "【第四步" in reasoning:
         parts = reasoning.split("【第四步")
         pre = parts[0].strip()
         fourth = parts[1].strip()
-        # 尝试提取裁决结论
         conclusion = ""
+        # 尝试提取已有的裁决表述
         if "必须输出" in fourth:
-            match = re.search(r'(必须输出\s*(long|short|neutral))', fourth, re.IGNORECASE)
+            match = re.search(r'(必须输出\s*(long|short))', fourth, re.IGNORECASE)
             if match:
                 conclusion = f"【裁决结论】{match.group(1)}"
-        elif "强制裁决" in fourth and "输出" in fourth:
-            # 更通用提取
-            lines = fourth.split('\n')
-            for line in lines:
-                if '输出' in line and ('long' in line or 'short' in line or 'neutral' in line):
-                    conclusion = f"【裁决结论】{line.strip()}"
-                    break
+        elif "强制裁决生效" in fourth:
+            if "输出short" in fourth:
+                conclusion = "【裁决结论】必须输出 short"
+            elif "输出long" in fourth:
+                conclusion = "【裁决结论】必须输出 long"
         if not conclusion:
-            # 若未提取到，用最后一行作为结论
-            last_line = fourth.split('\n')[-1].strip()
-            if last_line:
-                conclusion = f"【裁决结论】{last_line}"
-        reasoning = pre + "\n\n【第四步】" + fourth + "\n" + conclusion
-    else:
-        reasoning = reasoning
+            # 若未提取到，根据最终方向生成
+            if direction == "long":
+                conclusion = "【裁决结论】必须输出 long"
+            elif direction == "short":
+                conclusion = "【裁决结论】必须输出 short"
+            else:
+                conclusion = "【裁决结论】综合判断输出 neutral"
+        # 避免重复添加
+        if "【裁决结论】" not in fourth:
+            fourth = fourth + "\n" + conclusion
+        reasoning = pre + "\n\n【第四步】" + fourth
 
-    # 对 reasoning 中的步骤标题进行格式化，每步之间空一行
+    # 格式化步骤标题，每步之间空一行
     reasoning = re.sub(r'(【第[一二三四]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
 
@@ -188,12 +203,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if alerts_str:
         alerts_str = alerts_str + "\n"
 
-    # 处理风险提示：条目化，首行对齐
+    # 处理风险提示：清洗并条目化
     risk_note = strategy.get('risk_note', '请严格设置止损')
-    risk_items = [item.strip() for item in risk_note.replace('；', ';').replace('。', ';').split(';') if item.strip()]
+    # 移除多余空白和换行，统一用句号或分号分割
+    risk_note = re.sub(r'\s+', ' ', risk_note).strip()
+    risk_items = [item.strip() for item in re.split(r'[。；;]', risk_note) if item.strip()]
     if not risk_items:
         risk_items = [risk_note]
-    # 格式化为有序列表
     risk_formatted = "\n".join([f"{i+1}. {item}" for i, item in enumerate(risk_items)])
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 🕒 {now_str}
