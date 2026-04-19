@@ -48,7 +48,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
-    # 市场状态
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
     trend_score = trend_info.get("score", 0)
@@ -73,7 +72,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if 30 <= trend_score <= 70:
         market_state += "（方向不明）"
 
-    # 策略方向文本
     if direction == "long":
         dir_display = "做多"
     elif direction == "short":
@@ -103,12 +101,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
-    # AI 分析逻辑：每一步空一行
     reasoning = strategy.get('reasoning', '暂无分析')
     reasoning = re.sub(r'(【第[一二三四五]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
 
-    # 方向倾向得分差值、多空明细
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
     bear_score = directional_scores.get("bear", 0)
