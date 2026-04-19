@@ -163,12 +163,12 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        """获取聚合合约 CVD 历史数据"""
+        """获取聚合合约 CVD 历史数据（3小时，12个15分钟点）"""
         aggregated_params = {
             "exchange_list": "OKX",
             "symbol": symbol.upper(),
             "interval": "15m",
-            "limit": 4
+            "limit": 12  # 12 × 15分钟 = 3小时，提供足够的动量分析窗口
         }
         logger.info(f"尝试聚合CVD接口，参数: {aggregated_params}")
         data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=False, silent_fail=True)
@@ -183,7 +183,7 @@ class CoinGlassClient:
             "exchange": "OKX",
             "symbol": f"{symbol}-USDT-SWAP",
             "interval": "15m",
-            "limit": 4
+            "limit": 12
         }
         return self._request("api/futures/cvd/history", futures_params, allow_backup=True, silent_fail=True)
 
@@ -446,6 +446,26 @@ class CoinGlassClient:
         return 0.0
 
     @staticmethod
+    def _get_ratio_from_item(item) -> float:
+        """从多空比数据项中提取比值，兼容多种格式"""
+        if isinstance(item, dict):
+            # 对象格式：{longShortAccountRatio: 1.25}
+            if "longShortAccountRatio" in item:
+                return float(item["longShortAccountRatio"])
+            elif "ratio" in item:
+                return float(item["ratio"])
+            elif "close" in item:
+                return float(item["close"])
+            elif "value" in item:
+                return float(item["value"])
+        elif isinstance(item, list) and len(item) >= 5:
+            # K线数组格式：[timestamp, open, high, low, close, volume]
+            return float(item[4])
+        elif isinstance(item, (int, float)):
+            return float(item)
+        return 0.0
+
+    @staticmethod
     def _get_buy_sell_volumes(candle):
         if isinstance(candle, dict):
             return float(candle.get("taker_buy_volume_usd", 0)), float(candle.get("taker_sell_volume_usd", 0))
@@ -545,20 +565,22 @@ class CoinGlassClient:
         else:
             data["funding_rate"] = "N/A"
 
-        # 多空账户人数比
+        # 多空账户人数比（使用专用解析函数）
         ls_history = results.get("ls")
         ls_series = []
         ls_valid = False
         if ls_history and isinstance(ls_history, list):
             for item in ls_history[-6:]:
-                val = self._get_close_from_candle(item)
+                val = self._get_ratio_from_item(item)
                 if val != 0:
                     ls_valid = True
                 ls_series.append(round(val, 2))
         if not ls_valid:
             logger.warning(f"多空账户人数比序列全为0或无效，数据长度: {len(ls_history) if ls_history else 0}")
+        else:
+            logger.info(f"多空账户人数比解析成功，序列: {ls_series}")
 
-        # 大户持仓多空比（新接口）
+        # 大户持仓多空比
         top_ls = results.get("top_ls")
         if top_ls and isinstance(top_ls, list) and len(top_ls) > 0:
             latest = top_ls[-1]
