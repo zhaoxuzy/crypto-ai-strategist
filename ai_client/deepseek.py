@@ -152,7 +152,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
     diff = abs(bull_score - bear_score)
     higher_direction = "多头" if bull_score > bear_score else "空头"
-    trend_dir = directional_scores.get("trend_direction", "neutral") if directional_scores else "neutral"
 
     macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
     macro_signal_lines = []
@@ -292,19 +291,16 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **必须引用至少一个清算动态信号**（来自第一步）作为支持/反对依据。
 - 应用以下强制裁决规则。
 
-**🚨 强制裁决规则（绝对优先级）**：
-1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **{12 if trend_dir == 'bear' else 7}分** → **必须**输出 **long**。
-2. 若第一步结论为【偏空】，且差值 ≥ **{12 if trend_dir == 'bull' else 7}分** → **必须**输出 **short**。
+**🚨 强制裁决规则（绝对优先级，唯一例外是 extreme_liq=true）**：
+1. 若第一步结论为【偏多】，且方向倾向得分差值 ≥ **7分** → **必须**输出 **long**。
+2. 若第一步结论为【偏空】，且差值 ≥ **7分** → **必须**输出 **short**。
 3. 若第一步结论为【风险预警】，且差值 ≥ **10分** → **必须**输出领先方向。
 4. 若第一步结论为【中性观察】，不触发强制裁决。
 
-**⚠️ 盈亏比否决条款**：
-- 即使满足上述强制裁决条件，若你计算出的**预期盈亏比 < 0.5:1**（即止盈距离 < 0.5×止损距离），你必须**否决强制裁决，输出 neutral**，并在reasoning中明确说明“因预期盈亏比过低（X:1 < 0.5:1）否决强制裁决”。
-- **唯一例外**：若反方向存在强度≥4的清算区且预期盈亏比≥1:1，则仍可输出方向。
-
-**⚠️ 铁律**：
-- 一旦满足强制裁决条件且未被盈亏比否决，你**无权**以任何理由拒绝执行。
+**⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
+- 一旦满足上述任一强制裁决条件，你**无权**以“风险回报比”、“价格紧贴关键位”、“市场结构矛盾”、“风险第一原则”等**任何理由**拒绝执行。
 - 你只能在 **extreme_liq=true** 时拒绝执行强制裁决，并在 reasoning 中明确说明“因极端清算否决”。
+- **严禁**在满足强制裁决条件时输出 **neutral**。
 
 **第五步：止损、止盈与入场区间设置**
 - **入场区间**：系统已提供三个候选区间（见下方），你必须按优先级选择一个，并在reasoning中注明所选规则。
@@ -315,14 +311,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - 做多：止损设在**下方**最近强度≥3的**多头清算区**外侧（价格×0.998）。若无，则使用 **2 × 4小时ATR** 止损（入场价 - 2×ATR）。
   - 做空：止损设在**上方**最近强度≥3的**空头清算区**外侧（价格×1.002）。若无，则使用 **2 × 4小时ATR** 止损（入场价 + 2×ATR）。
 - **止盈**（单一目标，严格遵守以下铁律）：
-  - **做多时**：止盈**必须**锚定**上方**最近强度≥3的**空头清算区**。**若无上方空头清算区，则唯一合法止盈为：入场价 + 2×(入场价 - 止损价)**。
-  - **做空时**：止盈**必须**锚定**下方**最近强度≥3的**多头清算区**。**若无下方多头清算区，则唯一合法止盈为：入场价 - 2×(止损价 - 入场价)**。
-  - **严禁**将同向清算区、清算最大痛点、期权最大痛点、前高前低等任何其他价格用作止盈替代。
-  - **严禁**以“通常作为强阻力/引力区”、“可视为有效目标区”等理由自行创造止盈锚点。
-  - **违规示例（绝对禁止）**：
-    - “数据未提供上方空头清算区，但清算最大痛点通常作为强阻力，故作为止盈。”
-    - “上方无明显清算区，但前高XXXX可作为目标。”
-    - “该区域为强磁吸区，价格向上反弹触及将引发空头清算，故作为止盈。”
+  - **做多时**：止盈**必须**锚定**上方**最近强度≥3的**空头清算区**。**若无上方空头清算区，则唯一合法止盈为：入场价 + 2×(入场价 - 止损价)**。**严禁**将下方清算区、清算最大痛点或其他任何价格用作止盈。
+  - **做空时**：止盈**必须**锚定**下方**最近强度≥3的**多头清算区**。**若无下方多头清算区，则唯一合法止盈为：入场价 - 2×(止损价 - 入场价)**。**严禁**将上方清算区、清算最大痛点或其他任何价格用作止盈。
+  - **严禁**将同向清算区用于止盈（做多时用下方清算区止盈、做空时用上方清算区止盈）。
+  - **严禁**以“数据未提供”为由，自行创造止盈锚点（如“强磁吸区”、“价格向上反弹触及将引发空头清算”等）。
   - 若清算区导致的盈亏比过低（如<1:1），你应在 `risk_note` 中明确提示“盈亏比偏低，建议轻仓或观望”，但**止盈价必须如实填入清算区价格或公式计算值**。
   - **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离）。
 - 在reasoning中明确写出入场、止损、止盈的锚定来源及盈亏比。
@@ -341,31 +333,20 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 """
 
 
-def call_deepseek(prompt: str, max_retries: int = 2) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1")
+def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=60.0)
     for attempt in range(max_retries):
         try:
-            resp = client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1200,
-                timeout=30.0
-            )
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1500)
             content = resp.choices[0].message.content
-            if not content:
-                logger.warning(f"DeepSeek 返回空内容 (尝试 {attempt+1}/{max_retries})")
-                continue
-            logger.info(f"DeepSeek 响应预览: {content[:200]}...")
             js = content[content.find('{'):content.rfind('}') + 1]
             s = json.loads(js)
             s.setdefault("tp_anchor", "未提供")
             return s
-        except json.JSONDecodeError as e:
-            logger.warning(f"DeepSeek JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            logger.warning(f"原始响应内容: {content if 'content' in locals() else '无'}")
         except Exception as e:
             logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                raise
     return {}
 
 
