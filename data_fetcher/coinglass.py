@@ -326,34 +326,53 @@ class CoinGlassClient:
             result["nearest_cluster"] = {"direction": direction, "price": f"{nearest_cluster_price:.1f}", "intensity": str(intensity)}
         return result
 
-    def _extract_liquidation_profile(self, raw_data: dict, current_price: float, atr: float) -> list:
+    def _extract_liquidation_profile(self, raw_data: dict, current_price: float, atr: float) -> dict:
         """
-        提取距离当前价格 ±3×ATR 范围内的清算强度分布，供 AI 分析。
-        返回格式: [{"price": 84500, "intensity": 2.5, "direction": "above"}, ...]
+        提取距离当前价格 ±5×ATR 范围内的清算强度分布，并生成易于 AI 理解的表格数据。
+        返回字典包含：
+            - table: 完整分布列表，每项含 price, intensity, direction, effect, distance_atr
+            - top_3: 强度最高的前三个清算区
         """
-        profile = []
+        profile_table = []
         y_axis = raw_data.get("y_axis")
         liq_data = raw_data.get("liquidation_leverage_data")
         if not y_axis or not liq_data:
-            return profile
-        lower_bound = current_price - 3 * atr
-        upper_bound = current_price + 3 * atr
+            return {"table": [], "top_3": []}
+
+        # 动态调整范围：高波动时扩大范围，确保覆盖重要清算区
+        range_multiplier = 5.0 if atr > current_price * 0.02 else 4.0  # 高波动用 5×ATR，否则 4×ATR
+        lower_bound = current_price - range_multiplier * atr
+        upper_bound = current_price + range_multiplier * atr
+
+        # 收集所有有效清算点
+        points = []
         for item in liq_data:
             if not isinstance(item, list) or len(item) < 3:
                 continue
             y_idx = int(item[1])
-            intensity = float(item[2])
+            raw_intensity = float(item[2])
             if y_idx < 0 or y_idx >= len(y_axis):
                 continue
             price = float(y_axis[y_idx])
             if lower_bound <= price <= upper_bound:
-                profile.append({
-                    "price": round(price, 1),
-                    "intensity": round(intensity / 1_000_000, 2),  # 转为百万美元单位
-                    "direction": "above" if price > current_price else "below"
+                direction = "above" if price > current_price else "below"
+                effect = "空头清算/潜在阻力" if direction == "above" else "多头清算/潜在支撑"
+                distance_atr = (price - current_price) / atr
+                points.append({
+                    "price": round(price, 2),
+                    "intensity": round(raw_intensity, 2),          # 保留原始值，不转换单位
+                    "direction": direction,
+                    "effect": effect,
+                    "distance_atr": round(distance_atr, 2)
                 })
-        profile.sort(key=lambda x: x["price"])
-        return profile
+
+        # 按价格排序
+        points.sort(key=lambda x: x["price"])
+
+        # 提取前三强
+        top_3 = sorted(points, key=lambda x: x["intensity"], reverse=True)[:3]
+
+        return {"table": points, "top_3": top_3}
 
     def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
         signals = []
@@ -674,13 +693,18 @@ class CoinGlassClient:
         # --- 为 AI 准备原始数据视图 (raw_view) ---
         raw_view = {}
 
-        # 清算分布表
+        # 清算分布（结构化视图）
         if heatmap_raw:
-            raw_view["liquidation_profile"] = self._extract_liquidation_profile(
+            liq_view = self._extract_liquidation_profile(
                 heatmap_raw, current_price, atr if atr else (current_price * 0.02)
             )
+            raw_view["liquidation_profile"] = liq_view.get("table", [])
+            raw_view["top_3_liquidation_zones"] = liq_view.get("top_3", [])
+        else:
+            raw_view["liquidation_profile"] = []
+            raw_view["top_3_liquidation_zones"] = []
 
-        # CVD 原始序列 (最近60分钟，1分钟粒度)
+        # CVD 原始序列（最近60分钟）
         if cvd_history and isinstance(cvd_history, list):
             cvd_series = []
             for item in cvd_history[-60:]:
@@ -690,14 +714,14 @@ class CoinGlassClient:
                     cvd_series.append(round(float(item.get("close", 0)) / 1000, 0))
             raw_view["cvd_series_1m"] = cvd_series
 
-        # 多空比序列 (最近6小时)
+        # 多空比序列（最近6小时）
         if ls_history and isinstance(ls_history, list):
             ls_series = []
             for item in ls_history[-6:]:
                 ls_series.append(round(self._get_close_from_candle(item), 2))
             raw_view["ls_ratio_series_1h"] = ls_series
 
-        # 主动买卖比率序列 (最近6小时)
+        # 主动买卖比率序列（最近6小时）
         if taker and isinstance(taker, list):
             taker_series = []
             for item in taker[-6:]:
