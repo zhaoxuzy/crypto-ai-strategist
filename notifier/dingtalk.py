@@ -43,9 +43,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
+
+    # 清洗数据源状态中的加粗符号
     data_source_status = extra.get("data_source_status", "")
-    # 移除加粗符号
     data_source_status = re.sub(r'\*\*', '', data_source_status)
+
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
@@ -178,23 +180,22 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > **盈亏比**：**{rr_str}**
 """
 
-    # 风险提示清洗：移除所有前导序号、风险字样，重新编号
+    # 风险提示深度清洗
     risk_note = strategy.get('risk_note', '请严格设置止损')
-    # 移除开头的"风险提示："或"风险："
-    risk_note = re.sub(r'^风险提示[：:]\s*', '', risk_note)
-    risk_note = re.sub(r'^风险[：:]\s*', '', risk_note)
-    # 合并多余空白
+    # 1. 移除前缀
+    risk_note = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', risk_note)
+    # 2. 合并空白
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
-    # 按中文标点分割
+    # 3. 按中文标点分割
     raw_items = re.split(r'[。；;]', risk_note)
     risk_items = []
     for item in raw_items:
         item = item.strip()
         if not item: continue
-        # 移除前导数字序号（如 1. 1) 1、等）
+        # 4. 移除所有形式的前导序号（数字+点/顿号/右括号/空格）
         item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
-        # 移除可能残留的"风险："字样
-        item = re.sub(r'^风险[：:]\s*', '', item)
+        # 5. 再次移除可能残留的风险字样（如"风险："）
+        item = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', item)
         if item and not re.match(r'^\d+$', item):
             risk_items.append(item)
     if not risk_items:
@@ -209,7 +210,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
-    # 格式化数据快照行，确保百分比整洁
+    # 格式化数据快照行
     atr_val = extra.get('atr', 0)
     funding_val = extra.get('funding_rate', 'N/A')
     oi_val = extra.get('oi_change', 'N/A')
