@@ -162,6 +162,8 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info:
     bull_score = 0
     bear_score = 0
     current_price = coinglass_data.get("current_price", btc_price)
+    trend_dir = trend_info.get("direction", "neutral")
+    trend_score = trend_info.get("score", 0)
     
     # 1. 清算不对称比率（12分）
     above = float(str(coinglass_data.get("above_short_liquidation", "0")).replace(",", ""))
@@ -179,8 +181,6 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info:
             bull_score += 7
     
     # 2. 趋势强度（24分）
-    trend_score = trend_info.get("score", 0)
-    trend_dir = trend_info.get("direction", "neutral")
     trend_component = round(trend_score / 100 * 24)
     if trend_dir == "bull":
         bull_score += trend_component
@@ -286,13 +286,20 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info:
             elif cluster_dir == "下" and trend_score < 70:
                 bear_score = max(0, bear_score - 8)
     
+    # 10. 趋势方向惩罚（15分）—— 新增
+    if trend_dir == "bear":
+        bull_score = max(0, bull_score - 15)
+    elif trend_dir == "bull":
+        bear_score = max(0, bear_score - 15)
+    
     bull_score = max(0, bull_score)
     bear_score = max(0, bear_score)
     
     return {
         "bull": bull_score,
         "bear": bear_score,
-        "macro_signals": macro_result["signals"]
+        "macro_signals": macro_result["signals"],
+        "trend_direction": trend_dir  # 新增，供动态阈值使用
     }
 
 
@@ -402,7 +409,6 @@ def main():
             temp_direction = "long" if temp_direction == "bull" else "short"
         entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
 
-        # 获取交易所余额
         exchange_balances = cg.get_exchange_balances()
 
         prompt = build_prompt(
@@ -474,7 +480,7 @@ def main():
             "is_probe": is_probe, "key_support": key_levels["support"],
             "key_resistance": key_levels["resistance"],
             "directional_scores": directional_scores,
-            "exchange_balances": exchange_balances  # 新增：传入交易所余额供钉钉展示
+            "exchange_balances": exchange_balances
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
