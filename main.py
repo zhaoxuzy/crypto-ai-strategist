@@ -286,7 +286,7 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info:
             elif cluster_dir == "下" and trend_score < 70:
                 bear_score = max(0, bear_score - 8)
     
-    # 10. 趋势方向惩罚（15分）—— 新增
+    # 10. 趋势方向惩罚（15分）
     if trend_dir == "bear":
         bull_score = max(0, bull_score - 15)
     elif trend_dir == "bull":
@@ -299,7 +299,7 @@ def compute_directional_scores_v2(symbol: str, coinglass_data: dict, trend_info:
         "bull": bull_score,
         "bear": bear_score,
         "macro_signals": macro_result["signals"],
-        "trend_direction": trend_dir  # 新增，供动态阈值使用
+        "trend_direction": trend_dir
     }
 
 
