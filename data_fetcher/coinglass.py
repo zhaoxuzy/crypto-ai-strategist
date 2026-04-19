@@ -7,12 +7,23 @@ class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         self.base_url = "https://www.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.delay = 6.0
+        # 20 requests/min → 最小间隔 3 秒
+        self.min_interval = 3.0
+        self._last_request_time = 0.0
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Bybit"]
         self._liq_zero_count = 0
         self._use_model1_fallback = False
         self._prev_liq_data = {}
+
+    def _wait_for_rate_limit(self):
+        """根据上次请求时间动态等待，确保满足最小间隔"""
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self.min_interval:
+            wait = self.min_interval - elapsed
+            time.sleep(wait)
+        self._last_request_time = time.time()
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -40,8 +51,8 @@ class CoinGlassClient:
                 try:
                     logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}" + 
                                 (f" (重试 {attempt+1}/{max_retries})" if attempt > 0 else ""))
+                    self._wait_for_rate_limit()
                     resp = requests.get(url, params=current_params, headers=headers, timeout=15)
-                    time.sleep(self.delay)
                     data = resp.json()
                     if data.get("code") in (0, "0"):
                         return data.get("data", {})
@@ -321,26 +332,16 @@ class CoinGlassClient:
 
     # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
-        """
-        获取 ETH/BTC 汇率及其趋势。
-        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
-        """
         try:
             params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             params["symbol"] = "BTCUSDT"
             btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             
-            # 校验数据格式与长度
-            if not isinstance(eth_data, list) or not isinstance(btc_data, list):
-                logger.warning("ETH/BTC 汇率数据格式异常，返回默认值")
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("ETH/BTC 汇率数据不足")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            if len(eth_data) < 4 or len(btc_data) < 4:
-                logger.warning(f"ETH/BTC 汇率数据不足，ETH数据量:{len(eth_data)}，BTC数据量:{len(btc_data)}")
-                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
-
-            # 提取收盘价（兼容 list 和 dict 两种格式）
             eth_close_4 = []
             for k in eth_data[-4:]:
                 if isinstance(k, list) and len(k) >= 5:
