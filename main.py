@@ -6,7 +6,6 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-# 不再需要 macro_cache，恐惧贪婪指数直接从 cg_data 获取
 from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
@@ -112,7 +111,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, cg_data: dict, btc_pri
     bear_score = 0
     signals = []
     
-    # 因子一：恐惧贪婪指数（从 cg_data 读取）
     fg = cg_data.get("fear_greed_index", {"current": 50, "prev": 50})
     fg_current = fg.get("current", 50)
     fg_prev = fg.get("prev", fg_current)
@@ -132,7 +130,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, cg_data: dict, btc_pri
             bear_score += 1
             signals.append({"text": f"贪婪筑顶({fg_current}≤{fg_prev})", "direction": "偏空", "weight": 1})
     
-    # 因子二：Coinbase溢价指数（从 cg_data 读取）
     premium_data = cg_data.get("coinbase_premium", {"premium_pct": 0.0})
     premium_pct = premium_data.get("premium_pct", 0.0)
     if premium_pct > 0.15:
@@ -142,7 +139,6 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, cg_data: dict, btc_pri
         bear_score += 3
         signals.append({"text": f"Coinbase折价({premium_pct:.2f}%)", "direction": "利空", "weight": 3})
     
-    # 因子三：稳定币市值变化（从 cg_data 读取）
     stable_data = cg_data.get("stablecoin_change", {"change_7d": 0.0})
     change_7d = stable_data.get("change_7d", 0.0)
     if change_7d > 1.0:
@@ -341,6 +337,51 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
     return candidates
 
 
+def get_tp_candidates(price: float, atr: float, direction: str, cluster: dict, stop_loss: float, volatility_factor: float = 1.0) -> dict:
+    """
+    返回三个止盈候选值
+    rule1: 最近反方向清算区（强度≥3）
+    rule2: 更优清算区（强度≥4 且 盈亏比 ≥ 1.5:1）
+    rule3: 2:1 盈亏比公式计算值
+    """
+    candidates = {
+        "rule1": {"price": 0.0, "anchor": ""},
+        "rule2": {"price": 0.0, "anchor": ""},
+        "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
+    }
+    
+    cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
+    cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
+    cluster_dir = cluster.get("direction", "")
+    
+    # rule3: 2:1 公式
+    risk = abs(price - stop_loss)
+    if direction == "long":
+        candidates["rule3"]["price"] = round(price + 2.0 * risk, 1)
+    else:
+        candidates["rule3"]["price"] = round(price - 2.0 * risk, 1)
+    
+    # rule1: 最近反方向清算区
+    if cluster_intensity >= 3 and cluster_price > 0:
+        if (direction == "long" and cluster_dir == "上" and cluster_price > price) or \
+           (direction == "short" and cluster_dir == "下" and cluster_price < price):
+            candidates["rule1"]["price"] = round(cluster_price, 1)
+            candidates["rule1"]["anchor"] = f"反方向清算区 {cluster_price:.1f} (强度{cluster_intensity})"
+            if direction == "long":
+                reward = cluster_price - price
+            else:
+                reward = price - cluster_price
+            if reward > 0 and reward / risk < 1.0:
+                candidates["rule1"]["anchor"] += " [盈亏比<1:1]"
+    
+    # rule2: 更优清算区（此处简化，实际需解析更多清算区数据，当前使用 cluster 代替）
+    # 若未来能获取多个清算区，可扩展；当前 rule2 暂用 rule3 代替
+    candidates["rule2"]["price"] = candidates["rule3"]["price"]
+    candidates["rule2"]["anchor"] = "更优清算区(暂用公式)"
+    
+    return candidates
+
+
 def send_error_notification(symbol: str, error_msg: str):
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
@@ -370,13 +411,13 @@ def main():
         logger.info(f"{symbol} 当前价格: {price:.2f}, ATR(4H): {atr:.2f}, EMA55: {ema55:.1f}")
 
         cg = CoinGlassClient()
-        cg_data = cg.get_all_data(symbol, current_price=price, atr=atr)
+        cg_data = cg.get_all_data(symbol, current_price=price, atr=atr, klines=klines)
         logger.info(f"{symbol} CoinGlass 数据获取完成")
         liq_zero_count = cg.get_liq_zero_count()
         liq_warning = cg.get_liq_zero_warning()
         if liq_warning: logger.warning(liq_warning)
         data_source_status = cg.get_data_source_status()
-        volatility_factor = cg.calculate_volatility_factor(symbol)
+        volatility_factor = cg_data.get("volatility_factor", 1.0)
 
         cvd_signal = cg_data.get("cvd_signal", "neutral")
         taker_ratio = float(cg_data.get("taker_ratio", "0.5")) if cg_data.get("taker_ratio", "N/A") != "N/A" else 0.5
@@ -390,7 +431,6 @@ def main():
         below_val = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
         extreme_liq = (above_val > EXTREME_LIQ_THRESHOLDS[symbol]) or (below_val > EXTREME_LIQ_THRESHOLDS[symbol])
 
-        # 交易所余额数据（直接从 cg_data 获取）
         exchange_balances = cg_data.get("exchange_balances", {})
 
         signal_strength = calculate_signal_strength(
@@ -401,6 +441,19 @@ def main():
         if score >= 65: signal_grade = "A"
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
+
+        # 动态调整强制裁决阈值
+        base_threshold_bull_bear = 7
+        base_threshold_warning = 10
+        if volatility_factor > 1.3:
+            threshold_bull_bear = base_threshold_bull_bear + 2
+            threshold_warning = base_threshold_warning + 2
+        elif volatility_factor < 0.7:
+            threshold_bull_bear = max(5, base_threshold_bull_bear - 2)
+            threshold_warning = max(8, base_threshold_warning - 2)
+        else:
+            threshold_bull_bear = base_threshold_bull_bear
+            threshold_warning = base_threshold_warning
 
         temp_direction = trend_info.get("direction", "bull")
         if temp_direction not in ["long", "short"]:
@@ -414,7 +467,10 @@ def main():
             directional_scores=directional_scores, signal_grade=signal_grade,
             entry_candidates=entry_candidates,
             exchange_balances=exchange_balances,
-            liq_dynamic_signals=liq_dynamic_signals
+            liq_dynamic_signals=liq_dynamic_signals,
+            threshold_bull_bear=threshold_bull_bear,
+            threshold_warning=threshold_warning,
+            tp_candidates=None  # 初次调用时无止损，暂不传入
         )
 
         strategy = call_deepseek(prompt)
@@ -429,27 +485,30 @@ def main():
 
             entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
 
+            # 止损计算（波动因子动态调整）
             if float(strategy.get("stop_loss", 0)) <= 0:
-                if actual_direction == "long":
-                    strategy["stop_loss"] = round(price - 2.0 * atr, 1)
+                base_multiplier = 2.0
+                if volatility_factor > 1.3:
+                    multiplier = base_multiplier * 1.3
+                elif volatility_factor < 0.7:
+                    multiplier = base_multiplier * 0.8
                 else:
-                    strategy["stop_loss"] = round(price + 2.0 * atr, 1)
+                    multiplier = base_multiplier
+                if actual_direction == "long":
+                    strategy["stop_loss"] = round(price - multiplier * atr, 1)
+                else:
+                    strategy["stop_loss"] = round(price + multiplier * atr, 1)
+
+            stop_loss = float(strategy.get("stop_loss", 0))
+            tp_candidates = get_tp_candidates(price, atr, actual_direction, cluster, stop_loss, volatility_factor)
 
             if float(strategy.get("take_profit", 0)) <= 0:
-                if actual_direction == "long":
-                    if cluster_intensity >= 3 and cluster_dir == "上" and cluster_price > price:
-                        strategy["take_profit"] = round(cluster_price, 1)
-                        strategy["tp_anchor"] = f"上方清算区 {cluster_price:.1f}"
-                    else:
-                        strategy["take_profit"] = round(price + 2.0 * atr * profile["tp_ratio"], 1)
-                        strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
+                if tp_candidates["rule1"]["price"] > 0 and "[盈亏比<1:1]" not in tp_candidates["rule1"]["anchor"]:
+                    strategy["take_profit"] = tp_candidates["rule1"]["price"]
+                    strategy["tp_anchor"] = tp_candidates["rule1"]["anchor"]
                 else:
-                    if cluster_intensity >= 3 and cluster_dir == "下" and cluster_price < price:
-                        strategy["take_profit"] = round(cluster_price, 1)
-                        strategy["tp_anchor"] = f"下方清算区 {cluster_price:.1f}"
-                    else:
-                        strategy["take_profit"] = round(price - 2.0 * atr * profile["tp_ratio"], 1)
-                        strategy["tp_anchor"] = f"{profile['tp_ratio']:.1f}×ATR"
+                    strategy["take_profit"] = tp_candidates["rule3"]["price"]
+                    strategy["tp_anchor"] = tp_candidates["rule3"]["anchor"]
 
             if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
                 strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
