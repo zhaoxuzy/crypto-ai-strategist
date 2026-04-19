@@ -151,7 +151,6 @@ class CoinGlassClient:
 
             price = float(y_axis[y_idx])
 
-            # 根据价格直接归类，不再依赖不可靠的 x_idx
             if price < current_price:
                 total_long += intensity
             elif price > current_price:
@@ -322,54 +321,32 @@ class CoinGlassClient:
 
     # ---------- ETH/BTC 汇率 ----------
     def get_eth_btc_ratio(self) -> dict:
-        """
-        获取 ETH/BTC 汇率及其趋势。
-        返回 dict: {"current_ratio": 当前汇率, "ma_4h": 4小时均线, "trend": "up"/"down"/"neutral"}
-        """
         try:
             params = {"exchange": "Binance", "symbol": "ETHUSDT", "interval": "1h", "limit": 5}
             eth_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             params["symbol"] = "BTCUSDT"
             btc_data = self._request("api/spot/price/history", params, allow_backup=False, silent_fail=True)
             
-            # 校验数据格式与长度
-            if not isinstance(eth_data, list) or not isinstance(btc_data, list):
-                logger.warning("ETH/BTC 汇率数据格式异常，返回默认值")
+            if not isinstance(eth_data, list) or not isinstance(btc_data, list) or len(eth_data) < 4 or len(btc_data) < 4:
+                logger.warning("获取 ETH/BTC 汇率数据不足")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-            if len(eth_data) < 4 or len(btc_data) < 4:
-                logger.warning(f"ETH/BTC 汇率数据不足，ETH数据量:{len(eth_data)}，BTC数据量:{len(btc_data)}")
-                return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
-
-            # 提取收盘价（兼容 list 和 dict 两种格式）
-            eth_close_4 = []
-            for k in eth_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    eth_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    eth_close_4.append(float(k.get("close", 0)))
-            btc_close_4 = []
-            for k in btc_data[-4:]:
-                if isinstance(k, list) and len(k) >= 5:
-                    btc_close_4.append(float(k[4]))
-                elif isinstance(k, dict):
-                    btc_close_4.append(float(k.get("close", 0)))
-
+            eth_close_4 = [float(k[4]) for k in eth_data[-4:] if len(k) >= 5]
+            btc_close_4 = [float(k[4]) for k in btc_data[-4:] if len(k) >= 5]
+            
             if len(eth_close_4) < 4 or len(btc_close_4) < 4:
-                logger.warning("ETH/BTC 有效收盘价不足4个")
                 return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
             eth_ma = sum(eth_close_4) / 4
             btc_ma = sum(btc_close_4) / 4
             ma_4h_ratio = eth_ma / btc_ma if btc_ma > 0 else 0.0
-
+            
             current_ratio = eth_close_4[-1] / btc_close_4[-1] if btc_close_4[-1] > 0 else 0.0
-
+            
             trend = "up" if current_ratio > ma_4h_ratio else "down"
-
+            
             logger.info(f"ETH/BTC 汇率: 当前={current_ratio:.6f}, MA4H={ma_4h_ratio:.6f}, 趋势={trend}")
             return {"current_ratio": round(current_ratio, 6), "ma_4h": round(ma_4h_ratio, 6), "trend": trend}
-
         except Exception as e:
             logger.warning(f"获取 ETH/BTC 汇率失败: {e}")
             return {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
