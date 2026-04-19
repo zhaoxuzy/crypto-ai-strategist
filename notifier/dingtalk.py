@@ -89,8 +89,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         pass
 
     oi_change_str = extra.get("oi_change", "0")
+    # 修复：去除已有的百分号，避免重复
+    oi_change_clean = str(oi_change_str).replace('%', '')
     try:
-        oi = float(oi_change_str.strip('%')) if isinstance(oi_change_str, str) else 0
+        oi = float(oi_change_clean)
         if abs(oi) > 5:
             alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
     except:
@@ -107,25 +109,25 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
-    # --- 格式化处理：确保 AI 研判摘要列表对齐 ---
+    # --- 格式化处理：确保 AI 研判摘要列表严格对齐 ---
     formatted_summary = ""
     if analysis_summary:
-        lines = analysis_summary.split('\n')
+        # 1. 将内容按 🔍 分割为独立条目
+        # 先统一将可能的中英文数字序号规范化
+        raw_text = analysis_summary
+        # 分割条目：以 🔍 为分隔符，但保留 🔍 符号
+        parts = re.split(r'(?=🔍)', raw_text)
         summary_items = []
-        for line in lines:
-            line = line.strip()
-            if not line:
+        for part in parts:
+            part = part.strip()
+            if not part:
                 continue
-            # 如果行以 🔍 或数字序号开头，视为新条目
-            if line.startswith('🔍') or re.match(r'^\d+\.', line):
-                summary_items.append(line)
-            else:
-                # 否则视为上一行的续接内容
-                if summary_items:
-                    summary_items[-1] += " " + line
-                else:
-                    summary_items.append(line)
+            # 清理条目内部的多余换行，将多行合并为一行（用空格连接）
+            part = re.sub(r'\s+', ' ', part)
+            summary_items.append(part)
+        
         if summary_items:
+            # 生成规范列表，每行一个条目，使用 "- " 开头，确保对齐
             formatted_summary = "\n".join([f"- {item}" for item in summary_items])
         else:
             formatted_summary = analysis_summary
@@ -161,6 +163,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
 {alerts_str}
 
+--- 
 ### 🧠 AI 研判摘要
 {formatted_summary}
 
@@ -221,6 +224,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if trader_commentary:
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
+    # 数据快照中的 OI 显示修复（避免双百分号）
+    oi_display = extra.get('oi_change', 'N/A')
+    if isinstance(oi_display, str) and oi_display.endswith('%'):
+        oi_display = oi_display  # 保留单个百分号
+    else:
+        oi_display = f"{oi_display}%" if oi_display != 'N/A' else 'N/A'
+
     return f"""{title_line}
 
 {param_card}
@@ -230,13 +240,14 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
 {alerts_str}
 
+--- 
 ### 🧠 AI 研判摘要
 {formatted_summary}
 {trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-📎 `ATR {extra.get('atr',0):.1f}` · `费率 {extra.get('funding_rate','N/A')}%` · `OI {extra.get('oi_change','N/A')}%` · `CVD {extra.get('cvd_signal','N/A')}` · `贪婪 {extra.get('fear_greed','N/A')}`  
+📎 `ATR {extra.get('atr',0):.1f}` · `费率 {extra.get('funding_rate','N/A')}%` · `OI {oi_display}` · `CVD {extra.get('cvd_signal','N/A')}` · `贪婪 {extra.get('fear_greed','N/A')}`  
 {data_source_status}
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
