@@ -656,39 +656,15 @@ def call_deepseek_enhanced(symbol: str, price: float, atr: float, coinglass_data
             if attempt == 2:
                 raise
 
-    # 提取 JSON
+       # 提取 JSON
     json_str = None
     if "```json" in content:
-        start = content.find("```json") + 7
-        end = content.find("```", start)
-        if end != -1:
-            json_str = content[start:end].strip()
-    if not json_str:
-        start = content.find('{')
-        end = content.rfind('}') + 1
-        if start != -1 and end > start:
-            json_str = content[start:end]
-
+        ...
     if not json_str:
         raise ValueError("无法从响应中提取有效 JSON")
 
     result = json.loads(json_str)
-    result.setdefault("tp_anchor", "未提供")
-    result.setdefault("analysis_summary", analysis_text)
-    result.setdefault("trader_commentary", "")
-    result.setdefault("risk_note", "")
-
-    data_quality = {
-        "cvd_valid": raw_view.get("cvd_valid", False),
-        "lsr_valid": not all(v == 0 for v in raw_view.get("ls_ratio_series_1h", []))
-    }
-    signal_weight = evaluate_neutral_penalty(result, data_quality)
-    result["audit_passed"] = audit_result["passed"]
-    result["audit_discrepancies"] = audit_result["discrepancies"]
-    result["signal_weight"] = signal_weight
-
-    return result
-
+    result.setdefault(...)
 
 # ==================== 增强版策略验证 ====================
 def validate_strategy_enhanced(s: dict, price: float, atr: float = None) -> tuple:
