@@ -161,117 +161,130 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     bull_score = 0
     bear_score = 0
     current_price = cg_data.get("current_price", btc_price)
+    trend_score = trend_info.get("score", 0)
+    trend_dir = trend_info.get("direction", "neutral")
     
-    # 1. 清算不对称比率（12分）
+    # 1. 清算不对称比率（14分）
     above = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
     total_liq = above + below
     if total_liq > 0:
         ratio = above / total_liq
         if ratio > 0.65:
-            bear_score += 12
+            bear_score += 14
         elif ratio > 0.55:
-            bear_score += 7
+            bear_score += 8
         elif ratio < 0.35:
-            bull_score += 12
+            bull_score += 14
         elif ratio < 0.45:
-            bull_score += 7
+            bull_score += 8
     
-    # 2. 趋势强度（24分）
-    trend_score = trend_info.get("score", 0)
-    trend_dir = trend_info.get("direction", "neutral")
-    trend_component = round(trend_score / 100 * 24)
+    # 2. 趋势强度（33分，分段映射）
+    if trend_score >= 75:
+        trend_component = 33
+    elif trend_score >= 60:
+        trend_component = 25
+    elif trend_score >= 45:
+        trend_component = 16
+    elif trend_score >= 30:
+        trend_component = 8
+    else:
+        trend_component = 0
     if trend_dir == "bull":
         bull_score += trend_component
     elif trend_dir == "bear":
         bear_score += trend_component
     
-    # 3. CVD信号（14分）
+    # 3. CVD信号（17分）
     cvd = cg_data.get("cvd_signal", "N/A")
     if cvd == "bullish":
-        bull_score += 14
+        bull_score += 17
     elif cvd == "slightly_bullish":
-        bull_score += 7
+        bull_score += 9
     elif cvd == "bearish":
-        bear_score += 14
+        bear_score += 17
     elif cvd == "slightly_bearish":
-        bear_score += 7
+        bear_score += 9
     
-    # 4. 主动买卖盘比率（6分）
+    # 4. 主动买卖盘比率（7分）
     try:
         tr = float(cg_data.get("taker_ratio", 0.5))
         if tr >= 0.55:
-            bull_score += 6
+            bull_score += 7
         elif tr >= 0.50:
             bull_score += 3
         elif tr <= 0.45:
-            bear_score += 6
+            bear_score += 7
         elif tr <= 0.50:
             bear_score += 3
     except:
         pass
     
-    # 5. 顶级交易员多空比（4分）
+    # 5. 顶级交易员多空比（5分）
     try:
         tls = float(cg_data.get("top_long_short_ratio", 1.0))
         if tls < 0.7:
-            bull_score += 4
+            bull_score += 5
         elif tls < 1.0:
             bull_score += 2
         elif tls > 2.0:
-            bear_score += 4
+            bear_score += 5
         elif tls > 1.0:
             bear_score += 2
     except:
         pass
     
-    # 6. 宏观三因子（8分）
+    # 6. 宏观三因子（5分）
     macro_result = compute_macro_three_factor_score(cg, cg_data, btc_price)
-    macro_component = round(macro_result["total"] / 10 * 8) if macro_result["total"] > 0 else 0
+    macro_total = macro_result["total"]
+    if macro_total >= 7:
+        macro_component = 5
+    elif macro_total >= 4:
+        macro_component = 2
+    else:
+        macro_component = 0
     if macro_result["bull_score"] > macro_result["bear_score"]:
         bull_score += macro_component
     elif macro_result["bear_score"] > macro_result["bull_score"]:
         bear_score += macro_component
     
-    # 7. ETH/BTC汇率趋势（6分）
+    # 7. ETH/BTC汇率趋势（5分）
     eth_btc = cg_data.get("eth_btc_ratio", {})
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
         if trend == "up":
-            bull_score += 6
-            bear_score = max(0, bear_score - 2)
+            bull_score += 5
         elif trend == "down":
-            bear_score += 6
-            bull_score = max(0, bull_score - 2)
+            bear_score += 5
     
-    # 8. 清算动态信号（10分）
+    # 8. 清算动态信号（14分）
     liq_dynamic = cg_data.get("liq_dynamic_signals", [])
     dynamic_bull = 0
     dynamic_bear = 0
     for sig in liq_dynamic:
         if "清算压力偏多" in sig or "最大痛点上移" in sig:
-            dynamic_bull = max(dynamic_bull, 10)
+            dynamic_bull = max(dynamic_bull, 14)
         elif "清算压力偏空" in sig or "最大痛点下移" in sig:
-            dynamic_bear = max(dynamic_bear, 10)
+            dynamic_bear = max(dynamic_bear, 14)
         elif "强磁吸区" in sig:
             if "上" in sig:
-                dynamic_bear = max(dynamic_bear, 5)
+                dynamic_bear = max(dynamic_bear, 7)
             else:
-                dynamic_bull = max(dynamic_bull, 5)
+                dynamic_bull = max(dynamic_bull, 7)
         elif "清算堆积加速" in sig:
             if "偏多" in sig:
-                dynamic_bull += 3
+                dynamic_bull += 4
             else:
-                dynamic_bear += 3
+                dynamic_bear += 4
         elif "清算堆积衰减" in sig:
             if "偏多" in sig:
-                dynamic_bull -= 3
+                dynamic_bull -= 4
             else:
-                dynamic_bear -= 3
-    bull_score += min(10, max(0, dynamic_bull))
-    bear_score += min(10, max(0, dynamic_bear))
+                dynamic_bear -= 4
+    bull_score += min(14, max(0, dynamic_bull))
+    bear_score += min(14, max(0, dynamic_bear))
     
-    # 9. 价格位置惩罚（风险预警时）
+    # 9. 价格位置惩罚（-10分）
     cluster = cg_data.get("nearest_cluster", {})
     cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
     cluster_dir = cluster.get("direction", "")
@@ -281,9 +294,9 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
         distance_atr = abs(current_price - cluster_price) / atr
         if distance_atr < 0.3:
             if cluster_dir == "上" and trend_score < 70:
-                bull_score = max(0, bull_score - 8)
+                bull_score = max(0, bull_score - 10)
             elif cluster_dir == "下" and trend_score < 70:
-                bear_score = max(0, bear_score - 8)
+                bear_score = max(0, bear_score - 10)
     
     bull_score = max(0, bull_score)
     bear_score = max(0, bear_score)
@@ -374,8 +387,7 @@ def get_tp_candidates(price: float, atr: float, direction: str, cluster: dict, s
             if reward > 0 and reward / risk < 1.0:
                 candidates["rule1"]["anchor"] += " [盈亏比<1:1]"
     
-    # rule2: 更优清算区（此处简化，实际需解析更多清算区数据，当前使用 cluster 代替）
-    # 若未来能获取多个清算区，可扩展；当前 rule2 暂用 rule3 代替
+    # rule2: 更优清算区（当前简化，使用 rule3 代替）
     candidates["rule2"]["price"] = candidates["rule3"]["price"]
     candidates["rule2"]["anchor"] = "更优清算区(暂用公式)"
     
@@ -442,9 +454,9 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 动态调整强制裁决阈值
-        base_threshold_bull_bear = 7
-        base_threshold_warning = 10
+        # 动态调整强制裁决阈值（波动因子）
+        base_threshold_bull_bear = 8
+        base_threshold_warning = 12
         if volatility_factor > 1.3:
             threshold_bull_bear = base_threshold_bull_bear + 2
             threshold_warning = base_threshold_warning + 2
@@ -470,7 +482,7 @@ def main():
             liq_dynamic_signals=liq_dynamic_signals,
             threshold_bull_bear=threshold_bull_bear,
             threshold_warning=threshold_warning,
-            tp_candidates=None  # 初次调用时无止损，暂不传入
+            tp_candidates=None
         )
 
         strategy = call_deepseek(prompt)
