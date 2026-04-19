@@ -196,10 +196,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     eth_btc_trend = eth_btc.get('trend', 'N/A')
     eth_btc_ratio = eth_btc.get('current_ratio', 0.0)
 
-    # 格式化原始数据视图
     raw_view = coinglass_data.get("raw_view", {})
 
-    # 清算分布表（新格式）
+    # 清算分布表
     liq_profile = raw_view.get("liquidation_profile", [])
     liq_profile_lines = []
     for item in liq_profile[:15]:
@@ -209,7 +208,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         )
     liq_profile_table = "\n".join(liq_profile_lines) if liq_profile_lines else "无清算数据"
 
-    # 前三强清算区摘要
     top_3_zones = raw_view.get("top_3_liquidation_zones", [])
     top_3_lines = []
     for i, zone in enumerate(top_3_zones, 1):
@@ -218,15 +216,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         )
     top_3_summary = "\n".join(top_3_lines) if top_3_lines else "无明显清算聚集区"
 
-    # CVD序列
+    cvd_valid = raw_view.get("cvd_valid", False)
     cvd_series = raw_view.get("cvd_series_1m", [])
-    cvd_series_str = str(cvd_series) if cvd_series else "无数据"
+    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效（全为0）"
 
-    # 多空比序列
+    ls_valid = raw_view.get("ls_valid", False)
     ls_series = raw_view.get("ls_ratio_series_1h", [])
-    ls_series_str = str(ls_series) if ls_series else "无数据"
+    ls_series_str = str(ls_series) if ls_valid else "数据无效（全为0）"
 
-    # 主动买卖序列
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
@@ -300,29 +297,36 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 🔬 强制数据深潜任务（你必须完成，否则输出无效）
 
-在给出最终方向前，你必须逐项完成以下观察，并在 `analysis_summary` 字段中**明确写出你的发现**（每条需包含具体数值）：
+**首先，评估数据质量**（在第一条观察中声明）：
+- CVD 序列是否全为 0？若是，则 CVD 分析无效。
+- 多空比序列是否全为 0？若是，则多空比分析无效。
+- 系统清算动态信号是否能在分布表中找到对应价格？若找不到，以分布表为准。
+
+**然后，逐项完成以下观察**（每条以 🔍 开头，必须包含具体数值）：
 
 1. **清算不对称的精确量化**  
    - 计算：上方空头清算总额 ÷ 下方多头清算总额 = ？  
    - 判断：该比值是否 ≥ 2.0（显著偏空）或 ≤ 0.5（显著偏多）？  
    - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
 
-2. **CVD 序列的微观动量分析**  
-   - 将 60 分钟 CVD 序列分为前 30 分钟与后 30 分钟。  
-   - 计算两段的净变化量，判断动量是**加速、匀速还是衰减**。  
-   - 检查最后 10 分钟内是否存在与价格方向相反的 CVD 异动。
+2. **CVD 序列的微观动量分析**（若数据无效则注明“数据无效，跳过”）  
+   - 将有效序列分为前 30 分钟与后 30 分钟，计算净变化量，判断动量是加速、匀速还是衰减。  
+   - 检查最后 10 分钟内是否存在与价格方向相反的异动。
 
-3. **持仓结构的矛盾挖掘**  
-   - 对比多空比序列的最新值与 6 小时前的变化方向。  
-   - 对比顶级交易员多空比与多空账户人数比，判断散户与聪明钱是否方向一致。
+3. **持仓结构的矛盾挖掘**（若多空比序列无效，则仅使用顶级交易员和净持仓）  
+   - 对比顶级交易员多空比与净持仓累积的方向一致性。
 
 4. **清算动态信号的验证**  
-   - 系统给出的清算动态信号是否能在清算分布表中找到对应的价格证据？
+   - 系统信号是否在分布表中存在？若不存在，以分布表为准重新评估关键位。
 
 5. **宏观因子的边际变化**  
    - 恐惧贪婪指数较昨日变化了多少？稳定币市值 7 日变化率是否超过 ±1%？
 
-**输出要求**：以上 5 点观察必须整合进你的 `analysis_summary` 字段中。每条观察前用 🔍 标注。
+**最终裁决要求**：
+在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
+`【最终裁决】综合以上分析，我决定输出 [long/short/neutral]，理由：...`
+
+**输出要求**：以上内容全部整合进 `analysis_summary` 字段。
 
 ---
 
@@ -362,7 +366,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头。",
+  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头。末尾包含【最终裁决】段落。",
   "trader_commentary": "交易员主观备注（可选）",
   "risk_note": "风险提示"
 }}
