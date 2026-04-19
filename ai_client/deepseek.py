@@ -151,6 +151,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
     extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n" if extreme_liq else "")
+    # 数据延迟提示
+    data_delay_note = "（注：清算数据基于快照，存在秒级延迟。若价格已进入清算区，该区域流动性可能已被部分消耗，实际强度应打折扣。）"
 
     bull_score = directional_scores.get("bull", 0) if directional_scores else 0
     bear_score = directional_scores.get("bear", 0) if directional_scores else 0
@@ -209,7 +211,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 4小时ATR：{atr} USDT
 - 波动因子：{volatility_factor:.2f}（>1.3高波，<0.7低波）
 
-**清算压力**
+**清算压力** {data_delay_note}
 - 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
 - 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{liq_max_pain} USDT（对价格构成向下的引力/向上的阻力）
@@ -247,6 +249,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   （**时效性判断**：你必须结合当前价格与最大痛点的距离、趋势强度得分，判断该最大痛点的有效性。若趋势得分<50且距离超过2×ATR，其引力/压力作用应打折扣，在结论中需注明。）
 - **必须分析期权最大痛点**：指出其位置及与清算最大痛点的关系（同向共振或背离）。
 - **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
+- **【新增】清算区消耗判断**：若当前价格已进入或紧贴（距离<0.3×ATR）某个强度≥3的清算密集区，你必须结合成交量、价格行为判断该区域是否正在被消耗。若价格已多次测试该区域或成交量显著放大，应认为其支撑/阻力强度已减弱（强度可视为降级），并在结论中明确说明。
 - **必须根据波动因子调整判断**：
   - 波动因子 > 1.3（高波动）：趋势得分阈值可适当降低（≥60即可视为趋势较强），清算墙更易被突破。
   - 波动因子 < 0.7（低波动）：假突破概率高，清算墙的支撑/阻力作用增强，需更谨慎。
@@ -326,6 +329,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **止损**：
   - 做多：止损设在**下方**最近强度≥3的**多头清算区**外侧（价格×0.998）。若无，则使用 **2 × 4小时ATR** 止损（已根据波动因子动态调整）。
   - 做空：止损设在**上方**最近强度≥3的**空头清算区**外侧（价格×1.002）。若无，则使用 **2 × 4小时ATR** 止损。
+  - **【铁律】止损价必须直接使用系统计算值或清算区外侧价格，严禁以任何理由（如“取整”、“缓冲”、“紧贴支撑”）修改数值。若你认为止损距离不合理，只能在 risk_note 中提示，不得改动止损价。**
 - **止盈**（系统已预计算候选值，你必须按以下优先级选择）：
   - **规则1**：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
   - **规则2**：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
@@ -333,6 +337,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”，则**必须**改用规则3。若规则1不存在，使用规则3。
   - **严禁**将同向清算区用于止盈，严禁自行创造止盈锚点。
 - 在reasoning中明确写出所选止盈规则及盈亏比。
+- **【风险提示规范】**：在 risk_note 中，你只能描述市场风险和执行建议，**严禁**出现与系统止损价不一致的价位描述（如“跌破XX则止损”、“若价格跌破XX支撑，多头逻辑失效”等）。若需提及关键位，只能表述为“关注XX支撑/阻力”，不得暗示以该价位作为止损参考。
 
 ### 策略输出格式（严格JSON）
 {{
@@ -352,17 +357,12 @@ def _extract_json_from_content(content: str) -> str:
     """从 LLM 返回的文本中提取 JSON 字符串，处理 Markdown 代码块等情况。"""
     if not content:
         return ""
-
-    # 1. 尝试提取 ```json ... ``` 代码块
     json_block_pattern = r'```json\s*([\s\S]*?)\s*```'
     matches = re.findall(json_block_pattern, content, re.IGNORECASE)
     if matches:
-        # 取最后一个匹配（通常是完整的响应）
         candidate = matches[-1].strip()
         if candidate.startswith('{'):
             return candidate
-
-    # 2. 尝试提取 ``` ... ``` 代码块（无语言标识）
     code_block_pattern = r'```\s*([\s\S]*?)\s*```'
     matches = re.findall(code_block_pattern, content)
     if matches:
@@ -370,14 +370,10 @@ def _extract_json_from_content(content: str) -> str:
             candidate = candidate.strip()
             if candidate.startswith('{'):
                 return candidate
-
-    # 3. 直接查找最外层花括号
     first_brace = content.find('{')
     last_brace = content.rfind('}')
     if first_brace != -1 and last_brace > first_brace:
         return content[first_brace:last_brace + 1]
-
-    # 4. 返回原始内容（让上层处理）
     return content
 
 
@@ -395,31 +391,24 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content) if content else 0}")
-
             if not content:
                 logger.warning(f"DeepSeek 返回空内容 (尝试 {attempt+1}/{max_retries})")
                 last_error = "API 返回空内容"
                 time.sleep(2 ** attempt)
                 continue
-
-            # 使用增强的 JSON 提取函数
             extracted = _extract_json_from_content(content)
             if not extracted or not extracted.startswith('{'):
                 logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
                 last_error = f"返回无有效 JSON: {content[:100]}"
                 time.sleep(2 ** attempt)
                 continue
-
-            # 解析 JSON
             s = json.loads(extracted)
             s.setdefault("tp_anchor", "未提供")
             logger.info("DeepSeek JSON 解析成功")
             return s
-
         except json.JSONDecodeError as e:
             last_error = f"JSON解析失败: {e}"
             logger.warning(f"DeepSeek JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            logger.warning(f"待解析内容前200字符: {extracted[:200] if 'extracted' in locals() else 'N/A'}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
         except Exception as e:
@@ -434,7 +423,6 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                     pass
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
-
     raise RuntimeError(f"DeepSeek API 调用失败，所有重试均无效。最后错误: {last_error}")
 
 
