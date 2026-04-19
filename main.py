@@ -6,7 +6,7 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
+from ai_client.deepseek import call_deepseek_enhanced, validate_strategy_enhanced, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
@@ -472,11 +472,21 @@ def main():
             temp_direction = "long" if temp_direction == "bull" else "short"
         entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
 
-        prompt = build_prompt(
-            symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data={"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}},
-            profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
-            extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            directional_scores=directional_scores, signal_grade=signal_grade,
+        # ========== 使用增强版 DeepSeek 调用 ==========
+        strategy = call_deepseek_enhanced(
+            symbol=symbol,
+            price=price,
+            atr=atr,
+            coinglass_data=cg_data,
+            macro_data={"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}},
+            profile=profile,
+            volatility_factor=volatility_factor,
+            trend_info=trend_info,
+            extreme_liq=extreme_liq,
+            liq_warning=liq_warning,
+            data_source_status=data_source_status,
+            directional_scores=directional_scores,
+            signal_grade=signal_grade,
             entry_candidates=entry_candidates,
             exchange_balances=exchange_balances,
             liq_dynamic_signals=liq_dynamic_signals,
@@ -484,9 +494,21 @@ def main():
             threshold_warning=threshold_warning,
             tp_candidates=None
         )
+        # =============================================
 
-        strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
+
+        audit_passed = strategy.get("audit_passed", True)
+        audit_discrepancies = strategy.get("audit_discrepancies", [])
+        signal_weight = strategy.get("signal_weight", 1.0)
+
+        if not audit_passed:
+            logger.warning(f"AI 分析审计未通过，差异项: {audit_discrepancies}")
+
+        if signal_weight < 0.5:
+            logger.info(f"AI 输出 neutral 且数据有效，信号权重被降至 {signal_weight}，本次不交易")
+            # 可在此处直接返回，不进行后续推送
+            # return
 
         actual_direction = strategy.get("direction", "neutral")
         if actual_direction != "neutral":
@@ -531,10 +553,12 @@ def main():
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
-            strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
+            strategy["analysis_summary"] = strategy.get("analysis_summary", "") + "\n[系统] 清算数据连续缺失，自动转为观望。"
 
-        if not validate_strategy(strategy, price):
-            logger.warning("策略校验未通过")
+        # 使用增强版验证函数
+        is_valid, error_msg = validate_strategy_enhanced(strategy, price, atr)
+        if not is_valid:
+            logger.warning(f"策略校验未通过: {error_msg}")
 
         extra = {
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
@@ -547,7 +571,9 @@ def main():
             "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
             "is_probe": is_probe, "key_support": key_levels["support"],
             "key_resistance": key_levels["resistance"],
-            "directional_scores": directional_scores
+            "directional_scores": directional_scores,
+            "audit_passed": audit_passed,
+            "signal_weight": signal_weight
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
