@@ -44,6 +44,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
     data_source_status = extra.get("data_source_status", "")
+    # 移除加粗符号
+    data_source_status = re.sub(r'\*\*', '', data_source_status)
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
@@ -176,15 +178,23 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > **盈亏比**：**{rr_str}**
 """
 
+    # 风险提示清洗：移除所有前导序号、风险字样，重新编号
     risk_note = strategy.get('risk_note', '请严格设置止损')
+    # 移除开头的"风险提示："或"风险："
     risk_note = re.sub(r'^风险提示[：:]\s*', '', risk_note)
+    risk_note = re.sub(r'^风险[：:]\s*', '', risk_note)
+    # 合并多余空白
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
+    # 按中文标点分割
     raw_items = re.split(r'[。；;]', risk_note)
     risk_items = []
     for item in raw_items:
         item = item.strip()
         if not item: continue
+        # 移除前导数字序号（如 1. 1) 1、等）
         item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
+        # 移除可能残留的"风险："字样
+        item = re.sub(r'^风险[：:]\s*', '', item)
         if item and not re.match(r'^\d+$', item):
             risk_items.append(item)
     if not risk_items:
@@ -198,6 +208,21 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
+
+    # 格式化数据快照行，确保百分比整洁
+    atr_val = extra.get('atr', 0)
+    funding_val = extra.get('funding_rate', 'N/A')
+    oi_val = extra.get('oi_change', 'N/A')
+    cvd_val = extra.get('cvd_signal', 'N/A')
+    greed_val = extra.get('fear_greed', 'N/A')
+
+    # 处理百分比：如果已包含%则不变，否则添加%
+    if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
+        oi_val += '%'
+    if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
+        funding_val += '%'
+
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
 
     return f"""{title_line}
 
@@ -215,7 +240,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-📎 `ATR {extra.get('atr',0):.1f}` · `费率 {extra.get('funding_rate','N/A')}%` · `OI {extra.get('oi_change','N/A')}%` · `CVD {extra.get('cvd_signal','N/A')}` · `贪婪 {extra.get('fear_greed','N/A')}`  
+{snapshot_line}  
 {data_source_status}
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
