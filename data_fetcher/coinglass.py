@@ -147,32 +147,32 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
-   def get_cvd_history(self, symbol: str = "BTC"):
-    """
-    获取聚合合约 CVD 历史数据。
-    优先使用新接口 /api/futures/aggregated-cvd/history。
-    """
-    # 主要方案：聚合CVD接口
-    aggregated_params = {
-        "exchange": "OKX",
-        "symbol": symbol.upper(),  # 聚合接口通常需要大写，如 "BTC"
-        "interval": "15m",
-        "limit": 4  # 4 * 15m = 60分钟
-    }
-    data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=True, silent_fail=True)
-    if data and isinstance(data, list) and len(data) > 0:
-        logger.info(f"{symbol} 使用聚合CVD接口成功")
-        return data
+    def get_cvd_history(self, symbol: str = "BTC"):
+        """
+        获取聚合合约 CVD 历史数据。
+        优先使用 /api/futures/aggregated-cvd/history 接口。
+        """
+        # 主要方案：聚合CVD接口
+        aggregated_params = {
+            "exchange": "OKX",
+            "symbol": symbol.upper(),
+            "interval": "15m",
+            "limit": 4  # 4 * 15m = 60分钟
+        }
+        data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=True, silent_fail=True)
+        if data and isinstance(data, list) and len(data) > 0:
+            logger.info(f"{symbol} 使用聚合CVD接口成功，数据条数: {len(data)}")
+            return data
 
-    # 备用方案：回退到旧的非聚合合约接口
-    logger.warning(f"{symbol} 聚合CVD接口失败，回退到旧合约CVD接口")
-    futures_params = {
-        "exchange": "OKX",
-        "symbol": f"{symbol}-USDT-SWAP",
-        "interval": "15m",
-        "limit": 4
-    }
-    return self._request("api/futures/cvd/history", futures_params, allow_backup=True, silent_fail=True)
+        # 备用方案：回退到旧的非聚合合约接口
+        logger.warning(f"{symbol} 聚合CVD接口失败，回退到旧合约CVD接口")
+        futures_params = {
+            "exchange": "OKX",
+            "symbol": f"{symbol}-USDT-SWAP",
+            "interval": "15m",
+            "limit": 4
+        }
+        return self._request("api/futures/cvd/history", futures_params, allow_backup=True, silent_fail=True)
 
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
@@ -591,16 +591,22 @@ class CoinGlassClient:
         cvd_series = []
         cvd_valid = False
         if cvd_history and isinstance(cvd_history, list) and len(cvd_history) > 0:
-            for item in cvd_history[-12:]:
-                if isinstance(item, list) and len(item) >= 5:
-                    val = float(item[4])
-                elif isinstance(item, dict):
-                    val = float(item.get("close", 0))
-                else:
-                    continue
-                if val != 0:
-                    cvd_valid = True
-                cvd_series.append(round(val / 1000, 0))
+            first_item = cvd_history[0]
+            # 新聚合接口格式
+            if isinstance(first_item, dict) and "cum_vol_delta" in first_item:
+                for item in cvd_history:
+                    val = float(item.get("cum_vol_delta", 0))
+                    if val != 0:
+                        cvd_valid = True
+                    cvd_series.append(round(val / 1000, 0))
+            # 旧接口K线格式
+            elif isinstance(first_item, list) and len(first_item) >= 5:
+                for item in cvd_history:
+                    if isinstance(item, list) and len(item) >= 5:
+                        val = float(item[4])
+                        if val != 0:
+                            cvd_valid = True
+                        cvd_series.append(round(val / 1000, 0))
 
         net_pos = results.get("net_pos")
         if net_pos and len(net_pos) > 0:
@@ -699,6 +705,16 @@ class CoinGlassClient:
                 if val != 0:
                     ls_valid = True
                 ls_series.append(round(val, 2))
+        # 如果普通多空比无效，尝试用顶级交易员多空比替代
+        if not ls_valid:
+            top_ls = results.get("top_ls")
+            if top_ls and isinstance(top_ls, list):
+                ls_series = []
+                for item in top_ls[-6:]:
+                    val = self._get_close_from_candle(item)
+                    if val != 0:
+                        ls_valid = True
+                    ls_series.append(round(val, 2))
         raw_view["ls_valid"] = ls_valid
         raw_view["ls_ratio_series_1h"] = ls_series if ls_valid else []
 
