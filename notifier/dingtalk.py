@@ -99,13 +99,38 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if extreme_liq:
         alerts.append("🚨极端清算警报")
 
-    # 提取 AI 分析摘要（直接使用 AI 返回的 analysis_summary，若无则使用 reasoning 截取）
+    # 提取 AI 分析摘要
     analysis_summary = strategy.get('analysis_summary', '')
     if not analysis_summary:
         reasoning = strategy.get('reasoning', '暂无分析')
         if "【第五步" in reasoning:
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
+
+    # --- 格式化处理：确保 AI 研判摘要列表对齐 ---
+    formatted_summary = ""
+    if analysis_summary:
+        lines = analysis_summary.split('\n')
+        summary_items = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # 如果行以 🔍 或数字序号开头，视为新条目
+            if line.startswith('🔍') or re.match(r'^\d+\.', line):
+                summary_items.append(line)
+            else:
+                # 否则视为上一行的续接内容
+                if summary_items:
+                    summary_items[-1] += " " + line
+                else:
+                    summary_items.append(line)
+        if summary_items:
+            formatted_summary = "\n".join([f"- {item}" for item in summary_items])
+        else:
+            formatted_summary = analysis_summary
+    else:
+        formatted_summary = "无分析摘要"
 
     # 交易员备注
     trader_commentary = strategy.get('trader_commentary', '')
@@ -137,7 +162,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {alerts_str}
 
 ### 🧠 AI 研判摘要
-{analysis_summary}
+{formatted_summary}
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
@@ -191,7 +216,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     # 预警行
     alerts_str = "  ".join(alerts) if alerts else ""
 
-    # 交易员备注块（如果有）
+    # 交易员备注块
     trader_block = ""
     if trader_commentary:
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
@@ -206,7 +231,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {alerts_str}
 
 ### 🧠 AI 研判摘要
-{analysis_summary}
+{formatted_summary}
 {trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
