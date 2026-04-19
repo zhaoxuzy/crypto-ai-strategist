@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from openai import OpenAI
 from utils.logger import logger
 
@@ -347,6 +348,39 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 """
 
 
+def _extract_json_from_content(content: str) -> str:
+    """从 LLM 返回的文本中提取 JSON 字符串，处理 Markdown 代码块等情况。"""
+    if not content:
+        return ""
+
+    # 1. 尝试提取 ```json ... ``` 代码块
+    json_block_pattern = r'```json\s*([\s\S]*?)\s*```'
+    matches = re.findall(json_block_pattern, content, re.IGNORECASE)
+    if matches:
+        # 取最后一个匹配（通常是完整的响应）
+        candidate = matches[-1].strip()
+        if candidate.startswith('{'):
+            return candidate
+
+    # 2. 尝试提取 ``` ... ``` 代码块（无语言标识）
+    code_block_pattern = r'```\s*([\s\S]*?)\s*```'
+    matches = re.findall(code_block_pattern, content)
+    if matches:
+        for candidate in reversed(matches):
+            candidate = candidate.strip()
+            if candidate.startswith('{'):
+                return candidate
+
+    # 3. 直接查找最外层花括号
+    first_brace = content.find('{')
+    last_brace = content.rfind('}')
+    if first_brace != -1 and last_brace > first_brace:
+        return content[first_brace:last_brace + 1]
+
+    # 4. 返回原始内容（让上层处理）
+    return content
+
+
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=90.0)
     last_error = None
@@ -360,7 +394,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 max_tokens=1500
             )
             content = resp.choices[0].message.content
-            logger.info(f"DeepSeek 响应状态: 成功，内容长度: {len(content) if content else 0}")
+            logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content) if content else 0}")
 
             if not content:
                 logger.warning(f"DeepSeek 返回空内容 (尝试 {attempt+1}/{max_retries})")
@@ -368,20 +402,26 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 time.sleep(2 ** attempt)
                 continue
 
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
-                logger.warning(f"DeepSeek 返回无 JSON 结构，原始内容前200字符: {content[:200]}")
-                last_error = f"返回无 JSON: {content[:100]}"
+            # 使用增强的 JSON 提取函数
+            extracted = _extract_json_from_content(content)
+            if not extracted or not extracted.startswith('{'):
+                logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
+                last_error = f"返回无有效 JSON: {content[:100]}"
                 time.sleep(2 ** attempt)
                 continue
 
-            js = content[json_start:json_end]
-            s = json.loads(js)
+            # 解析 JSON
+            s = json.loads(extracted)
             s.setdefault("tp_anchor", "未提供")
             logger.info("DeepSeek JSON 解析成功")
             return s
 
+        except json.JSONDecodeError as e:
+            last_error = f"JSON解析失败: {e}"
+            logger.warning(f"DeepSeek JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"待解析内容前200字符: {extracted[:200] if 'extracted' in locals() else 'N/A'}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
         except Exception as e:
             last_error = str(e)
             logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
