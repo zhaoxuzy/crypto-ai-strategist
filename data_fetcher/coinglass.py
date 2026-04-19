@@ -326,6 +326,35 @@ class CoinGlassClient:
             result["nearest_cluster"] = {"direction": direction, "price": f"{nearest_cluster_price:.1f}", "intensity": str(intensity)}
         return result
 
+    def _extract_liquidation_profile(self, raw_data: dict, current_price: float, atr: float) -> list:
+        """
+        提取距离当前价格 ±3×ATR 范围内的清算强度分布，供 AI 分析。
+        返回格式: [{"price": 84500, "intensity": 2.5, "direction": "above"}, ...]
+        """
+        profile = []
+        y_axis = raw_data.get("y_axis")
+        liq_data = raw_data.get("liquidation_leverage_data")
+        if not y_axis or not liq_data:
+            return profile
+        lower_bound = current_price - 3 * atr
+        upper_bound = current_price + 3 * atr
+        for item in liq_data:
+            if not isinstance(item, list) or len(item) < 3:
+                continue
+            y_idx = int(item[1])
+            intensity = float(item[2])
+            if y_idx < 0 or y_idx >= len(y_axis):
+                continue
+            price = float(y_axis[y_idx])
+            if lower_bound <= price <= upper_bound:
+                profile.append({
+                    "price": round(price, 1),
+                    "intensity": round(intensity / 1_000_000, 2),  # 转为百万美元单位
+                    "direction": "above" if price > current_price else "below"
+                })
+        profile.sort(key=lambda x: x["price"])
+        return profile
+
     def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
         signals = []
         total = curr["above"] + curr["below"]
@@ -641,5 +670,45 @@ class CoinGlassClient:
 
         data["exchange_balances"] = results.get("balances", {"btc_flow": "neutral", "stable_flow": "neutral"})
         data["volatility_factor"] = self.calculate_volatility_factor(symbol, current_atr=atr, klines=klines)
+
+        # --- 为 AI 准备原始数据视图 (raw_view) ---
+        raw_view = {}
+
+        # 清算分布表
+        if heatmap_raw:
+            raw_view["liquidation_profile"] = self._extract_liquidation_profile(
+                heatmap_raw, current_price, atr if atr else (current_price * 0.02)
+            )
+
+        # CVD 原始序列 (最近60分钟，1分钟粒度)
+        if cvd_history and isinstance(cvd_history, list):
+            cvd_series = []
+            for item in cvd_history[-60:]:
+                if isinstance(item, list) and len(item) >= 5:
+                    cvd_series.append(round(float(item[4]) / 1000, 0))  # 千美元
+                elif isinstance(item, dict):
+                    cvd_series.append(round(float(item.get("close", 0)) / 1000, 0))
+            raw_view["cvd_series_1m"] = cvd_series
+
+        # 多空比序列 (最近6小时)
+        if ls_history and isinstance(ls_history, list):
+            ls_series = []
+            for item in ls_history[-6:]:
+                ls_series.append(round(self._get_close_from_candle(item), 2))
+            raw_view["ls_ratio_series_1h"] = ls_series
+
+        # 主动买卖比率序列 (最近6小时)
+        if taker and isinstance(taker, list):
+            taker_series = []
+            for item in taker[-6:]:
+                buy, sell = self._get_buy_sell_volumes(item)
+                total = buy + sell
+                if total > 0:
+                    taker_series.append(round(buy / total, 2))
+                else:
+                    taker_series.append(0.5)
+            raw_view["taker_ratio_series_1h"] = taker_series
+
+        data["raw_view"] = raw_view
 
         return data
