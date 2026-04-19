@@ -148,8 +148,10 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
-        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+        """获取合约 CVD 历史数据，若无效则返回空"""
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 12}
+        data = self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+        return data
 
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
@@ -327,24 +329,16 @@ class CoinGlassClient:
         return result
 
     def _extract_liquidation_profile(self, raw_data: dict, current_price: float, atr: float) -> dict:
-        """
-        提取距离当前价格 ±5×ATR 范围内的清算强度分布，并生成易于 AI 理解的表格数据。
-        返回字典包含：
-            - table: 完整分布列表，每项含 price, intensity, direction, effect, distance_atr
-            - top_3: 强度最高的前三个清算区
-        """
         profile_table = []
         y_axis = raw_data.get("y_axis")
         liq_data = raw_data.get("liquidation_leverage_data")
         if not y_axis or not liq_data:
             return {"table": [], "top_3": []}
 
-        # 动态调整范围：高波动时扩大范围，确保覆盖重要清算区
         range_multiplier = 5.0 if atr > current_price * 0.02 else 4.0
         lower_bound = current_price - range_multiplier * atr
         upper_bound = current_price + range_multiplier * atr
 
-        # 收集所有有效清算点
         points = []
         for item in liq_data:
             if not isinstance(item, list) or len(item) < 3:
@@ -366,12 +360,8 @@ class CoinGlassClient:
                     "distance_atr": round(distance_atr, 2)
                 })
 
-        # 按价格排序
         points.sort(key=lambda x: x["price"])
-
-        # 提取前三强
         top_3 = sorted(points, key=lambda x: x["intensity"], reverse=True)[:3]
-
         return {"table": points, "top_3": top_3}
 
     def _calculate_liq_dynamics(self, curr: dict, prev: dict) -> list:
@@ -577,39 +567,19 @@ class CoinGlassClient:
             data["skew"] = "N/A"
 
         cvd_history = results.get("cvd")
-        if cvd_history and len(cvd_history) >= 30:
-            recent = cvd_history[-30:]
-            values = []
-            for item in recent:
+        cvd_series = []
+        cvd_valid = False
+        if cvd_history and isinstance(cvd_history, list) and len(cvd_history) > 0:
+            for item in cvd_history[-12:]:
                 if isinstance(item, list) and len(item) >= 5:
-                    values.append(float(item[4]))
+                    val = float(item[4])
                 elif isinstance(item, dict):
-                    values.append(float(item.get("close", 0)))
-            if len(values) >= 2:
-                n = len(values)
-                x_mean = (n - 1) / 2
-                y_mean = sum(values) / n
-                numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
-                denominator = sum((i - x_mean) ** 2 for i in range(n))
-                if denominator != 0:
-                    slope = numerator / denominator
-                    data["cvd_slope"] = round(slope, 4)
-                    if slope > 10:
-                        data["cvd_signal"] = "bullish"
-                    elif slope > 2:
-                        data["cvd_signal"] = "slightly_bullish"
-                    elif slope < -10:
-                        data["cvd_signal"] = "bearish"
-                    elif slope < -2:
-                        data["cvd_signal"] = "slightly_bearish"
-                    else:
-                        data["cvd_signal"] = "neutral"
+                    val = float(item.get("close", 0))
                 else:
-                    data["cvd_signal"] = "N/A"
-            else:
-                data["cvd_signal"] = "N/A"
-        else:
-            data["cvd_signal"] = "N/A"
+                    continue
+                if val != 0:
+                    cvd_valid = True
+                cvd_series.append(round(val / 1000, 0))
 
         net_pos = results.get("net_pos")
         if net_pos and len(net_pos) > 0:
@@ -687,7 +657,6 @@ class CoinGlassClient:
         # --- 为 AI 准备原始数据视图 (raw_view) ---
         raw_view = {}
 
-        # 清算分布
         if heatmap_raw:
             liq_view = self._extract_liquidation_profile(
                 heatmap_raw, current_price, atr if atr else (current_price * 0.02)
@@ -698,23 +667,9 @@ class CoinGlassClient:
             raw_view["liquidation_profile"] = []
             raw_view["top_3_liquidation_zones"] = []
 
-        # CVD 序列（检查有效性）
-        cvd_series = []
-        cvd_valid = False
-        if cvd_history and isinstance(cvd_history, list):
-            for item in cvd_history[-60:]:
-                val = 0.0
-                if isinstance(item, list) and len(item) >= 5:
-                    val = float(item[4])
-                elif isinstance(item, dict):
-                    val = float(item.get("close", 0))
-                if val != 0:
-                    cvd_valid = True
-                cvd_series.append(round(val / 1000, 0))
         raw_view["cvd_valid"] = cvd_valid
         raw_view["cvd_series_1m"] = cvd_series if cvd_valid else []
 
-        # 多空比序列（检查有效性）
         ls_series = []
         ls_valid = False
         if ls_history and isinstance(ls_history, list):
@@ -726,7 +681,6 @@ class CoinGlassClient:
         raw_view["ls_valid"] = ls_valid
         raw_view["ls_ratio_series_1h"] = ls_series if ls_valid else []
 
-        # 主动买卖比率序列
         taker_series = []
         if taker and isinstance(taker, list):
             for item in taker[-6:]:
