@@ -389,6 +389,9 @@ class CoinGlassClient:
         return 1.0
 
     # ---------- 并行化的 get_all_data ----------
+  # 文件开头部分保持不变（RateLimiter、__init__、_request 等）
+# ... 省略以节省篇幅，请使用上一轮提供的完整版本，仅需调整 get_all_data 部分 ...
+
     def get_all_data(self, symbol: str = "BTC", current_price: float = None, atr: float = None) -> dict:
         if current_price is None:
             current_price = 70000.0
@@ -409,6 +412,7 @@ class CoinGlassClient:
             "orderbook": lambda: self.get_orderbook_imbalance(symbol),
             "eth_btc": lambda: self.get_eth_btc_ratio(),
             "balances": lambda: self.get_exchange_balances(),
+            # 宏观三因子数据也在此统一获取
             "fg": lambda: self.get_fear_greed_index(),
             "premium": lambda: self.get_coinbase_premium(current_price),
             "stable": lambda: self.get_stablecoin_market_cap_change(),
@@ -425,8 +429,9 @@ class CoinGlassClient:
                     logger.error(f"并行获取 {key} 失败: {e}")
                     results[key] = None
 
-        # 开始组装 data
+        # 组装 data（包含所有数据）
         data = {}
+        # 清算数据
         heatmap_raw = results.get("heatmap")
         if heatmap_raw:
             liq_data = self._parse_liquidation_matrix(heatmap_raw, current_price)
@@ -621,9 +626,25 @@ class CoinGlassClient:
         else:
             data["eth_btc_ratio"] = {"current_ratio": 0.0, "ma_4h": 0.0, "trend": "neutral"}
 
-        data["fear_greed_index"] = results.get("fg", {"current": 50, "prev": 50})
-        data["coinbase_premium"] = results.get("premium", {"premium_pct": 0.0})
-        data["stablecoin_change"] = results.get("stable", {"change_7d": 0.0})
+        # 宏观三因子数据（直接存入 data，供 main.py 使用）
+        fg_data = results.get("fg")
+        if fg_data:
+            data["fear_greed_index"] = fg_data
+        else:
+            data["fear_greed_index"] = {"current": 50, "prev": 50, "classification": "Neutral"}
+
+        premium_data = results.get("premium")
+        if premium_data:
+            data["coinbase_premium"] = premium_data
+        else:
+            data["coinbase_premium"] = {"premium_pct": 0.0, "premium_usd": 0.0}
+
+        stable_data = results.get("stable")
+        if stable_data:
+            data["stablecoin_change"] = stable_data
+        else:
+            data["stablecoin_change"] = {"change_7d": 0.0, "current_mcap": 0.0}
+
         data["exchange_balances"] = results.get("balances", {"btc_flow": "neutral", "stable_flow": "neutral"})
 
         return data
