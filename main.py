@@ -6,7 +6,7 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-from ai_client.deepseek import call_deepseek_enhanced, validate_strategy_enhanced, calculate_signal_strength
+from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
@@ -164,7 +164,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     trend_score = trend_info.get("score", 0)
     trend_dir = trend_info.get("direction", "neutral")
     
-    # 1. 清算不对称比率（14分）
     above = float(str(cg_data.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg_data.get("below_long_liquidation", "0")).replace(",", ""))
     total_liq = above + below
@@ -179,7 +178,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
         elif ratio < 0.45:
             bull_score += 8
     
-    # 2. 趋势强度（33分，分段映射）
     if trend_score >= 75:
         trend_component = 33
     elif trend_score >= 60:
@@ -195,7 +193,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     elif trend_dir == "bear":
         bear_score += trend_component
     
-    # 3. CVD信号（17分）
     cvd = cg_data.get("cvd_signal", "N/A")
     if cvd == "bullish":
         bull_score += 17
@@ -206,7 +203,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     elif cvd == "slightly_bearish":
         bear_score += 9
     
-    # 4. 主动买卖盘比率（7分）
     try:
         tr = float(cg_data.get("taker_ratio", 0.5))
         if tr >= 0.55:
@@ -220,7 +216,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     except:
         pass
     
-    # 5. 顶级交易员多空比（5分）
     try:
         tls = float(cg_data.get("top_long_short_ratio", 1.0))
         if tls < 0.7:
@@ -234,7 +229,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     except:
         pass
     
-    # 6. 宏观三因子（5分）
     macro_result = compute_macro_three_factor_score(cg, cg_data, btc_price)
     macro_total = macro_result["total"]
     if macro_total >= 7:
@@ -248,7 +242,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     elif macro_result["bear_score"] > macro_result["bull_score"]:
         bear_score += macro_component
     
-    # 7. ETH/BTC汇率趋势（5分）
     eth_btc = cg_data.get("eth_btc_ratio", {})
     if eth_btc:
         trend = eth_btc.get("trend", "neutral")
@@ -257,7 +250,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
         elif trend == "down":
             bear_score += 5
     
-    # 8. 清算动态信号（14分）
     liq_dynamic = cg_data.get("liq_dynamic_signals", [])
     dynamic_bull = 0
     dynamic_bear = 0
@@ -284,7 +276,6 @@ def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, 
     bull_score += min(14, max(0, dynamic_bull))
     bear_score += min(14, max(0, dynamic_bear))
     
-    # 9. 价格位置惩罚（-10分）
     cluster = cg_data.get("nearest_cluster", {})
     cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
     cluster_dir = cluster.get("direction", "")
@@ -351,12 +342,6 @@ def get_entry_candidates(price: float, atr: float, direction: str, cluster: dict
 
 
 def get_tp_candidates(price: float, atr: float, direction: str, cluster: dict, stop_loss: float, volatility_factor: float = 1.0) -> dict:
-    """
-    返回三个止盈候选值
-    rule1: 最近反方向清算区（强度≥3）
-    rule2: 更优清算区（强度≥4 且 盈亏比 ≥ 1.5:1）
-    rule3: 2:1 盈亏比公式计算值
-    """
     candidates = {
         "rule1": {"price": 0.0, "anchor": ""},
         "rule2": {"price": 0.0, "anchor": ""},
@@ -367,14 +352,12 @@ def get_tp_candidates(price: float, atr: float, direction: str, cluster: dict, s
     cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
     cluster_dir = cluster.get("direction", "")
     
-    # rule3: 2:1 公式
     risk = abs(price - stop_loss)
     if direction == "long":
         candidates["rule3"]["price"] = round(price + 2.0 * risk, 1)
     else:
         candidates["rule3"]["price"] = round(price - 2.0 * risk, 1)
     
-    # rule1: 最近反方向清算区
     if cluster_intensity >= 3 and cluster_price > 0:
         if (direction == "long" and cluster_dir == "上" and cluster_price > price) or \
            (direction == "short" and cluster_dir == "下" and cluster_price < price):
@@ -387,7 +370,6 @@ def get_tp_candidates(price: float, atr: float, direction: str, cluster: dict, s
             if reward > 0 and reward / risk < 1.0:
                 candidates["rule1"]["anchor"] += " [盈亏比<1:1]"
     
-    # rule2: 更优清算区（当前简化，使用 rule3 代替）
     candidates["rule2"]["price"] = candidates["rule3"]["price"]
     candidates["rule2"]["anchor"] = "更优清算区(暂用公式)"
     
@@ -454,7 +436,6 @@ def main():
         elif score >= 40: signal_grade = "B"
         else: signal_grade = "C"
 
-        # 动态调整强制裁决阈值（波动因子）
         base_threshold_bull_bear = 8
         base_threshold_warning = 12
         if volatility_factor > 1.3:
@@ -472,21 +453,11 @@ def main():
             temp_direction = "long" if temp_direction == "bull" else "short"
         entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
 
-        # ========== 使用增强版 DeepSeek 调用 ==========
-        strategy = call_deepseek_enhanced(
-            symbol=symbol,
-            price=price,
-            atr=atr,
-            coinglass_data=cg_data,
-            macro_data={"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}},
-            profile=profile,
-            volatility_factor=volatility_factor,
-            trend_info=trend_info,
-            extreme_liq=extreme_liq,
-            liq_warning=liq_warning,
-            data_source_status=data_source_status,
-            directional_scores=directional_scores,
-            signal_grade=signal_grade,
+        prompt = build_prompt(
+            symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data={"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}},
+            profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
+            extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
+            directional_scores=directional_scores, signal_grade=signal_grade,
             entry_candidates=entry_candidates,
             exchange_balances=exchange_balances,
             liq_dynamic_signals=liq_dynamic_signals,
@@ -494,21 +465,9 @@ def main():
             threshold_warning=threshold_warning,
             tp_candidates=None
         )
-        # =============================================
 
+        strategy = call_deepseek(prompt)
         if not strategy: raise Exception("DeepSeek 返回为空")
-
-        audit_passed = strategy.get("audit_passed", True)
-        audit_discrepancies = strategy.get("audit_discrepancies", [])
-        signal_weight = strategy.get("signal_weight", 1.0)
-
-        if not audit_passed:
-            logger.warning(f"AI 分析审计未通过，差异项: {audit_discrepancies}")
-
-        if signal_weight < 0.5:
-            logger.info(f"AI 输出 neutral 且数据有效，信号权重被降至 {signal_weight}，本次不交易")
-            # 可在此处直接返回，不进行后续推送
-            # return
 
         actual_direction = strategy.get("direction", "neutral")
         if actual_direction != "neutral":
@@ -519,7 +478,6 @@ def main():
 
             entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
 
-            # 止损计算（波动因子动态调整）
             if float(strategy.get("stop_loss", 0)) <= 0:
                 base_multiplier = 2.0
                 if volatility_factor > 1.3:
@@ -553,12 +511,10 @@ def main():
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
-            strategy["analysis_summary"] = strategy.get("analysis_summary", "") + "\n[系统] 清算数据连续缺失，自动转为观望。"
+            strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
 
-        # 使用增强版验证函数
-        is_valid, error_msg = validate_strategy_enhanced(strategy, price, atr)
-        if not is_valid:
-            logger.warning(f"策略校验未通过: {error_msg}")
+        if not validate_strategy(strategy, price, atr):
+            logger.warning("策略校验未通过")
 
         extra = {
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
@@ -571,9 +527,7 @@ def main():
             "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
             "is_probe": is_probe, "key_support": key_levels["support"],
             "key_resistance": key_levels["resistance"],
-            "directional_scores": directional_scores,
-            "audit_passed": audit_passed,
-            "signal_weight": signal_weight
+            "directional_scores": directional_scores
         }
         markdown_msg = format_strategy_message(symbol, strategy, price, extra)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
