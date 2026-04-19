@@ -198,22 +198,34 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     # 格式化原始数据视图
     raw_view = coinglass_data.get("raw_view", {})
-    
-    # 清算分布表
+
+    # 清算分布表（新格式）
+    liq_profile = raw_view.get("liquidation_profile", [])
     liq_profile_lines = []
-    for item in raw_view.get("liquidation_profile", [])[:15]:  # 最多显示15行
+    for item in liq_profile[:15]:
         dir_symbol = "⬆️" if item["direction"] == "above" else "⬇️"
-        liq_profile_lines.append(f"| {item['price']:.1f} | {dir_symbol} | {item['intensity']:.2f} |")
+        liq_profile_lines.append(
+            f"| {item['price']:.2f} | {dir_symbol} {item['effect']} | {item['intensity']:.2f} | {item['distance_atr']:+.2f} |"
+        )
     liq_profile_table = "\n".join(liq_profile_lines) if liq_profile_lines else "无清算数据"
-    
+
+    # 前三强清算区摘要
+    top_3_zones = raw_view.get("top_3_liquidation_zones", [])
+    top_3_lines = []
+    for i, zone in enumerate(top_3_zones, 1):
+        top_3_lines.append(
+            f"{i}. {zone['price']:.2f} ({zone['effect']})，强度 {zone['intensity']:.2f}，距现价 {zone['distance_atr']:+.2f} ATR"
+        )
+    top_3_summary = "\n".join(top_3_lines) if top_3_lines else "无明显清算聚集区"
+
     # CVD序列
     cvd_series = raw_view.get("cvd_series_1m", [])
     cvd_series_str = str(cvd_series) if cvd_series else "无数据"
-    
+
     # 多空比序列
     ls_series = raw_view.get("ls_ratio_series_1h", [])
     ls_series_str = str(ls_series) if ls_series else "无数据"
-    
+
     # 主动买卖序列
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
@@ -265,10 +277,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 📁 原始数据视图（你必须深入分析）
 
-**清算压力分布（价格 → 强度，单位：百万美元）**
-| 价格 | 方向 | 强度 |
-|------|------|------|
+**清算强度分布（价格 → 原始强度 → 距现价 ATR）**
+| 价格 | 作用 | 原始强度 | 距现价(ATR) |
+|------|------|----------|-------------|
 {liq_profile_table}
+
+**🔥 前三强清算区（按强度排序）**
+{top_3_summary}
+
+> ⚠️ 注：原始强度值为 CoinGlass 提供的相对量纲，数值越大代表清算压力越集中，并非美元名义金额。
 
 **CVD 序列（最近 60 分钟，1 分钟粒度，单位：千美元）**
 `{cvd_series_str}`
@@ -293,19 +310,17 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 2. **CVD 序列的微观动量分析**  
    - 将 60 分钟 CVD 序列分为前 30 分钟与后 30 分钟。  
    - 计算两段的净变化量，判断动量是**加速、匀速还是衰减**。  
-   - 检查最后 10 分钟内是否存在与价格方向相反的 CVD 异动（例如价格涨但 CVD 连续 3 根为负）。
+   - 检查最后 10 分钟内是否存在与价格方向相反的 CVD 异动。
 
 3. **持仓结构的矛盾挖掘**  
-   - 对比“多空账户人数比序列”的最新值与 6 小时前的变化方向。  
-   - 对比“顶级交易员多空比”与“多空账户人数比”，判断散户与聪明钱是否方向一致。  
-   - 若一致，说明共振；若背离，指出谁更可能在犯错。
+   - 对比多空比序列的最新值与 6 小时前的变化方向。  
+   - 对比顶级交易员多空比与多空账户人数比，判断散户与聪明钱是否方向一致。
 
 4. **清算动态信号的验证**  
-   - 系统给出的清算动态信号（如“最大痛点上移”）是否能在清算分布表中找到对应的价格证据？请具体指出哪个价格区间的强度变化支持该信号。
+   - 系统给出的清算动态信号是否能在清算分布表中找到对应的价格证据？
 
 5. **宏观因子的边际变化**  
-   - 恐惧贪婪指数较昨日变化了多少？是“极端情绪修复”还是“贪婪加速”？  
-   - 稳定币市值 7 日变化率的具体数值，是否超过 ±1% 的有效阈值？
+   - 恐惧贪婪指数较昨日变化了多少？稳定币市值 7 日变化率是否超过 ±1%？
 
 **输出要求**：以上 5 点观察必须整合进你的 `analysis_summary` 字段中。每条观察前用 🔍 标注。
 
@@ -313,33 +328,25 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### ⚖️ 裁决指引（你拥有最终决定权）
 
-系统基于量化模型给出以下**参考建议**：
-- 若清算结构偏多且多空分差 ≥ {threshold_bull_bear}，模型**建议**输出 `long`。
-- 若清算结构偏空且多空分差 ≥ {threshold_bull_bear}，模型**建议**输出 `short`。
+系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
 
-**你的权力**：
-- 你可以**完全采纳**上述建议。
-- 你也可以**否决**该建议，但**必须**在 `analysis_summary` 中给出明确的、基于市场微观结构的否决理由。
-- 若你选择否决，可以输出 `neutral` 或相反方向，系统将尊重你的专业判断。
+**你的权力**：你可以采纳或否决。否决时必须在 `analysis_summary` 中给出明确理由。
 
 ---
 
 ### 🎯 入场、止损与止盈设置
 
 **入场区间候选**：
-- 规则1（清算区锚定）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}（锚定：{entry_candidates['rule1']['anchor']}）
-- 规则2（关键位锚定）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}（锚定：{entry_candidates['rule2']['anchor']}）
-- 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}（锚定：{entry_candidates['rule3']['anchor']}）
+- 规则1（清算区）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}
+- 规则2（关键位）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}
+- 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}
 
 **止盈候选**：
-- 候选A（清算区锚定）：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
-- 候选B（关键位锚定）：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
-- 候选C（盈亏比公式）：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
+- 候选A：{tp_candidates['rule1']['price']:.1f}（{tp_candidates['rule1']['anchor']}）
+- 候选B：{tp_candidates['rule2']['price']:.1f}（{tp_candidates['rule2']['anchor']}）
+- 候选C：{tp_candidates['rule3']['price']:.1f}（{tp_candidates['rule3']['anchor']}）
 
-**你的权力**：
-- 你可以直接选用任一候选值。
-- 你也可以基于当前盘口深度、关键整数关口、斐波那契扩展等专业经验，在候选C的 **±0.3×ATR** 范围内微调，并在 `reasoning` 中注明微调逻辑。
-- 止损默认使用 2×ATR 或清算区外侧，你可根据波动因子微调。
+你可在候选C的 ±0.3×ATR 内微调。
 
 ---
 
@@ -355,9 +362,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头，最后总结裁决逻辑。",
-  "trader_commentary": "你的交易员主观备注，如盘中观察要点、加仓条件、仓位建议等（可选，但强烈建议填写）。",
-  "risk_note": "风险提示，按点列出。"
+  "analysis_summary": "按强制数据深潜任务逐项撰写，每条以 🔍 开头。",
+  "trader_commentary": "交易员主观备注（可选）",
+  "risk_note": "风险提示"
 }}
 """
 
@@ -376,20 +383,17 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
 
-            # 增强 JSON 提取：处理 ```json ... ``` 包裹的情况
             json_str = None
             if "```json" in content:
                 start = content.find("```json") + 7
                 end = content.find("```", start)
                 if end != -1:
                     json_str = content[start:end].strip()
-                    logger.info("从 ```json 代码块中提取 JSON")
             if not json_str:
                 start = content.find('{')
                 end = content.rfind('}') + 1
                 if start != -1 and end > start:
                     json_str = content[start:end]
-                    logger.info("从花括号中提取 JSON")
             if not json_str:
                 logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
                 if attempt == max_retries - 1:
