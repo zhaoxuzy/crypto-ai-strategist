@@ -109,11 +109,21 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if "【第五步" in reasoning:
         reasoning = reasoning.split("【第五步")[0].strip()
 
-    # 2. 补全第三步结论（若缺失）
+    # 2. 修复第三步标题可能的格式问题（如多余的括号）
+    reasoning = re.sub(r'【第三步】：', '【第三步】', reasoning)
+    reasoning = re.sub(r'【第三步】:', '【第三步】', reasoning)
+
+    # 3. 补全第三步结论（若缺失）
     if "【第三步" in reasoning:
         parts = reasoning.split("【第三步")
         pre = parts[0].strip()
-        third = parts[1].split("【第四步")[0].strip() if "【第四步" in parts[1] else parts[1].strip()
+        third_and_rest = parts[1]
+        if "【第四步" in third_and_rest:
+            third = third_and_rest.split("【第四步")[0].strip()
+            rest = "【第四步" + third_and_rest.split("【第四步")[1]
+        else:
+            third = third_and_rest.strip()
+            rest = ""
         # 若第三步末尾没有【支持多头/空头/中性】，自动提取权重比较结果追加
         if not re.search(r'【支持(多头|空头|中性)】', third):
             if "多头总权重 > 空头总权重" in third:
@@ -123,8 +133,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             elif "两者相等" in third:
                 third += "\n【中性】"
         reasoning = pre + "\n\n【第三步】" + third
+        if rest:
+            reasoning += "\n\n" + rest
 
-    # 3. 确保第四步有明确的裁决结论（与前三步格式对齐）
+    # 4. 确保第四步有明确的裁决结论（与前三步格式对齐）
     if "【第四步" in reasoning:
         parts = reasoning.split("【第四步")
         pre = parts[0].strip()
@@ -135,7 +147,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             match = re.search(r'(必须输出\s*(long|short))', fourth, re.IGNORECASE)
             if match:
                 conclusion = f"【裁决结论】{match.group(1)}"
-        elif "强制裁决生效" in fourth:
+        elif "强制裁决生效" in fourth or "强制裁决规则" in fourth:
             if "输出short" in fourth:
                 conclusion = "【裁决结论】必须输出 short"
             elif "输出long" in fourth:
@@ -156,6 +168,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     # 格式化步骤标题，每步之间空一行
     reasoning = re.sub(r'(【第[一二三四]步)', r'\n\n\1', reasoning)
     reasoning = reasoning.strip()
+    # 清理多余空行
+    reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
 
     # 方向倾向得分差值、多空明细
     directional_scores = extra.get("directional_scores", {})
@@ -191,7 +205,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     entry_high = float(strategy.get("entry_price_high", 0))
     stop = float(strategy.get("stop_loss", 0))
     tp = float(strategy.get("take_profit", 0))
-    tp_anchor = strategy.get("tp_anchor", "未提供")
 
     # 计算盈亏比
     risk = abs(current_price - stop) if stop != 0 else 0
@@ -203,10 +216,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if alerts_str:
         alerts_str = alerts_str + "\n"
 
-    # 处理风险提示：清洗并条目化
+    # 处理风险提示：清洗并条目化，避免序号重复
     risk_note = strategy.get('risk_note', '请严格设置止损')
     # 移除多余空白和换行，统一用句号或分号分割
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
+    # 先移除可能已有的序号前缀（如 "1. " 或 "1、"）
+    risk_note = re.sub(r'^\d+[\.、]\s*', '', risk_note)
     risk_items = [item.strip() for item in re.split(r'[。；;]', risk_note) if item.strip()]
     if not risk_items:
         risk_items = [risk_note]
