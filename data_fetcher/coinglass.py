@@ -168,7 +168,7 @@ class CoinGlassClient:
             "exchange_list": "OKX",
             "symbol": symbol.upper(),
             "interval": "15m",
-            "limit": 12  # 12 × 15分钟 = 3小时，提供足够的动量分析窗口
+            "limit": 12
         }
         logger.info(f"尝试聚合CVD接口，参数: {aggregated_params}")
         data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=False, silent_fail=True)
@@ -256,7 +256,7 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 因子一：恐惧贪婪指数 ----------
+    # ---------- 恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
         try:
             import requests as req
@@ -449,17 +449,11 @@ class CoinGlassClient:
     def _get_ratio_from_item(item) -> float:
         """从多空比数据项中提取比值，兼容多种格式"""
         if isinstance(item, dict):
-            # 对象格式：{longShortAccountRatio: 1.25}
-            if "longShortAccountRatio" in item:
-                return float(item["longShortAccountRatio"])
-            elif "ratio" in item:
-                return float(item["ratio"])
-            elif "close" in item:
-                return float(item["close"])
-            elif "value" in item:
-                return float(item["value"])
+            # 常见字段名
+            for key in ["longShortAccountRatio", "longShortRatio", "ratio", "value", "close"]:
+                if key in item:
+                    return float(item[key])
         elif isinstance(item, list) and len(item) >= 5:
-            # K线数组格式：[timestamp, open, high, low, close, volume]
             return float(item[4])
         elif isinstance(item, (int, float)):
             return float(item)
