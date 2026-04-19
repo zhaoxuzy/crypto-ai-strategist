@@ -193,8 +193,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
         }
 
-    # 构建 Prompt（内容较长，此处省略中间部分，实际使用时需完整包含之前的所有 Prompt 文本）
-    prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
+    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
 
 ⚠️ **核心要求**：
 - 不得跳过任何步骤，每步必须给出明确结论。
@@ -346,11 +345,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "risk_note": "风险提示"
 }}
 """
-    return prompt
 
 
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=90.0)
+    last_error = None
     for attempt in range(max_retries):
         try:
             logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
@@ -365,14 +364,15 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
             if not content:
                 logger.warning(f"DeepSeek 返回空内容 (尝试 {attempt+1}/{max_retries})")
+                last_error = "API 返回空内容"
                 time.sleep(2 ** attempt)
                 continue
 
-            # 尝试提取 JSON
             json_start = content.find('{')
             json_end = content.rfind('}') + 1
             if json_start == -1 or json_end == 0:
                 logger.warning(f"DeepSeek 返回无 JSON 结构，原始内容前200字符: {content[:200]}")
+                last_error = f"返回无 JSON: {content[:100]}"
                 time.sleep(2 ** attempt)
                 continue
 
@@ -382,16 +382,20 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             logger.info("DeepSeek JSON 解析成功")
             return s
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"DeepSeek JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
         except Exception as e:
+            last_error = str(e)
             logger.warning(f"DeepSeek调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            if hasattr(e, 'response'):
+                try:
+                    logger.error(f"HTTP 响应状态码: {e.response.status_code}")
+                    logger.error(f"响应体: {e.response.text}")
+                    last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+                except:
+                    pass
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
 
-    raise RuntimeError("DeepSeek API 调用失败，所有重试均无效")
+    raise RuntimeError(f"DeepSeek API 调用失败，所有重试均无效。最后错误: {last_error}")
 
 
 def validate_strategy(s: dict, price: float) -> bool:
