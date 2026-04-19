@@ -44,9 +44,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # 清洗数据源状态中的加粗符号
+    # 获取数据源状态，彻底清洗所有可能引发格式的字符
     data_source_status = extra.get("data_source_status", "")
-    data_source_status = re.sub(r'\*\*', '', data_source_status)
+    # 移除加粗、斜体、删除线等 Markdown 标记
+    data_source_status = re.sub(r'[*_~`]', '', data_source_status)
+    data_source_status = data_source_status.strip()
 
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
@@ -182,19 +184,14 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     # 风险提示深度清洗
     risk_note = strategy.get('risk_note', '请严格设置止损')
-    # 1. 移除前缀
     risk_note = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', risk_note)
-    # 2. 合并空白
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
-    # 3. 按中文标点分割
     raw_items = re.split(r'[。；;]', risk_note)
     risk_items = []
     for item in raw_items:
         item = item.strip()
         if not item: continue
-        # 4. 移除所有形式的前导序号（数字+点/顿号/右括号/空格）
         item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
-        # 5. 再次移除可能残留的风险字样（如"风险："）
         item = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', item)
         if item and not re.match(r'^\d+$', item):
             risk_items.append(item)
@@ -217,7 +214,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     cvd_val = extra.get('cvd_signal', 'N/A')
     greed_val = extra.get('fear_greed', 'N/A')
 
-    # 处理百分比：如果已包含%则不变，否则添加%
     if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
         oi_val += '%'
     if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
@@ -225,6 +221,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
 
+    # 将清算数据源单独成行，确保没有格式字符干扰
     return f"""{title_line}
 
 {param_card}
