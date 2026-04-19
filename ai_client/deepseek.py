@@ -140,7 +140,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  directional_scores: dict = None, signal_grade: str = "B",
                  entry_candidates: dict = None, exchange_balances: dict = None,
                  liq_dynamic_signals: list = None,
-                 threshold_bull_bear: int = 7, threshold_warning: int = 10,
+                 threshold_bull_bear: int = 8, threshold_warning: int = 12,
                  tp_candidates: dict = None) -> str:
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
@@ -245,6 +245,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   （**时效性判断**：你必须结合当前价格与最大痛点的距离、趋势强度得分，判断该最大痛点的有效性。若趋势得分<50且距离超过2×ATR，其引力/压力作用应打折扣，在结论中需注明。）
 - **必须分析期权最大痛点**：指出其位置及与清算最大痛点的关系（同向共振或背离）。
 - **必须引用至少一个清算动态信号**（如“清算堆积加速”、“强磁吸区”、“最大痛点上移”等），判断当前清算墙是正在堆积还是被消耗。
+- **必须引用 CVD 信号**：若 CVD 为 bullish/slightly_bullish，且你判断方向偏多，则构成共振；若 CVD 与你的方向背离，必须在第四步的矛盾信号中列出。
 - **必须根据波动因子调整判断**：
   - 波动因子 > 1.3（高波动）：趋势得分阈值可适当降低（≥60即可视为趋势较强），清算墙更易被突破。
   - 波动因子 < 0.7（低波动）：假突破概率高，清算墙的支撑/阻力作用增强，需更谨慎。
@@ -272,10 +273,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 3. **资金费率极端信号**：
    - 费率>0.05% + 顶级偏空 → 拥挤多头可能为犯错方。结论：【偏空】。
    - 费率<-0.03% + 顶级偏多 → 拥挤空头可能为犯错方。结论：【偏多】。
-4. **短期力量确认**：
-   - 主动吃单比率与订单簿失衡率同向时，强化对应方向结论；若背离，降级为中性。
-5. **资金流向验证**：
-   - 持仓量大幅增加（>5%）且与方向一致 → 趋势持续性增强；持仓量大幅减少 → 趋势可能衰竭。
+4. **短期力量强制确认**：
+   - 主动吃单比率与订单簿失衡率同向时，最终结论的置信度提升一级（中性→偏多/偏空，偏多/偏空→明确多/空）；若两者背离，必须将结论降级为中性。
+5. **资金流向强制验证**：
+   - 若持仓量24h变化 > +5% 或 < -5%，必须在reasoning中明确说明其对趋势持续性的影响（增强/衰竭），并在risk_note中提示。
 6. **信号矛盾或中性**：
    - 若以上均不满足，或信号严重矛盾，结论：【中性】。
 
@@ -296,7 +297,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
      - 若两者相等且均为0 → 输出【中性】。
      - 若两者相等但均>0 → 输出【中性】，但必须在reasoning中说明“多空信号均衡”。
 - **必须引用交易所钱包余额数据**：判断BTC和稳定币的净流向，作为中长期资金面背景佐证你的结论。
-- **可选补充**：在reasoning中提及ETH/BTC汇率趋势作为风险偏好背景。
+- **必须引用 ETH/BTC 汇率趋势**：若趋势为 up，对多头构成额外支持；若为 down，对空头构成额外支持。在reasoning中必须写明。
 - **严禁**：因信号矛盾或主观判断而输出与权重计算结果不符的结论。
 
 **第四步：信号共振与矛盾裁决**
@@ -310,6 +311,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 2. 若第一步结论为【偏空】，且差值 ≥ **{threshold_bull_bear}分** → **必须**输出 **short**。
 3. 若第一步结论为【风险预警】，且差值 ≥ **{threshold_warning}分** → **必须**输出领先方向。
 4. 若第一步结论为【中性观察】，不触发强制裁决。
+
+**📊 置信度调节规则**：
+- 若第二步短期力量（主动吃单+订单簿）与强制裁决方向背离 → confidence 必须为 low。
+- 若持仓量变化与强制裁决方向相反（如做多但OI大幅流出） → 必须在 risk_note 中警告“资金流向矛盾”。
+- 若 ETH/BTC 汇率趋势与强制裁决方向相反 → confidence 降一级（medium→low）。
 
 **⚠️ 铁律（违反以下任何一条将导致你的输出被判定为无效）**：
 - 一旦满足上述任一强制裁决条件，你**无权**以“风险回报比”、“价格紧贴关键位”、“市场结构矛盾”、“风险第一原则”等**任何理由**拒绝执行。
@@ -330,12 +336,14 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - **规则3**：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
   - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”，则**必须**改用规则3。若规则1不存在，使用规则3。
   - **严禁**将同向清算区用于止盈，严禁自行创造止盈锚点。
+- **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离），保留一位小数。若盈亏比 < 1:1，必须在 risk_note 中明确警告。
 - 在reasoning中明确写出所选止盈规则及盈亏比。
 
 ### 策略输出格式（严格JSON）
 **请直接输出纯 JSON，不要用 ```json 代码块包裹。**
 {{
   "direction": "long" 或 "short" 或 "neutral",
+  "confidence": "high" 或 "medium" 或 "low",
   "entry_price_low": 入场区间下限,
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
