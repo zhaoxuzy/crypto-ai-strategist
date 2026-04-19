@@ -147,11 +147,32 @@ class CoinGlassClient:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
-    def get_cvd_history(self, symbol: str = "BTC"):
-        """获取合约 CVD 历史数据，若无效则返回空"""
-        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "5m", "limit": 12}
-        data = self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+   def get_cvd_history(self, symbol: str = "BTC"):
+    """
+    获取聚合合约 CVD 历史数据。
+    优先使用新接口 /api/futures/aggregated-cvd/history。
+    """
+    # 主要方案：聚合CVD接口
+    aggregated_params = {
+        "exchange": "OKX",
+        "symbol": symbol.upper(),  # 聚合接口通常需要大写，如 "BTC"
+        "interval": "15m",
+        "limit": 4  # 4 * 15m = 60分钟
+    }
+    data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=True, silent_fail=True)
+    if data and isinstance(data, list) and len(data) > 0:
+        logger.info(f"{symbol} 使用聚合CVD接口成功")
         return data
+
+    # 备用方案：回退到旧的非聚合合约接口
+    logger.warning(f"{symbol} 聚合CVD接口失败，回退到旧合约CVD接口")
+    futures_params = {
+        "exchange": "OKX",
+        "symbol": f"{symbol}-USDT-SWAP",
+        "interval": "15m",
+        "limit": 4
+    }
+    return self._request("api/futures/cvd/history", futures_params, allow_backup=True, silent_fail=True)
 
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
