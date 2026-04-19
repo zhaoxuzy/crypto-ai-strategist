@@ -449,7 +449,9 @@ class CoinGlassClient:
     def _get_ratio_from_item(item) -> float:
         """从多空比数据项中提取比值，兼容多种格式"""
         if isinstance(item, dict):
-            # 常见字段名
+            # 实际返回字段：global_account_long_short_ratio
+            if "global_account_long_short_ratio" in item:
+                return float(item["global_account_long_short_ratio"])
             for key in ["longShortAccountRatio", "longShortRatio", "ratio", "value", "close"]:
                 if key in item:
                     return float(item[key])
