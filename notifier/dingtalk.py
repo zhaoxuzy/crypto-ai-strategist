@@ -118,7 +118,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         step_content = match.group(3).strip()
         steps[step_num] = {"title": step_title, "content": step_content}
 
-    # 如果解析失败，回退到简单的分割方法
     if not steps:
         parts = reasoning.split('【')
         for part in parts:
@@ -133,7 +132,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             elif '第四步' in part:
                 steps['第四步'] = {"title": "信号共振与矛盾裁决", "content": part.split('】', 1)[-1].strip() if '】' in part else part.strip()}
 
-    # 3. 提取每步的结论，并构建标准标题
     formatted_steps = []
     step_names = {
         '第一步': '清算动力学定锚',
@@ -155,7 +153,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     elif '中性观察' in content1:
         conclusion1 = "中性观察"
     else:
-        # 从末尾提取
         lines = content1.split('\n')
         for line in reversed(lines):
             if '【' in line and '】' in line:
@@ -196,7 +193,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     elif '【中性】' in content3:
         conclusion3 = "中性"
     else:
-        # 尝试从权重分析中提取
         if "多头总权重 > 空头总权重" in content3:
             conclusion3 = "支持做多"
         elif "空头总权重 > 多头总权重" in content3:
@@ -205,7 +201,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             conclusion3 = "中性"
     formatted_steps.append(f"【第三步：{step_names['第三步']}，结论：{conclusion3}】\n{content3}")
 
-    # 第四步结论（最终裁决方向）
+    # 第四步结论
     step4 = steps.get('第四步', {})
     content4 = step4.get('content', '')
     conclusion4 = ""
@@ -215,7 +211,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         conclusion4 = "做空"
     else:
         conclusion4 = "观望"
-    # 确保第四步内容末尾的裁决结论被移除（避免重复），然后整合到标题中
     content4 = re.sub(r'\n?【裁决结论】.*$', '', content4).strip()
     formatted_steps.append(f"【第四步：{step_names['第四步']}，结论：{conclusion4}】\n{content4}")
 
@@ -256,7 +251,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     stop = float(strategy.get("stop_loss", 0))
     tp = float(strategy.get("take_profit", 0))
 
-    # 计算盈亏比
     risk = abs(current_price - stop) if stop != 0 else 0
     reward = abs(tp - current_price) if tp != 0 else 0
     rr = reward / risk if risk > 0 else 0
@@ -266,14 +260,25 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if alerts_str:
         alerts_str = alerts_str + "\n"
 
-    # 处理风险提示：清洗并条目化
+    # 风险提示：彻底清理序号后重新编号
     risk_note = strategy.get('risk_note', '请严格设置止损')
+    # 1. 合并多余空白
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
-    risk_note = re.sub(r'^\d+[\.、]\s*', '', risk_note)
-    risk_items = [item.strip() for item in re.split(r'[。；;]', risk_note) if item.strip()]
+    # 2. 移除所有可能的前导序号（数字+点/顿号/空格）
+    risk_note = re.sub(r'^\s*\d+[\.、\s]*', '', risk_note)
+    # 3. 按中文标点分割
+    raw_items = re.split(r'[。；;]', risk_note)
+    risk_items = []
+    for item in raw_items:
+        item = item.strip()
+        if not item:
+            continue
+        # 再次移除可能残留的内部序号（如 "2.   xxx" 中间出现）
+        item = re.sub(r'^\d+[\.、\s]*', '', item)
+        if item and not re.match(r'^\d+$', item):
+            risk_items.append(item)
     if not risk_items:
-        risk_items = [risk_note]
-    risk_items = [item for item in risk_items if not re.match(r'^\d+$', item)]
+        risk_items = ["请严格设置止损"]
     risk_formatted = "\n".join([f"{i+1}. {item}" for i, item in enumerate(risk_items)])
 
     return f"""## 🤖 DeepSeek 短线策略 [{symbol}] | 🕒 {now_str}
