@@ -192,6 +192,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
             "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
         }
 
+    # 从 coinglass_data 中提取 ETH/BTC 汇率数据
+    eth_btc = coinglass_data.get("eth_btc_ratio", {})
+    eth_btc_trend = eth_btc.get('trend', 'N/A')
+    eth_btc_ratio = eth_btc.get('current_ratio', 0.0)
+
     return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须严格遵循以下五步分析流程，基于提供的数据做出独立、专业的决策。
 
 ⚠️ **核心要求**：
@@ -230,7 +235,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
-- **ETH/BTC汇率趋势**：{eth_btc.get('trend', 'N/A')}（当前汇率 {eth_btc.get('current_ratio', 0):.6f}）
+- **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
 - **宏观三因子信号**：
 {macro_signals_text}
 
@@ -335,7 +340,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   - **规则1**：{tp_candidates['rule1']['price']:.1f}（锚定：{tp_candidates['rule1']['anchor']}）
   - **规则2**：{tp_candidates['rule2']['price']:.1f}（锚定：{tp_candidates['rule2']['anchor']}）
   - **规则3**：{tp_candidates['rule3']['price']:.1f}（锚定：{tp_candidates['rule3']['anchor']}）
-  - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”，则**必须**改用规则3。若规则1不存在，使用规则3。
+  - **选择优先级**：优先规则1。若规则1标注了“[盈亏比<1:1]”或规则1价格为0.0，则**必须**使用规则3的精确数值，**严禁**以任何理由（如“下方有支撑”、“整数关口”等）修改规则3的计算结果。
   - **严禁**将同向清算区用于止盈，严禁自行创造止盈锚点。
 - **必须计算并写明盈亏比**（止盈距离 ÷ 止损距离），保留一位小数。若盈亏比 < 1:1，必须在 risk_note 中明确警告。
 - 在reasoning中明确写出所选止盈规则及盈亏比。
