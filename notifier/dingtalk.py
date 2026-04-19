@@ -92,6 +92,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
+    # 提取最终裁决
+    final_verdict = ""
+    if "【最终裁决】" in analysis_summary:
+        parts = analysis_summary.split("【最终裁决】")
+        analysis_summary = parts[0].strip()
+        final_verdict = parts[1].strip()
+
     # 格式化列表
     formatted_summary = ""
     if analysis_summary:
@@ -130,6 +137,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
+        final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -137,6 +145,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 🧠 AI 研判摘要
 {formatted_summary}
+{final_block}
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
@@ -188,6 +197,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if trader_commentary:
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
+    final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
+
     return f"""{title_line}
 
 {param_card}
@@ -199,6 +210,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 🧠 AI 研判摘要
 {formatted_summary}
+{final_block}
 {trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
