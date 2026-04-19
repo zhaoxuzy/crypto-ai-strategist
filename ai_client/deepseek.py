@@ -230,6 +230,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 **期权与宏观**
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')}
+- **ETH/BTC汇率趋势**：{eth_btc.get('trend', 'N/A')}（当前汇率 {eth_btc.get('current_ratio', 0):.6f}）
 - **宏观三因子信号**：
 {macro_signals_text}
 
