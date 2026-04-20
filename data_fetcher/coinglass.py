@@ -126,6 +126,18 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
+    def get_long_short_ratio_history(self, symbol: str = "BTC"):
+        """多空账户人数比历史数据"""
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+        data = self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
+        if data and isinstance(data, list):
+            logger.info(f"多空账户人数比获取成功，长度: {len(data)}")
+            if len(data) > 0:
+                logger.info(f"第一条数据样例: {data[0]}")
+        else:
+            logger.warning(f"多空账户人数比返回为空或非列表，数据类型: {type(data)}")
+        return data
+
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         """大户持仓多空比历史数据（持仓量维度，仅支持 BTC、ETH）"""
         if symbol.upper() not in ("BTC", "ETH"):
@@ -154,7 +166,7 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        """获取聚合合约 CVD 历史数据（3小时，12个15分钟点）"""
+        """获取聚合合约 CVD 历史数据"""
         aggregated_params = {
             "exchange_list": "OKX",
             "symbol": symbol.upper(),
@@ -247,7 +259,7 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 恐惧贪婪指数 ----------
+    # ---------- 因子一：恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
         try:
             import requests as req
@@ -440,10 +452,8 @@ class CoinGlassClient:
     def _get_ratio_from_item(item) -> float:
         """从多空比数据项中提取比值，兼容多种格式"""
         if isinstance(item, dict):
-            # 实际返回字段：global_account_long_short_ratio
-            if "global_account_long_short_ratio" in item:
-                return float(item["global_account_long_short_ratio"])
-            for key in ["longShortAccountRatio", "longShortRatio", "ratio", "value", "close"]:
+            # 常见字段名
+            for key in ["longShortAccountRatio", "global_account_long_short_ratio", "longShortRatio", "ratio", "value", "close"]:
                 if key in item:
                     return float(item[key])
         elif isinstance(item, list) and len(item) >= 5:
