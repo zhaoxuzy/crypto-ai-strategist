@@ -43,8 +43,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
+
+    # ===== 彻底清洗数据源状态，移除所有加粗标记 =====
     data_source_status = extra.get("data_source_status", "")
-    data_source_status = re.sub(r'\*\*', '', data_source_status)
+    data_source_status = re.sub(r'\*\*', '', data_source_status).strip()
+    if not data_source_status:
+        data_source_status = "清算数据源：model2（主用）"
+
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
@@ -100,21 +105,22 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # 格式化列表，处理内部换行
+    # ===== 核心：确保放大镜列表每项独立对齐 =====
     formatted_summary = ""
     if analysis_summary:
-        lines = analysis_summary.split('\n')
+        # 按 🔍 分割成多个条目（保留 🔍 符号）
+        # 先将所有换行符临时替换，避免 split 时丢失结构
+        # 使用正则按 🔍 分割，但保留 🔍 本身
+        parts = re.split(r'(?=🔍)', analysis_summary)
         summary_items = []
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            if line.startswith('🔍') or re.match(r'^\d+\.', line):
-                summary_items.append(line)
-            else:
-                if summary_items:
-                    summary_items[-1] += "<br>" + line  # 使用 <br> 连接多行内容
-                else:
-                    summary_items.append(line)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # 如果该部分不以 🔍 开头，可能是第一条之前的内容（如数据质量评估），也保留
+            # 将内部的换行符替换为 <br>，保持在同一列表项内
+            part = part.replace('\n', '<br>')
+            summary_items.append(part)
         if summary_items:
             formatted_summary = "\n".join([f"- {item}" for item in summary_items])
         else:
@@ -202,7 +208,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
-    # 格式化数据快照行
+    # 数据快照行
     atr_val = extra.get('atr', 0)
     funding_val = extra.get('funding_rate', 'N/A')
     oi_val = extra.get('oi_change', 'N/A')
