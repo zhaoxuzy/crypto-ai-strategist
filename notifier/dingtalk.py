@@ -44,13 +44,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # ===== 终极纯文本化：彻底破坏钉钉自动标题识别 =====
+    # 彻底清洗数据源状态，防止加粗加大
     data_source_status = extra.get("data_source_status", "")
-    # 1. 移除所有 Markdown 格式符号 (*, _, `, #, >, -)
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
-    # 2. 将中文冒号替换为英文冒号 + 空格，防止被解析为标题
     data_source_status = data_source_status.replace('：', ': ')
-    # 3. 清除多余空白
     data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
         data_source_status = "清算数据源: model2(主用)"
@@ -110,7 +107,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # 按 🔍 分割，确保每个放大镜独立成项
+    # 按 🔍 分割，确保每个放大镜独立成项，内部换行用 <br>
     formatted_summary = ""
     if analysis_summary:
         parts = re.split(r'(?=🔍)', analysis_summary)
@@ -119,7 +116,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             part = part.strip()
             if not part:
                 continue
-            # 内部换行替换为 <br>
             part = part.replace('\n', '<br>')
             summary_items.append(part)
         if summary_items:
@@ -166,10 +162,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     stop = float(strategy.get("stop_loss", 0))
     tp = float(strategy.get("take_profit", 0))
 
-    # 使用入场区间中间价作为计算基准
+    # 基于入场中间价计算盈亏比
     entry_mid = (entry_low + entry_high) / 2
-risk = abs(entry_mid - stop) if stop != 0 else 0
-reward = abs(tp - entry_mid) if tp != 0 else 0
+    risk = abs(entry_mid - stop) if stop != 0 else 0
+    reward = abs(tp - entry_mid) if tp != 0 else 0
+    rr = reward / risk if risk > 0 else 0
+    rr_str = f"{rr:.2f}:1" if rr > 0 else "N/A"
 
     bar_len = int(min(100, trend_score) / 10)
     trend_bar = "`" + "█" * bar_len + "░" * (10 - bar_len) + "`"
