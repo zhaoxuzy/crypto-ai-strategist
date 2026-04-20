@@ -143,7 +143,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
-        data_source_line = f"\u200b{data_source_status}"
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -156,7 +155,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 分差：{diff}分（{strength_text}）| 多头{bull_score} vs 空头{bear_score}
-- {data_source_line}
+- {data_source_status}
 """
 
     entry_low = float(strategy.get("entry_price_low", 0))
@@ -174,7 +173,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     trend_state_desc = f"{trend_bar} {trend_score}/100"
 
     param_card = f"""
-> ### 📋 交易策略
+> ### 📋 交易指令
 > **现价**：`{current_price:.1f}`  
 > **入场**：`{entry_low:.1f}` — `{entry_high:.1f}`  
 > **止损**：`{stop:.1f}` 🔴  
@@ -203,7 +202,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     trader_block = ""
     if trader_commentary:
-        trader_block = f"\n> 💬 **顶级交易员备注**：{trader_commentary}\n"
+        trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
@@ -219,10 +218,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
         funding_val += '%'
 
-    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
-
-    # 在 data_source_status 前添加零宽空格，并确保前后有空行
-    data_source_line = f"\u200b{data_source_status}"
+    # 合并数据快照与清算数据源
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
 
     return f"""{title_line}
 
@@ -241,8 +238,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > {risk_formatted}
 
 {snapshot_line}
-
-{data_source_line}
 
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
