@@ -43,12 +43,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
-
-    # 获取数据源状态，彻底清洗所有可能引发格式的字符
     data_source_status = extra.get("data_source_status", "")
-    data_source_status = re.sub(r'[*_~`]', '', data_source_status)
-    data_source_status = data_source_status.strip()
-
+    data_source_status = re.sub(r'\*\*', '', data_source_status)
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
 
@@ -104,7 +100,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # 格式化列表
+    # 格式化列表，处理内部换行
     formatted_summary = ""
     if analysis_summary:
         lines = analysis_summary.split('\n')
@@ -116,7 +112,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
                 summary_items.append(line)
             else:
                 if summary_items:
-                    summary_items[-1] += " " + line
+                    summary_items[-1] += "<br>" + line  # 使用 <br> 连接多行内容
                 else:
                     summary_items.append(line)
         if summary_items:
@@ -173,7 +169,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     trend_state_desc = f"{trend_bar} {trend_score}/100"
 
     param_card = f"""
-> ### 📋 交易策略
+> ### 📋 交易指令
 > **现价**：`{current_price:.1f}`  
 > **入场**：`{entry_low:.1f}` — `{entry_high:.1f}`  
 > **止损**：`{stop:.1f}` 🔴  
@@ -181,7 +177,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > **盈亏比**：**{rr_str}**
 """
 
-    # 风险提示深度清洗
+    # 风险提示清洗
     risk_note = strategy.get('risk_note', '请严格设置止损')
     risk_note = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', risk_note)
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
@@ -196,13 +192,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             risk_items.append(item)
     if not risk_items:
         risk_items = ["请严格设置止损"]
-    risk_formatted = "\n> ".join([f"{i+1}. {item}" for i, item in enumerate(risk_items)])
+    risk_formatted = "\n> ".join([f"{i+1}. {item.strip()}" for i, item in enumerate(risk_items)])
 
     alerts_str = "  ".join(alerts) if alerts else ""
 
     trader_block = ""
     if trader_commentary:
-        trader_block = f"\n> 💬 **顶级交易员备注**：{trader_commentary}\n"
+        trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
@@ -218,8 +214,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
         funding_val += '%'
 
-    # 合并数据快照与清算数据源
-    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
 
     return f"""{title_line}
 
@@ -227,7 +222,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 📊 市场状态
 趋势强度 {trend_state_desc} ({market_state})  
-⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，确信度{strength_text})  
+⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
 {alerts_str}
 
 ### 🧠 AI 研判摘要
@@ -237,8 +232,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-{snapshot_line}
-
+{snapshot_line}  
+{data_source_status}
 ---
-*以上内容由 DeepSeek 智能体生成，仅供参考*
+*以上内容由 DeepSeek 生成，仅供参考*
 """
