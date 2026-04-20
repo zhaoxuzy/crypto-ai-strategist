@@ -50,7 +50,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     data_source_status = data_source_status.replace('：', ':')
     data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
-        data_source_status = "清算数据源:model2(主用)"
+        data_source_status = "清算数据源:model2"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
@@ -224,7 +224,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 📊 市场状态
 趋势强度 {trend_state_desc} ({market_state})  
-⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
+⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text})  
 {alerts_str}
 
 ### 🧠 AI 研判摘要
