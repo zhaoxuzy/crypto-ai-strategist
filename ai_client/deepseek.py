@@ -296,7 +296,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ---
 
-### 🔬 强制指标逐项分析任务（你必须完成，每项均需分析，不得遗漏）
+### 🔬 强制指标逐项分析任务（你必须完成，每项均需分析，不得简化和遗漏）
 
 **首先，评估数据质量**（在第一条观察中声明）：
 - CVD 序列是否有效？若无效，后续 CVD 分析跳过并注明。
@@ -344,7 +344,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **最终裁决要求**：
 在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
-`【最终裁决】系统建议 [long/short/neutral]，综合以上分析，我决定输出 [long/short/neutral]，核心依据：...`
+`【最终裁决】通过以上综合研判，系统建议 [long/short/neutral]，我以一个顶级交易员的角色分析后决定输出 [long/short/neutral]，核心依据：...`
 
 **输出要求**：以上 9 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
 
@@ -354,7 +354,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
 
-**你的权力**：你必须独自裁决，系统建议只做参考，必须在 `analysis_summary` 中给出明确理由。
+**你的权力**：你必须以顶级交易员的角色独自裁决，系统建议只做参考，必须在 `analysis_summary` 中给出明确理由。
 
 ---
 
