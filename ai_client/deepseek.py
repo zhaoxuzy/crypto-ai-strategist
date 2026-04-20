@@ -227,7 +227,18 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
-    return f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
+    # ================== 【修改点 1】 系统量化参考段落 —— 移到最后，并加上警告前缀 ==================
+    quant_reference_section = f"""
+### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
+
+⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断，允许且鼓励推翻此结论。**
+
+- 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
+- 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
+"""
+    # ========================================================================================
+
+    prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
 
 ⚠️ **核心要求**：
 - 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
@@ -268,10 +279,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
 - **宏观三因子信号**：
 {macro_signals_text}
-
-**量化参考（供辅助决策）**
-- 方向倾向得分：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
-- 系统信号评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 
 ### 📁 原始数据视图（你必须深入分析）
 
@@ -342,21 +349,18 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - BTC 是净流入还是净流出？稳定币是净流入还是净流出？  
    - 结合两者判断中长期资金面是偏多还是偏空。
 
+10. **【修改点 2】推翻系统结论的尝试（必须执行）**  
+    - 系统机械计算的方向倾向为【{higher_direction}】。  
+    - 请你基于以上9项分析，**故意找出一个反驳该系统结论的理由**。  
+    - 如果你完全认同系统结论，请解释为什么上述9项数据没有提供任何反驳证据。
+
 **最终裁决要求**：
 在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
-`【最终裁决】通过以上综合研判，系统建议 [long/short/neutral]，我以一个顶级交易员的角色分析后决定输出 [long/short/neutral]，核心依据：...`
+`【最终裁决】通过以上综合研判，系统机械建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [long/short/neutral]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
 
-**输出要求**：以上 9 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
+**输出要求**：以上 10 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
 
----
-
-### ⚖️ 裁决指引（你拥有最终决定权）
-
-系统建议：若清算结构偏多且分差 ≥ {threshold_bull_bear}，建议 `long`；若偏空且分差 ≥ {threshold_bull_bear}，建议 `short`。
-
-**你的权力**：你必须以顶级交易员的角色独自裁决，系统建议只做参考，必须在 `analysis_summary` 中给出明确理由。
-
----
+{quant_reference_section}
 
 ### 🎯 入场、止损与止盈设置
 
@@ -386,11 +390,12 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈锚定来源说明",
-  "analysis_summary": "按强制指标逐项分析任务逐项撰写，每条以 🔍 开头，共9项，末尾包含【最终裁决】段落。",
+  "analysis_summary": "按强制指标逐项分析任务逐项撰写，每条以 🔍 开头，共10项，末尾包含【最终裁决】段落。",
   "trader_commentary": "顶级交易员观点",
   "risk_note": "风险提示"
 }}
 """
+    return prompt
 
 
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
@@ -402,7 +407,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=2500  # 增加 token 数以容纳 9 项分析
+                max_tokens=2500  # 增加 token 数以容纳 10 项分析
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
