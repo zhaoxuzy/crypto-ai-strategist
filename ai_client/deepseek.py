@@ -229,7 +229,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     quant_reference_section = f"""
 ### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
 
-⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断，允许且鼓励推翻此结论。**
+⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断。**
 
 - 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
 - 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
@@ -244,7 +244,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
-### 核心市场数据
+### 核心数据
 
 **价格与波动**
 - 当前价格：{price} USDT
@@ -319,7 +319,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **最终裁决要求**：
 综合分析研判以上数据后，用单独一行写【最终裁决】段落：
-`【最终裁决】系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [做多/做空/观望]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
+`【最终裁决】系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后做出合约策略 [做多/做空/观望]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
 
 {quant_reference_section}
 
