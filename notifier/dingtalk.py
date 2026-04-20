@@ -44,7 +44,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # 数据源状态纯文本
+    # 准备纯文本数据源状态
     data_source_status = extra.get("data_source_status", "")
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
     data_source_status = data_source_status.replace('：', ':')
@@ -137,20 +137,24 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     title_line = f"## {dir_emoji} {dir_text} {symbol}  |  {now_beijing.strftime('%m-%d %H:%M')}"
 
+    # 准备数据快照行的各指标
+    atr_val = extra.get('atr', 0)
+    funding_val = extra.get('funding_rate', 'N/A')
+    oi_val = extra.get('oi_change', 'N/A')
+    cvd_val = extra.get('cvd_signal', 'N/A')
+    greed_val = extra.get('fear_greed', 'N/A')
+
+    if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
+        oi_val += '%'
+    if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
+        funding_val += '%'
+
+    # 【最终修复】强制单行，并将数据源包裹在反引号中，防止任何解析
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · `{data_source_status}`"
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
-        # 快照行合并数据源
-        atr_val = extra.get('atr', 0)
-        funding_val = extra.get('funding_rate', 'N/A')
-        oi_val = extra.get('oi_change', 'N/A')
-        cvd_val = extra.get('cvd_signal', 'N/A')
-        greed_val = extra.get('fear_greed', 'N/A')
-        if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
-            oi_val += '%'
-        if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
-            funding_val += '%'
-        snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -213,20 +217,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
-
-    atr_val = extra.get('atr', 0)
-    funding_val = extra.get('funding_rate', 'N/A')
-    oi_val = extra.get('oi_change', 'N/A')
-    cvd_val = extra.get('cvd_signal', 'N/A')
-    greed_val = extra.get('fear_greed', 'N/A')
-
-    if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
-        oi_val += '%'
-    if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
-        funding_val += '%'
-
-    # 将清算数据源合并到快照行
-    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
 
     return f"""{title_line}
 
