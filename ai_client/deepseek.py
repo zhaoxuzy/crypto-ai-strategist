@@ -178,7 +178,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     raw_view = coinglass_data.get("raw_view", {})
 
-    # 紧凑清算分布
     top_3_zones = raw_view.get("top_3_liquidation_zones", [])
     top_3_str = " | ".join([f"{z['price']:.2f}({z['effect']}强{z['intensity']:.1f}距{z['distance_atr']:+.2f}ATR)" for z in top_3_zones[:3]]) if top_3_zones else "无"
 
@@ -198,8 +197,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     if tp_candidates is None:
         tp_candidates = {"rule1": {"price": 0.0}, "rule2": {"price": 0.0}, "rule3": {"price": 0.0}}
 
-    prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
-
+    prompt = f"""你是专业加密货币交易员，独立研判，有最终裁决权。
 {extreme_liq_text}{warning_text}{trend_desc}
 
 【现价】{price} ATR{atr:.2f} 波动{volatility_factor:.2f}
@@ -241,14 +239,15 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
     for attempt in range(max_retries):
         try:
-            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
             resp = client.chat.completions.create(
-                model="deepseek-reasoner",
+                model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
                 max_tokens=2500
             )
             content = resp.choices[0].message.content
-            logger.info(f"DeepSeek Reasoner 响应成功，原始内容长度: {len(content)}")
+            logger.info(f"DeepSeek 响应成功，原始内容长度: {len(content)}")
 
             json_str = None
             if "```json" in content:
@@ -262,7 +261,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 if start != -1 and end > start:
                     json_str = content[start:end]
             if not json_str:
-                logger.warning(f"DeepSeek Reasoner 返回无有效 JSON，原始内容前200字符: {content[:200]}")
+                logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
                 if attempt == max_retries - 1:
                     raise ValueError("无法提取 JSON")
                 continue
@@ -273,7 +272,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             s.setdefault("trader_commentary", "")
             return s
         except Exception as e:
-            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
                 raise
     return {}
