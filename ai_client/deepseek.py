@@ -158,8 +158,8 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
     macro_signal_lines = []
     for s in macro_signals:
-        macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
-    macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
+        macro_signal_lines.append(f"{s['text']}({s['direction']},{s['weight']})")
+    macro_signals_text = " ".join(macro_signal_lines) if macro_signal_lines else "无明显信号"
 
     liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无显著动态信号"
 
@@ -198,10 +198,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     raw_view = coinglass_data.get("raw_view", {})
 
-    # 清算分布表
+    # 清算分布表（仅展示前8行，前三强已单独展示）
     liq_profile = raw_view.get("liquidation_profile", [])
     liq_profile_lines = []
-    for item in liq_profile[:15]:
+    for item in liq_profile[:8]:
         dir_symbol = "⬆️" if item["direction"] == "above" else "⬇️"
         liq_profile_lines.append(
             f"| {item['price']:.2f} | {dir_symbol} {item['effect']} | {item['intensity']:.2f} | {item['distance_atr']:+.2f} |"
@@ -227,16 +227,15 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
-    # ================== 【修改点 1】 系统量化参考段落 —— 移到最后，并加上警告前缀 ==================
+    # 量化参考段落后置，并加警告前缀
     quant_reference_section = f"""
-### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
+### 📟 内部量化引擎输出（仅供参考，AI 必须重新验证）
 
 ⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断，允许且鼓励推翻此结论。**
 
 - 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
 - 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 """
-    # ========================================================================================
 
     prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
 
@@ -277,8 +276,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 期权最大痛点：{option_pain} USDT
 - 恐惧贪婪指数：{fg.get('value', '50')} (前值：{fg.get('prev', '50')})
 - **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
-- **宏观三因子信号**：
-{macro_signals_text}
+- **宏观三因子信号**：{macro_signals_text}
 
 ### 📁 原始数据视图（你必须深入分析）
 
@@ -333,7 +331,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - 恐惧贪婪指数较昨日变化了多少？  
    - 稳定币市值 7 日变化率是否超过 ±1%？若数据缺失则注明。
 
-6. **主动买卖比率（Taker Ratio）分析**  
+6. **主动买卖比率分析**  
    - 当前值是多少？属于买盘主动（>0.55）、卖盘主动（<0.45）还是均衡？  
    - 结合 6 小时序列，判断主动买卖方向是否具有持续性。
 
@@ -349,7 +347,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
    - BTC 是净流入还是净流出？稳定币是净流入还是净流出？  
    - 结合两者判断中长期资金面是偏多还是偏空。
 
-10. **【修改点 2】推翻系统结论的尝试（必须执行）**  
+10. **推翻系统结论的尝试（必须执行）**  
     - 系统机械计算的方向倾向为【{higher_direction}】。  
     - 请你基于以上9项分析，**故意找出一个反驳该系统结论的理由**。  
     - 如果你完全认同系统结论，请解释为什么上述9项数据没有提供任何反驳证据。
@@ -376,6 +374,9 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 你可在候选C的 ±0.3×ATR 内微调。
 
+### ⚖️ 裁决指引
+系统参考：分差≥{threshold_bull_bear}建议{higher_direction}。你可独立裁决，否决需在 analysis_summary 中阐明理由。
+
 ---
 
 ### 策略输出格式（严格JSON）
@@ -399,7 +400,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=60.0)
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=50.0)
     for attempt in range(max_retries):
         try:
             logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
@@ -407,7 +408,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=2500  # 增加 token 数以容纳 10 项分析
+                max_tokens=2500
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
