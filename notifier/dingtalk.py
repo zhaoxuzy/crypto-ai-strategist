@@ -166,10 +166,10 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     stop = float(strategy.get("stop_loss", 0))
     tp = float(strategy.get("take_profit", 0))
 
-    risk = abs(current_price - stop) if stop != 0 else 0
-    reward = abs(tp - current_price) if tp != 0 else 0
-    rr = reward / risk if risk > 0 else 0
-    rr_str = f"{rr:.2f}:1" if rr > 0 else "N/A"
+    # 使用入场区间中间价作为计算基准
+    entry_mid = (entry_low + entry_high) / 2
+risk = abs(entry_mid - stop) if stop != 0 else 0
+reward = abs(tp - entry_mid) if tp != 0 else 0
 
     bar_len = int(min(100, trend_score) / 10)
     trend_bar = "`" + "█" * bar_len + "░" * (10 - bar_len) + "`"
