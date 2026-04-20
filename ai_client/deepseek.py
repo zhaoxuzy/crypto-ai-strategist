@@ -198,7 +198,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     raw_view = coinglass_data.get("raw_view", {})
 
-    # 清算分布表
     liq_profile = raw_view.get("liquidation_profile", [])
     liq_profile_lines = []
     for item in liq_profile[:15]:
@@ -227,7 +226,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
-    # ================== 【修改点 1】 系统量化参考段落 —— 移到最后，并加上警告前缀 ==================
     quant_reference_section = f"""
 ### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
 
@@ -236,7 +234,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
 - 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 """
-    # ========================================================================================
 
     prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
 
@@ -247,27 +244,27 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
-### 核心市场数据（你必须逐项分析）
+### 核心市场数据
 
 **价格与波动**
 - 当前价格：{price} USDT
 - 4小时ATR：{atr} USDT
-- 波动因子：{volatility_factor:.2f}（>1.3高波，<0.7低波）
+- 波动因子：{volatility_factor:.2f}
 
 **清算压力**
-- 上方空头清算总额：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
-- 下方多头清算总额：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
+- 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
+- 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
 - 清算最大痛点：{liq_max_pain} USDT
 - 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
 - **清算动态信号**：{liq_dynamic_text}
 
 **多空博弈**
-- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%（>0.05%多头拥挤，<-0.03%空头拥挤）
+- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
 - 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}（>0.55买盘主动，<0.45卖盘主动）
-- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}（<0.7偏多，>2.0偏空）
-- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}（>0主力累积多头，<0主力累积空头）
-- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}（>0.2买盘占优，<-0.2卖盘占优）
+- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}
+- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
+- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}
+- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}
 
 **资金流向**
 - CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
@@ -280,7 +277,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - **宏观三因子信号**：
 {macro_signals_text}
 
-### 📁 原始数据视图（你必须深入分析）
+### 📁 原始数据视图
 
 **清算强度分布（价格 → 原始强度 → 距现价 ATR）**
 | 价格 | 作用 | 原始强度 | 距现价(ATR) |
@@ -303,62 +300,26 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ---
 
-### 🔬 强制指标逐项分析任务（你必须完成，每项均需分析，不得简化和遗漏）
+### 🔬 强制指标逐项分析任务（必须全部完成，每条以 🔍 开头，引用具体数值）
 
-**首先，评估数据质量**（在第一条观察中声明）：
-- CVD 序列是否有效？若无效，后续 CVD 分析跳过并注明。
-- 多空比序列是否全为 0？若是，后续多空比分析跳过并注明。
-- 系统清算动态信号是否能在分布表中找到对应价格？若找不到，以分布表为准。
+**数据质量评估（第一条声明）**：
+- CVD、多空比序列有效性；系统信号是否在分布表中存在。
 
-**然后，你必须逐项分析以下指标**（每条以 🔍 开头，必须包含具体数值和判断结果）：
-
-1. **清算不对称的精确量化**  
-   - 计算：上方空头清算总额 ÷ 下方多头清算总额 = ？  
-   - 判断：该比值是否 ≥ 2.0（显著偏空）或 ≤ 0.5（显著偏多）？  
-   - 定位：在清算分布表中，找出**强度最高的 3 个价格档位**，并指出它们距当前价的 ATR 倍数。
-
-2. **CVD 序列的趋势与背离分析**（若数据无效则注明“数据无效，跳过”）  
-   - 观察序列整体趋势，判断买方/卖方主导程度。  
-   - 检查变化率，判断动能是加速、衰减还是持续。  
-   - **核心任务**：对比 CVD 趋势与价格走势，判断是否存在背离。
-
-3. **持仓结构的矛盾挖掘**（若多空比序列无效，则注明并跳过）  
-   - 对比多空账户人数比的最新值与 6 小时前的变化方向。  
-   - 对比顶级交易员多空比与净持仓累积的方向一致性。
-
-4. **清算动态信号的验证**  
-   - 系统信号是否在分布表中存在？若不存在，以分布表为准重新评估关键位。
-
-5. **宏观因子的边际变化**  
-   - 恐惧贪婪指数较昨日变化了多少？  
-   - 稳定币市值 7 日变化率是否超过 ±1%？若数据缺失则注明。
-
-6. **主动买卖比率（Taker Ratio）分析**  
-   - 当前值是多少？属于买盘主动（>0.55）、卖盘主动（<0.45）还是均衡？  
-   - 结合 6 小时序列，判断主动买卖方向是否具有持续性。
-
-7. **订单簿失衡率分析**  
-   - 当前值是多少？买盘深度占优（>0.2）、卖盘深度占优（<-0.2）还是均衡？  
-   - 该指标与主动买卖比率是否同向？若背离，说明什么？
-
-8. **ETH/BTC 汇率趋势分析**  
-   - 当前趋势是 up 还是 down？  
-   - 该趋势对 {symbol} 的方向是强化还是削弱？
-
-9. **交易所钱包余额流向分析**  
-   - BTC 是净流入还是净流出？稳定币是净流入还是净流出？  
-   - 结合两者判断中长期资金面是偏多还是偏空。
-
-10. **【修改点 2】推翻系统结论的尝试（必须执行）**  
-    - 系统计算的方向倾向为【{higher_direction}】。  
-    - 请你基于以上9项分析，**故意找出一个反驳该系统结论的理由**。  
-    - 如果你完全认同系统结论，请解释为什么上述9项数据没有提供任何反驳证据。
+**逐项分析（共10项）**：
+1. 清算不对称：上方/下方比值=？是否≥2或≤0.5？最强三档价格及ATR倍数。
+2. CVD趋势与背离：序列整体趋势，前后半段变化，动能状态，与价格是否背离。
+3. 持仓结构矛盾：顶级多空比与净持仓累积方向是否一致。
+4. 清算信号验证：系统信号在分布表中存在否？以分布表为准修正。
+5. 宏观因子边际变化：恐惧贪婪较昨日变化，稳定币7日变化率超±1%否。
+6. 主动买卖比率：当前值及买卖主动方向，结合序列判断持续性。
+7. 订单簿失衡率：当前值及深度偏向，与主动买卖是否同向。
+8. ETH/BTC汇率趋势：趋势方向及对{symbol}的影响。
+9. 交易所钱包余额流向：BTC与稳定币净流向，资金面偏多/偏空。
+10. 推翻系统结论的尝试：故意找出反驳系统建议({higher_direction})的理由；若完全认同，解释为何无反驳证据。
 
 **最终裁决要求**：
-在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
+在所有观察之后，用单独一行写【最终裁决】段落：
 `【最终裁决】通过以上综合研判，系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [long/short/neutral]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
-
-**输出要求**：以上 10 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
 
 {quant_reference_section}
 
@@ -406,8 +367,8 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             resp = client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=2500  # 增加 token 数以容纳 10 项分析
+                temperature=0.1,
+                max_tokens=2000
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应状态: 成功，原始内容长度: {len(content)}")
