@@ -197,7 +197,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     if tp_candidates is None:
         tp_candidates = {"rule1": {"price": 0.0}, "rule2": {"price": 0.0}, "rule3": {"price": 0.0}}
 
-    prompt = f"""你是专业加密货币交易员，独立研判，有最终裁决权。
+    prompt = f"""你是一位专注于加密衍生品与行为金融学的高级量化交易员，精通清算动力学、多空博弈分析及数据分析，请严格执行以下命令，独立研判，有最终裁决权，制定一份合约交易策略。
 {extreme_liq_text}{warning_text}{trend_desc}
 
 【现价】{price} ATR{atr:.2f} 波动{volatility_factor:.2f}
@@ -213,7 +213,7 @@ CVD:{cvd_str}
 多空比序列:{ls_str}
 主动买卖序列:{taker_str}
 
-🔬强制任务(逐项简洁结论，每项以🔍开头，不超过40字)
+🔬强制任务(逐项分析输出核心结论，每项以🔍开头，不超过40字)
 1.清算不对称:比值=？是否≥2或≤0.5？最强三档价格及ATR。
 2.CVD趋势:序列趋势，前后半段变化，与价格背离否？(无效则跳过)
 3.持仓矛盾:顶级多空比vs净持仓一致性。
