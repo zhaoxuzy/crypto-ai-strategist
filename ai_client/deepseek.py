@@ -178,20 +178,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
         trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
         if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
 
-    if entry_candidates is None:
-        entry_candidates = {
-            "rule1": {"low": 0.0, "high": 0.0, "anchor": "无"},
-            "rule2": {"low": 0.0, "high": 0.0, "anchor": "无"},
-            "rule3": {"low": 0.0, "high": 0.0, "anchor": "无"}
-        }
-
-    if tp_candidates is None:
-        tp_candidates = {
-            "rule1": {"price": 0.0, "anchor": "无"},
-            "rule2": {"price": 0.0, "anchor": "无"},
-            "rule3": {"price": 0.0, "anchor": "2:1盈亏比公式"}
-        }
-
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
     eth_btc_trend = eth_btc.get('trend', 'N/A')
     eth_btc_ratio = eth_btc.get('current_ratio', 0.0)
@@ -217,11 +203,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     cvd_valid = raw_view.get("cvd_valid", False)
     cvd_series = raw_view.get("cvd_series_1m", [])
-    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效（该币种无CVD数据，跳过分析）"
+    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效"
 
     ls_valid = raw_view.get("ls_valid", False)
     ls_series = raw_view.get("ls_ratio_series_1h", [])
-    ls_series_str = str(ls_series) if ls_valid else "数据无效（全为0）"
+    ls_series_str = str(ls_series) if ls_valid else "数据无效"
 
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
@@ -240,7 +226,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ⚠️ **核心要求**：
 - 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
 - 你的分析必须包含**具体数值引用**和**对比判断**。
-- 你必须以顶尖交易员的思维最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
+- 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
@@ -289,23 +275,23 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 > ⚠️ 注：原始强度值为 CoinGlass 提供的相对量纲，数值越大代表清算压力越集中，并非美元名义金额。
 
-**CVD 序列（最近 60 分钟，1 分钟粒度，单位：千美元）**
+**CVD 序列（单位：千美元）**
 `{cvd_series_str}`
 
-**多空账户人数比（最近 6 小时，1 小时间隔）**
+**多空账户人数比序列**
 `{ls_series_str}`
 
-**主动买卖比率（最近 6 小时，1 小时间隔）**
+**主动买卖比率序列**
 `{taker_series_str}`
 
 ---
 
-### 🔬 强制指标逐项分析任务（必须全部完成，每条以 🔍 开头，引用具体数值，输出核心结论）
+### 🔬 强制指标逐项分析任务
 
-**数据质量评估（第一条声明）**：
-- 仅列举不可靠的数据摘要
+**【数据使用原则】**
+系统定性标签仅供参考。分析时必须优先信任原始序列。若标签与序列趋势不符，以序列为准。
 
-**逐项分析（共10项）**：
+**逐项分析（共10项，每条以 🔍 开头，引用具体数值，给出核心结论）**：
 1. 清算不对称：上方/下方比值=？是否≥2或≤0.5？最强三档价格及ATR倍数。
 2. CVD趋势与背离：序列整体趋势，前后半段变化，动能状态，与价格是否背离。
 3. 持仓结构矛盾：顶级多空比与净持仓累积方向是否一致。
@@ -325,7 +311,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 🎯 入场、止损与止盈设置
 
-**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价。
+**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价。无需参考任何预设公式。
 
 ---
 
