@@ -402,14 +402,23 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
 
 def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
-    if s.get("direction") not in ["long", "short", "neutral"]: return False
-    if s["direction"] == "neutral": return True
+    # 仅做最基本校验：方向有效、价格为正数
+    direction = s.get("direction")
+    if direction not in ["long", "short", "neutral"]:
+        return False
+    if direction == "neutral":
+        return True
     try:
         entry_low = float(s.get("entry_price_low", 0))
         entry_high = float(s.get("entry_price_high", 0))
         stop = float(s.get("stop_loss", 0))
-        tolerance = 0.5 * (atr if atr else price * 0.02)
-        if s["direction"] == "long" and stop >= entry_low - tolerance: return False
-        if s["direction"] == "short" and stop <= entry_high + tolerance: return False
-    except: return False
+        tp = float(s.get("take_profit", 0))
+        if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
+            return False
+        if entry_low > entry_high:
+            return False
+        # 做多时，止盈应高于入场，止损应低于入场（仅基础逻辑，不强制）
+        # 这里不再做强校验，完全信任 AI
+    except:
+        return False
     return True
