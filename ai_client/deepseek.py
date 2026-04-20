@@ -325,10 +325,6 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 🎯 入场、止损与止盈设置
 
-**系统提供的候选参考（你可自由调整或忽略）**：
-- 入场候选：1) 清算区 {entry_candidates['rule1']['low']:.1f}-{entry_candidates['rule1']['high']:.1f}；2) 关键位 {entry_candidates['rule2']['low']:.1f}-{entry_candidates['rule2']['high']:.1f}；3) ATR追单 {entry_candidates['rule3']['low']:.1f}-{entry_candidates['rule3']['high']:.1f}
-- 止盈候选：A) {tp_candidates['rule1']['price']:.1f}；B) {tp_candidates['rule2']['price']:.1f}；C) {tp_candidates['rule3']['price']:.1f} (2:1盈亏比公式)
-
 **你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价，无需拘泥于上述候选值。
 
 ---
