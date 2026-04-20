@@ -235,6 +235,4 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > {risk_formatted}
 
 {snapshot_line}
----
-*以上内容由 DeepSeek 生成，仅供参考*
 """
