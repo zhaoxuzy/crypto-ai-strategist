@@ -126,17 +126,20 @@ class CoinGlassClient:
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 1}
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
-    def get_long_short_ratio_history(self, symbol: str = "BTC"):
-        """多空账户人数比历史数据"""
-        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        data = self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
-        if data and isinstance(data, list):
-            logger.info(f"多空账户人数比获取成功，长度: {len(data)}")
-            if len(data) > 0:
-                logger.info(f"第一条数据样例: {data[0]}")
-        else:
-            logger.warning("多空账户人数比返回为空或非列表")
-        return data
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
+    """大户持仓多空比历史数据（持仓量维度，仅支持 BTC、ETH）"""
+    if symbol.upper() not in ("BTC", "ETH"):
+        logger.info(f"大户持仓多空比接口不支持 {symbol}，返回空")
+        return []
+    params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
+    data = self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False, silent_fail=True)
+    if data and isinstance(data, list):
+        logger.info(f"大户持仓多空比获取成功，长度: {len(data)}")
+        if len(data) > 0:
+            logger.info(f"第一条数据样例: {data[0]}")
+    else:
+        logger.warning("大户持仓多空比返回为空或非列表")
+    return data
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         """大户持仓多空比历史数据（持仓量维度）"""
