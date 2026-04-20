@@ -319,7 +319,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **最终裁决要求**：
 综合分析研判以上数据后，用单独一行写【最终裁决】段落：
-`【最终裁决】系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后做出合约策略 [做多/做空/观望]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
+`【最终裁决】系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [做多/做空/观望]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
 
 {quant_reference_section}
 
