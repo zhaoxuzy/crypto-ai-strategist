@@ -1,4 +1,4 @@
-name: Crypto Strategy Bot - BTC Only
+name: Crypto Brain
 
 on:
   schedule:
