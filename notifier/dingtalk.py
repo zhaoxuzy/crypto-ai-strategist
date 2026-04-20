@@ -44,13 +44,18 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # 彻底清洗数据源状态，防止加粗加大
+    # ===== 终极防加粗：插入零宽空格破坏标题识别 =====
     data_source_status = extra.get("data_source_status", "")
+    # 1. 移除所有 Markdown 格式符号
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
-    data_source_status = data_source_status.replace('：', ': ')
+    # 2. 将中文冒号替换为英文冒号
+    data_source_status = data_source_status.replace('：', ':')
+    # 3. 在冒号后插入零宽空格(U+200B)，使钉钉无法识别为标题语法
+    data_source_status = data_source_status.replace(':', ':\u200b')
+    # 4. 清理多余空白
     data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
-        data_source_status = "清算数据源: model2(主用)"
+        data_source_status = "清算数据源:\u200b model2(主用)"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
@@ -107,7 +112,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # 按 🔍 分割，确保每个放大镜独立成项，内部换行用 <br>
+    # 按 🔍 分割，内部换行用 <br>
     formatted_summary = ""
     if analysis_summary:
         parts = re.split(r'(?=🔍)', analysis_summary)
