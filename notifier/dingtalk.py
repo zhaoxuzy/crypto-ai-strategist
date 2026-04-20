@@ -173,7 +173,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     trend_state_desc = f"{trend_bar} {trend_score}/100"
 
     param_card = f"""
-> ### 📋 交易指令
+> ### 📋 交易策略
 > **现价**：`{current_price:.1f}`  
 > **入场**：`{entry_low:.1f}` — `{entry_high:.1f}`  
 > **止损**：`{stop:.1f}` 🔴  
@@ -202,7 +202,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     trader_block = ""
     if trader_commentary:
-        trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
+        trader_block = f"\n> 💬 **顶级交易员备注**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
