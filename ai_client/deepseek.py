@@ -235,7 +235,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
 """
 
-    prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、有深度、相结合的专业研判。
+    prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
 
 ⚠️ **核心要求**：
 - 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
@@ -325,17 +325,11 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 ### 🎯 入场、止损与止盈设置
 
-**入场区间候选**：
-- 规则1（清算区）：{entry_candidates['rule1']['low']:.1f} - {entry_candidates['rule1']['high']:.1f}
-- 规则2（关键位）：{entry_candidates['rule2']['low']:.1f} - {entry_candidates['rule2']['high']:.1f}
-- 规则3（ATR追单）：{entry_candidates['rule3']['low']:.1f} - {entry_candidates['rule3']['high']:.1f}
+**系统提供的候选参考（你可自由调整或忽略）**：
+- 入场候选：1) 清算区 {entry_candidates['rule1']['low']:.1f}-{entry_candidates['rule1']['high']:.1f}；2) 关键位 {entry_candidates['rule2']['low']:.1f}-{entry_candidates['rule2']['high']:.1f}；3) ATR追单 {entry_candidates['rule3']['low']:.1f}-{entry_candidates['rule3']['high']:.1f}
+- 止盈候选：A) {tp_candidates['rule1']['price']:.1f}；B) {tp_candidates['rule2']['price']:.1f}；C) {tp_candidates['rule3']['price']:.1f} (2:1盈亏比公式)
 
-**止盈候选**：
-- 候选A：{tp_candidates['rule1']['price']:.1f}（{tp_candidates['rule1']['anchor']}）
-- 候选B：{tp_candidates['rule2']['price']:.1f}（{tp_candidates['rule2']['anchor']}）
-- 候选C：{tp_candidates['rule3']['price']:.1f}（{tp_candidates['rule3']['anchor']}）
-
-你可在候选C的 ±0.3×ATR 内微调。
+**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价，无需拘泥于上述候选值。
 
 ---
 
@@ -350,7 +344,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "entry_price_high": 入场区间上限,
   "stop_loss": 止损价,
   "take_profit": 止盈价,
-  "tp_anchor": "止盈锚定来源说明",
+  "tp_anchor": "止盈设置理由",
   "analysis_summary": "按强制指标逐项分析任务逐项撰写，每条以 🔍 开头，共10项，末尾包含【最终裁决】段落。",
   "trader_commentary": "顶级交易员观点",
   "risk_note": "风险提示"
@@ -402,7 +396,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
 
 def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
-    # 仅做最基本校验：方向有效、价格为正数
+    """仅做最基本的方向和正数校验，完全信任 AI 的止损止盈设置"""
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False
@@ -417,8 +411,7 @@ def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
             return False
         if entry_low > entry_high:
             return False
-        # 做多时，止盈应高于入场，止损应低于入场（仅基础逻辑，不强制）
-        # 这里不再做强校验，完全信任 AI
+        # 不再进行止损与入场区间的位置关系校验
     except:
         return False
     return True
