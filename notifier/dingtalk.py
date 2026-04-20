@@ -44,11 +44,16 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # ===== 彻底清洗数据源状态，移除所有加粗标记 =====
+    # ===== 终极纯文本化：彻底破坏钉钉自动标题识别 =====
     data_source_status = extra.get("data_source_status", "")
-    data_source_status = re.sub(r'\*\*', '', data_source_status).strip()
+    # 1. 移除所有 Markdown 格式符号 (*, _, `, #, >, -)
+    data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
+    # 2. 将中文冒号替换为英文冒号 + 空格，防止被解析为标题
+    data_source_status = data_source_status.replace('：', ': ')
+    # 3. 清除多余空白
+    data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
-        data_source_status = "清算数据源：model2（主用）"
+        data_source_status = "清算数据源: model2(主用)"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
@@ -105,20 +110,16 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # ===== 核心：确保放大镜列表每项独立对齐 =====
+    # 按 🔍 分割，确保每个放大镜独立成项
     formatted_summary = ""
     if analysis_summary:
-        # 按 🔍 分割成多个条目（保留 🔍 符号）
-        # 先将所有换行符临时替换，避免 split 时丢失结构
-        # 使用正则按 🔍 分割，但保留 🔍 本身
         parts = re.split(r'(?=🔍)', analysis_summary)
         summary_items = []
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-            # 如果该部分不以 🔍 开头，可能是第一条之前的内容（如数据质量评估），也保留
-            # 将内部的换行符替换为 <br>，保持在同一列表项内
+            # 内部换行替换为 <br>
             part = part.replace('\n', '<br>')
             summary_items.append(part)
         if summary_items:
