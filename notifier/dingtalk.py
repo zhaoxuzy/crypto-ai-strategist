@@ -44,18 +44,13 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
-    # ===== 终极防加粗：插入零宽空格破坏标题识别 =====
+    # 数据源状态纯文本
     data_source_status = extra.get("data_source_status", "")
-    # 1. 移除所有 Markdown 格式符号
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
-    # 2. 将中文冒号替换为英文冒号
     data_source_status = data_source_status.replace('：', ':')
-    # 3. 在冒号后插入零宽空格(U+200B)，使钉钉无法识别为标题语法
-    data_source_status = data_source_status.replace(':', ':\u200b')
-    # 4. 清理多余空白
     data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
-        data_source_status = "清算数据源:\u200b model2(主用)"
+        data_source_status = "清算数据源:model2(主用)"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
     extreme_liq = extra.get("extreme_liq", False)
@@ -105,14 +100,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
-    # 提取最终裁决
     final_verdict = ""
     if "【最终裁决】" in analysis_summary:
         parts = analysis_summary.split("【最终裁决】")
         analysis_summary = parts[0].strip()
         final_verdict = parts[1].strip()
 
-    # 按 🔍 分割，内部换行用 <br>
     formatted_summary = ""
     if analysis_summary:
         parts = re.split(r'(?=🔍)', analysis_summary)
@@ -147,6 +140,17 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
         final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
+        # 快照行合并数据源
+        atr_val = extra.get('atr', 0)
+        funding_val = extra.get('funding_rate', 'N/A')
+        oi_val = extra.get('oi_change', 'N/A')
+        cvd_val = extra.get('cvd_signal', 'N/A')
+        greed_val = extra.get('fear_greed', 'N/A')
+        if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
+            oi_val += '%'
+        if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
+            funding_val += '%'
+        snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -159,7 +163,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 分差：{diff}分（{strength_text}）| 多头{bull_score} vs 空头{bear_score}
-- {data_source_status}
+{snapshot_line}
 """
 
     entry_low = float(strategy.get("entry_price_low", 0))
@@ -167,7 +171,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     stop = float(strategy.get("stop_loss", 0))
     tp = float(strategy.get("take_profit", 0))
 
-    # 基于入场中间价计算盈亏比
     entry_mid = (entry_low + entry_high) / 2
     risk = abs(entry_mid - stop) if stop != 0 else 0
     reward = abs(tp - entry_mid) if tp != 0 else 0
@@ -187,7 +190,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 > **盈亏比**：**{rr_str}**
 """
 
-    # 风险提示清洗
     risk_note = strategy.get('risk_note', '请严格设置止损')
     risk_note = re.sub(r'^(风险提示|风险|主要风险)[：:]\s*', '', risk_note)
     risk_note = re.sub(r'\s+', ' ', risk_note).strip()
@@ -212,7 +214,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
-    # 数据快照行
     atr_val = extra.get('atr', 0)
     funding_val = extra.get('funding_rate', 'N/A')
     oi_val = extra.get('oi_change', 'N/A')
@@ -224,7 +225,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
         funding_val += '%'
 
-    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
+    # 将清算数据源合并到快照行
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · {data_source_status}"
 
     return f"""{title_line}
 
@@ -242,8 +244,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-{snapshot_line}  
-{data_source_status}
+{snapshot_line}
 ---
 *以上内容由 DeepSeek 生成，仅供参考*
 """
