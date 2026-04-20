@@ -227,7 +227,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 📊 市场状态
 趋势强度 {trend_state_desc} ({market_state})  
-⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
+⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，确信度{strength_text})  
 {alerts_str}
 
 ### 🧠 AI 研判摘要
@@ -240,5 +240,5 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {snapshot_line}
 
 ---
-*以上内容由 DeepSeek 生成，仅供参考*
+*以上内容由 DeepSeek 智能体生成，仅供参考*
 """
