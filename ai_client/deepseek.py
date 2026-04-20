@@ -344,7 +344,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 **最终裁决要求**：
 在所有观察之后，你必须用单独一行写一个【最终裁决】段落，格式为：
-`【最终裁决】综合以上分析，我决定输出 [long/short/neutral]，理由：...`
+`【最终裁决】系统建议 [long/short/neutral]，综合以上分析，我决定输出 [long/short/neutral]，核心依据：...`
 
 **输出要求**：以上 9 项观察必须全部整合进 `analysis_summary` 字段中，每条以 🔍 开头，不得遗漏任何一项。
 
