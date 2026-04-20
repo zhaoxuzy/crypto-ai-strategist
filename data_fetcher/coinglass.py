@@ -127,31 +127,12 @@ class CoinGlassClient:
         return self._request("api/futures/funding-rate/history", params, allow_backup=True)
 
     def get_long_short_ratio_history(self, symbol: str = "BTC"):
-        """多空账户人数比历史数据"""
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        data = self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True, silent_fail=True)
-        if data and isinstance(data, list):
-            logger.info(f"多空账户人数比获取成功，长度: {len(data)}")
-            if len(data) > 0:
-                logger.info(f"第一条数据样例: {data[0]}")
-        else:
-            logger.warning(f"多空账户人数比返回为空或非列表，数据类型: {type(data)}")
-        return data
+        return self._request("api/futures/global-long-short-account-ratio/history", params, allow_backup=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
-        """大户持仓多空比历史数据（持仓量维度，仅支持 BTC、ETH）"""
-        if symbol.upper() not in ("BTC", "ETH"):
-            logger.info(f"大户持仓多空比接口不支持 {symbol}，返回空")
-            return []
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        data = self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False, silent_fail=True)
-        if data and isinstance(data, list):
-            logger.info(f"大户持仓多空比获取成功，长度: {len(data)}")
-            if len(data) > 0:
-                logger.info(f"第一条数据样例: {data[0]}")
-        else:
-            logger.warning("大户持仓多空比返回为空或非列表")
-        return data
+        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False)
 
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
@@ -166,7 +147,6 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        """获取聚合合约 CVD 历史数据"""
         aggregated_params = {
             "exchange_list": "OKX",
             "symbol": symbol.upper(),
@@ -259,7 +239,7 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 因子一：恐惧贪婪指数 ----------
+    # ---------- 恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
         try:
             import requests as req
@@ -450,10 +430,8 @@ class CoinGlassClient:
 
     @staticmethod
     def _get_ratio_from_item(item) -> float:
-        """从多空比数据项中提取比值，兼容多种格式"""
         if isinstance(item, dict):
-            # 常见字段名
-            for key in ["longShortAccountRatio", "global_account_long_short_ratio", "longShortRatio", "ratio", "value", "close"]:
+            for key in ["longShortAccountRatio", "global_account_long_short_ratio", "ratio", "value", "close"]:
                 if key in item:
                     return float(item[key])
         elif isinstance(item, list) and len(item) >= 5:
@@ -562,7 +540,6 @@ class CoinGlassClient:
         else:
             data["funding_rate"] = "N/A"
 
-        # 多空账户人数比（使用专用解析函数）
         ls_history = results.get("ls")
         ls_series = []
         ls_valid = False
@@ -577,7 +554,6 @@ class CoinGlassClient:
         else:
             logger.info(f"多空账户人数比解析成功，序列: {ls_series}")
 
-        # 大户持仓多空比
         top_ls = results.get("top_ls")
         if top_ls and isinstance(top_ls, list) and len(top_ls) > 0:
             latest = top_ls[-1]
@@ -639,6 +615,28 @@ class CoinGlassClient:
                         if val != 0:
                             cvd_valid = True
                         cvd_series.append(round(val / 1000, 0))
+
+        # 优化后的 CVD 信号计算（基于原始序列，减少 N/A）
+        cvd_signal = "N/A"
+        if cvd_valid and cvd_series:
+            recent = cvd_series[-6:] if len(cvd_series) >= 6 else cvd_series
+            if recent:
+                net_change = recent[-1] - recent[0]
+                if net_change > 100:
+                    cvd_signal = "bullish"
+                elif net_change < -100:
+                    cvd_signal = "bearish"
+                else:
+                    last_val = cvd_series[-1]
+                    if last_val > 0:
+                        cvd_signal = "positive"
+                    elif last_val < 0:
+                        cvd_signal = "negative"
+                    else:
+                        cvd_signal = "neutral"
+            else:
+                cvd_signal = "neutral"
+        data["cvd_signal"] = cvd_signal
 
         net_pos = results.get("net_pos")
         if net_pos and len(net_pos) > 0:
