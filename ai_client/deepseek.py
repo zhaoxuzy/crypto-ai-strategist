@@ -240,7 +240,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ⚠️ **核心要求**：
 - 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
 - 你的分析必须包含**具体数值引用**和**对比判断**。
-- 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
+- 你必须以顶尖交易员的思维最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
@@ -303,7 +303,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 ### 🔬 强制指标逐项分析任务（必须全部完成，每条以 🔍 开头，引用具体数值，输出核心结论）
 
 **数据质量评估（第一条声明）**：
-- CVD、多空比序列有效性；系统信号是否在分布表中存在。
+- 仅列举不可靠的数据摘要
 
 **逐项分析（共10项）**：
 1. 清算不对称：上方/下方比值=？是否≥2或≤0.5？最强三档价格及ATR倍数。
@@ -315,17 +315,17 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 7. 订单簿失衡率：当前值及深度偏向，与主动买卖是否同向。
 8. ETH/BTC汇率趋势：趋势方向及对{symbol}的影响。
 9. 交易所钱包余额流向：BTC与稳定币净流向，资金面偏多/偏空。
-10. 推翻系统结论的尝试：故意找出反驳系统建议({higher_direction})的理由；若完全认同，解释为何无反驳证据。
+10. 尝试推翻系统结论：故意找出反驳系统建议({higher_direction})的理由；若完全认同，解释为何无反驳证据。
 
 **最终裁决要求**：
-在所有观察之后，用单独一行写【最终裁决】段落：
-`【最终裁决】通过以上综合研判，系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [long/short/neutral]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
+综合分析研判以上数据后，用单独一行写【最终裁决】段落：
+`【最终裁决】系统建议 [{higher_direction}]，我以一个顶级交易员的角色分析后决定输出 [做多/做空/观望]（若与系统一致，写“一致”；若相反，写“推翻”）。核心依据：...`
 
 {quant_reference_section}
 
 ### 🎯 入场、止损与止盈设置
 
-**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价，无需拘泥于上述候选值。
+**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价。
 
 ---
 
@@ -341,7 +341,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
   "stop_loss": 止损价,
   "take_profit": 止盈价,
   "tp_anchor": "止盈设置理由",
-  "analysis_summary": "按强制指标逐项分析任务逐项撰写，每条以 🔍 开头，共10项，末尾包含【最终裁决】段落。",
+  "analysis_summary": "按强制指标逐项分析任务逐项撰写简要核心结论，每条以 🔍 开头，共10项，末尾包含【最终裁决】段落。",
   "trader_commentary": "顶级交易员观点",
   "risk_note": "风险提示"
 }}
