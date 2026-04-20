@@ -478,34 +478,6 @@ def main():
 
             entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
 
-            if float(strategy.get("stop_loss", 0)) <= 0:
-                base_multiplier = 2.0
-                if volatility_factor > 1.3:
-                    multiplier = base_multiplier * 1.3
-                elif volatility_factor < 0.7:
-                    multiplier = base_multiplier * 0.8
-                else:
-                    multiplier = base_multiplier
-                if actual_direction == "long":
-                    strategy["stop_loss"] = round(price - multiplier * atr, 1)
-                else:
-                    strategy["stop_loss"] = round(price + multiplier * atr, 1)
-
-            stop_loss = float(strategy.get("stop_loss", 0))
-            tp_candidates = get_tp_candidates(price, atr, actual_direction, cluster, stop_loss, volatility_factor)
-
-            if float(strategy.get("take_profit", 0)) <= 0:
-                if tp_candidates["rule1"]["price"] > 0 and "[盈亏比<1:1]" not in tp_candidates["rule1"]["anchor"]:
-                    strategy["take_profit"] = tp_candidates["rule1"]["price"]
-                    strategy["tp_anchor"] = tp_candidates["rule1"]["anchor"]
-                else:
-                    strategy["take_profit"] = tp_candidates["rule3"]["price"]
-                    strategy["tp_anchor"] = tp_candidates["rule3"]["anchor"]
-
-            if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
-                strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
-                strategy["entry_price_high"] = entry_candidates["rule3"]["high"]
-
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
 
