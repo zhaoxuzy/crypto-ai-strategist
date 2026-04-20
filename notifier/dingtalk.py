@@ -214,7 +214,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     trader_block = ""
     if trader_commentary:
-        trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
+        trader_block = f"\n> 💬 **顶尖交易点评**：{trader_commentary}\n"
 
     final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
