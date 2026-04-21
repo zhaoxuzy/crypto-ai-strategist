@@ -6,16 +6,10 @@ from utils.logger import logger
 
 def build_prompt(data: dict, symbol: str) -> str:
     timestamp = data.get("timestamp", "N/A")
-    data_quality = data.get("data_quality", {})
-
-    quality_rows = []
-    for key, status in data_quality.items():
-        quality_rows.append(f"| {key} | {status} |")
-    quality_table = "\n".join(quality_rows) if quality_rows else "| - | - |"
-
     current = data['mark_price']
     above_cluster = data.get('above_cluster', 'N/A')
     below_cluster = data.get('below_cluster', 'N/A')
+    
     above_distance = "N/A"
     below_distance = "N/A"
     if above_cluster != 'N/A' and '-' in above_cluster:
@@ -25,74 +19,50 @@ def build_prompt(data: dict, symbol: str) -> str:
         below_low = float(below_cluster.split('-')[0])
         below_distance = f"{current - below_low:.0f}"
 
-    prompt = f"""你是一名操作 100万-500万 U 资金的顶级加密货币合约短线交易员。
-核心信条：不扛单，不格局，吃一口流动性就跑。每一笔交易必须有明确的猎物和止损理由。
+    prompt = f"""你是一名管理 200 万 U 的顶尖加密货币短线合约交易员。请基于以下数据，给出你独立的交易决策。
 
-【市场数据快照 | {timestamp} | 标的: {symbol}】
+【{symbol} | {timestamp}】
 
-### ⚠️ 数据完整性
-{quality_table}
+价格：{current:.2f}
+15min ATR：{data['atr_15m']:.2f}
 
-### 1. 猎物在哪（流动性池子）
-| 方向 | 累计清算强度 | 最近密集区 | 距现价 |
-|------|-------------|-----------|--------|
-| 上方(空头) | {data['above_liq']/1e9:.2f}B | {above_cluster} | +{above_distance} |
-| 下方(多头) | {data['below_liq']/1e9:.2f}B | {below_cluster} | -{below_distance} |
-| 订单簿买盘 | {data['orderbook_bids']/1e6:.1f}M | 卖盘 | {data['orderbook_asks']/1e6:.1f}M |
-| 失衡率 | {data['orderbook_imbalance']:.4f} | — | — |
+清算池：
+- 上方空头清算：{data['above_liq']/1e9:.2f}B，密集区 {above_cluster}，距现价 +{above_distance}
+- 下方多头清算：{data['below_liq']/1e9:.2f}B，密集区 {below_cluster}，距现价 -{below_distance}
 
-### 2. 陷阱在哪（拥挤度与燃料）
-| 指标 | 值 | 7日分位数 |
-|------|------|-----------|
-| 加权资金费率 | {data['funding_rate']:.4f}% | {data['funding_percentile']:.1f}% |
-| 持仓量(OI) | {data['oi']/1e9:.2f}B | {data['oi_percentile']:.1f}% |
-| OI 24h变化 | {data['oi_change_24h']:+.1f}% | — |
-| 顶级交易员多空比 | {data['top_ls_ratio']:.2f} | {data['top_ls_percentile']:.1f}% |
+订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M，失衡率 {data['orderbook_imbalance']:.4f}
 
-### 3. 风向在哪（主动成交与资金流）
-| 指标 | 值 |
-|------|------|
-| CVD 4h斜率 | {data['cvd_slope']:.4f} |
-| 期货资金净流(24h) | {data['netflow']/1e6:.1f}M USDT |
-| 当前价格 | {current:.2f} |
-| 15分钟 ATR | {data['atr_15m']:.2f} |
+持仓与情绪：
+- 资金费率 {data['funding_rate']:.4f}%（7日分位 {data['funding_percentile']:.0f}%）
+- OI {data['oi']/1e9:.2f}B（7日分位 {data['oi_percentile']:.0f}%），24h变化 {data['oi_change_24h']:+.1f}%
+- 顶级交易员多空比 {data['top_ls_ratio']:.2f}（7日分位 {data['top_ls_percentile']:.0f}%）
+
+资金流向：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M USDT
 
 ---
-# 短线猎杀六步推演（必须连贯推理，严禁数据罗列）
+请给出你的专业判断（不用分步骤标题，用连贯的段落叙述即可）：
 
-**第一步：哪个猎物值得打？**
-对比上下两个清算池的距离、强度和订单簿厚度。指出哪个方向的池子更近、更薄、更容易被快速吃掉。如果上下池子距离相当或都太远（超过1.5倍ATR），直接给出观望结论。引用具体价位和距离。
+你认为当前价格最可能朝哪个方向移动？为什么？
 
-**第二步：现在冲进去会不会成燃料？**
-检查资金费率分位数和OI增长速度。如果费率极端（>80%分位）且OI还在猛增，说明同方向已经拥挤不堪，冲进去就是给对手送燃料。结合顶级交易员持仓方向，判断对手盘是谁。
+你看到了什么值得注意的风险或矛盾？
 
-**第三步：主动成交在帮谁？**
-CVD斜率是朝哪个方向倾斜？斜率陡峭还是走平？如果CVD方向与猎物方向一致，说明聪明钱在铺路；如果相反，说明可能有陷阱。资金净流是流入还是流出？验证风向是否真实。
+如果要做一笔交易，你会如何设计进场、止损、止盈？止损的依据是什么？
 
-**第四步：止损放哪才不会被扫？**
-短线止损不是随便设个2%，必须放在猎物池子外侧（做多时放在下方清算墙下方，做空时放在上方清算墙上方）。用15分钟ATR验证：止损距离应大于1.5倍ATR，否则容易被噪音扫掉。如果止损距离超过止盈距离的一半，这笔单盈亏比必然拉胯。
-
-**第五步：盈亏比够不够扣动扳机？**
-计算：止盈距离 = 目标池子边缘 - 当前价；止损距离 = 当前价 - 止损位。盈亏比 = 止盈距离 / 止损距离。如果 < 2:1，除非有极强盘口信号（如CVD陡峭+订单簿薄如纸），否则不开枪。给出明确计算过程。
-
-**第六步：怎么吃怎么跑？**
-进场：是在当前价直接进，还是挂单等回调？仓位轻中重？
-离场：到目标位是挂限价单（流动性足够时）还是主动市价砸（防止滑点）？如果价格打到目标池子边缘却迟迟不破，是否主动止盈？如果触发止损，是市价无条件离场还是有其他预案？
+如果不开仓，原因是什么？
 
 ---
-【输出格式】严格JSON，不要用```json```包裹。
-
+输出 JSON 格式（不要代码块）：
 {{
-  "direction": "long" / "short" / "neutral",
-  "confidence": "high" / "medium" / "low",
-  "position_size": "light" / "medium" / "heavy" / "none",
+  "direction": "long/short/neutral",
+  "confidence": "high/medium/low",
+  "position_size": "light/medium/heavy/none",
   "entry_price_low": 0.0,
   "entry_price_high": 0.0,
   "stop_loss": 0.0,
   "take_profit": 0.0,
-  "execution_plan": "极简指令：做多/做空，进场区间，止损，止盈，预计持仓时间，离场方式。不超过80字。",
-  "reasoning": "【第一步】...\\n【第二步】...\\n【第三步】...\\n【第四步】...\\n【第五步】...\\n【第六步】...",
-  "risk_note": "主要风险及反面情景预案"
+  "execution_plan": "一句话：方向、区间、止损、止盈、仓位、预计持仓时间。",
+  "reasoning": "用2-3段话叙述你的完整分析，包含价格判断、风险点、交易逻辑或观望理由。",
+  "risk_note": "最坏情况下的应对预案。"
 }}
 """
     return prompt
