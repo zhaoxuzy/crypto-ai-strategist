@@ -6,9 +6,8 @@ from threading import Semaphore, Lock
 from utils.logger import logger
 
 class RateLimiter:
-    """全局速率限制器，确保每分钟不超过 20 次请求（最小间隔 3 秒）"""
     def __init__(self, max_requests_per_minute: int = 20):
-        self.min_interval = 60.0 / max_requests_per_minute  # 3.0 秒
+        self.min_interval = 60.0 / max_requests_per_minute
         self._last_request_time = 0.0
         self._lock = Lock()
 
@@ -97,6 +96,23 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
+    @staticmethod
+    def _calc_atr(closes: list, period: int = 14) -> float:
+        if len(closes) < period + 1:
+            return 0.0
+        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+        return sum(trs[-period:]) / period if len(trs) >= period else 0.0
+
+    @staticmethod
+    def _calc_atr_list(closes: list, period: int = 14) -> list:
+        if len(closes) < period + 1:
+            return []
+        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+        atrs = []
+        for i in range(period - 1, len(trs)):
+            atrs.append(sum(trs[i-period+1:i+1]) / period)
+        return atrs
+
     # ---------- API 方法 ----------
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
@@ -110,7 +126,6 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        """修正后的端点：/api/futures/funding-rate/oi-weight-history"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
 
@@ -127,7 +142,6 @@ class CoinGlassClient:
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC") -> float:
-        """期权最大痛点返回数组，需提取 Deribit 的数据"""
         params = {"exchange": "Deribit", "symbol": symbol}
         data = self._request("api/option/max-pain", params, silent_fail=True)
         if isinstance(data, list):
@@ -140,9 +154,48 @@ class CoinGlassClient:
 
     def get_fear_and_greed_index(self) -> dict:
         data = self._request("api/index/fear-greed-history", {}, silent_fail=True)
-        if data and isinstance(data, list) and len(data) >= 2:
-            return {"current": data[0].get("value", 50), "prev": data[1].get("value", 50)}
-        return {"current": 50, "prev": 50}
+        if data and isinstance(data, list) and len(data) >= 8:
+            return {
+                "current": data[0].get("value", 50),
+                "prev_7d": data[7].get("value", 50)
+            }
+        return {"current": 50, "prev_7d": 50}
+
+    # ---------- 新增指标 ----------
+    def get_netflow(self, symbol: str = "BTC") -> float:
+        """期货资金净流入/流出（24h），单位 USDT"""
+        params = {"symbol": symbol}
+        data = self._request("api/futures/coin/netflow", params, silent_fail=True)
+        if isinstance(data, dict):
+            return float(data.get("netflow", 0.0))
+        return 0.0
+
+    def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
+        """订单簿买卖深度及失衡率"""
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
+        data = self._request("api/futures/orderbook/ask-bids-history", params, silent_fail=True)
+        if data and isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            bids = float(latest.get("bids_usd", 0))
+            asks = float(latest.get("asks_usd", 0))
+            total = bids + asks
+            imbalance = (bids - asks) / total if total > 0 else 0.0
+            return {"bids_usd": bids, "asks_usd": asks, "imbalance": round(imbalance, 4)}
+        return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
+
+    def get_exchange_btc_balance(self) -> dict:
+        """全市场交易所 BTC 余额及 24h 变化"""
+        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, silent_fail=True)
+        if data and isinstance(data, list):
+            total = sum(float(ex.get("balance", 0)) for ex in data)
+            change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
+            return {"total_btc": total, "change_24h": change_24h}
+        return {"total_btc": 0.0, "change_24h": 0.0}
+
+    def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        """全市场持仓量聚合历史"""
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        return self._request("api/futures/open-interest/aggregated-history", params, silent_fail=True)
 
     def get_eth_btc_ratio(self) -> float:
         try:
@@ -154,7 +207,7 @@ class CoinGlassClient:
         except:
             return 0.0
 
-    # ---------- 聚合数据（并行请求） ----------
+    # ---------- 聚合数据 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
 
@@ -167,6 +220,10 @@ class CoinGlassClient:
             "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
             "max_pain": lambda: self.get_option_max_pain(base_symbol),
             "fg": lambda: self.get_fear_and_greed_index(),
+            "netflow": lambda: self.get_netflow(base_symbol),
+            "orderbook": lambda: self.get_orderbook_imbalance(base_symbol),
+            "exchange_btc": lambda: self.get_exchange_btc_balance(),
+            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", 168),
         }
 
         results = {}
@@ -180,8 +237,17 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        # ETH/BTC 汇率单独获取
         eth_btc_ratio = self.get_eth_btc_ratio()
+
+        # 数据质量标记
+        data_quality = {}
+        for key in tasks.keys():
+            if key == "fg":
+                data_quality["恐慌贪婪指数"] = "✅" if results.get(key) else "⚠️ 回退"
+            elif key == "exchange_btc":
+                data_quality["交易所BTC余额"] = "✅" if results.get(key) else "⚠️ 回退"
+            else:
+                data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
 
         # 解析数据
         kline_data = results.get("kline", [])
@@ -191,7 +257,11 @@ class CoinGlassClient:
         cvd_data = results.get("cvd", [])
         heatmap_raw = results.get("heatmap", {})
         max_pain = results.get("max_pain", 0.0)
-        fg_data = results.get("fg", {"current": 50, "prev": 50})
+        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
+        netflow = results.get("netflow", 0.0)
+        orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
+        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0})
+        agg_oi_data = results.get("agg_oi", [])
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
@@ -240,28 +310,45 @@ class CoinGlassClient:
         cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
         cvd_slope = self._calc_slope(cvd_series)
 
+        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
+        agg_oi_change_24h = 0.0
+        if len(agg_oi_data) >= 6:
+            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
+            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+
         fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
 
         return {
-            "mark_price": mark_price, "atr": atr, "vol_factor": vol_factor, "price_percentile": price_percentile,
-            "above_liq": above_liq, "below_liq": below_liq, "liq_ratio": liq_ratio,
-            "above_cluster": above_cluster, "below_cluster": below_cluster, "max_pain": max_pain,
-            "top_ls_ratio": top_ls_current, "top_ls_percentile": top_ls_percentile,
-            "funding_rate": funding_current, "funding_percentile": funding_percentile,
-            "oi": oi_current, "oi_percentile": oi_percentile, "oi_change_24h": oi_change_24h,
-            "cvd_mean": cvd_mean, "cvd_slope": cvd_slope,
-            "fear_greed": fear_greed, "eth_btc_ratio": eth_btc_ratio,
+            "mark_price": mark_price,
+            "atr": atr,
+            "vol_factor": vol_factor,
+            "price_percentile": price_percentile,
+            "above_liq": above_liq,
+            "below_liq": below_liq,
+            "liq_ratio": liq_ratio,
+            "above_cluster": above_cluster,
+            "below_cluster": below_cluster,
+            "max_pain": max_pain,
+            "top_ls_ratio": top_ls_current,
+            "top_ls_percentile": top_ls_percentile,
+            "funding_rate": funding_current,
+            "funding_percentile": funding_percentile,
+            "oi": oi_current,
+            "oi_percentile": oi_percentile,
+            "oi_change_24h": oi_change_24h,
+            "agg_oi": agg_oi_current,
+            "agg_oi_change_24h": agg_oi_change_24h,
+            "cvd_mean": cvd_mean,
+            "cvd_slope": cvd_slope,
+            "fear_greed": fear_greed,
+            "fear_greed_prev_7d": fear_greed_prev_7d,
+            "eth_btc_ratio": eth_btc_ratio,
+            "netflow": netflow,
+            "orderbook_bids": orderbook.get("bids_usd", 0.0),
+            "orderbook_asks": orderbook.get("asks_usd", 0.0),
+            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
+            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
+            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "data_quality": data_quality
         }
-
-    def _calc_atr(self, closes: list, period: int = 14) -> float:
-        if len(closes) < period + 1: return 0.0
-        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
-        return sum(trs[-period:]) / period if len(trs) >= period else 0.0
-
-    def _calc_atr_list(self, closes: list, period: int = 14) -> list:
-        if len(closes) < period + 1: return []
-        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
-        atrs = []
-        for i in range(period - 1, len(trs)):
-            atrs.append(sum(trs[i-period+1:i+1]) / period)
-        return atrs
