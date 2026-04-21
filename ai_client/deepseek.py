@@ -19,7 +19,8 @@ def build_prompt(data: dict, symbol: str) -> str:
         below_low = float(below_cluster.split('-')[0])
         below_distance = f"{current - below_low:.0f}"
 
-    prompt = f"""你是一名管理 200 万 U 的顶尖加密货币短线合约交易员。请基于以下数据，给出你独立的交易决策。
+    prompt = f"""【角色】你是一名管理 200 万 U 的顶尖加密货币短线合约交易员。
+【任务】基于以下数据，给出你独立的交易决策。不要使用固定模板，用自然的段落表达你的判断。
 
 【{symbol} | {timestamp}】
 
@@ -40,17 +41,8 @@ def build_prompt(data: dict, symbol: str) -> str:
 资金流向：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M USDT
 
 ---
-请给出你的专业判断（不用分步骤标题，用连贯的段落叙述即可）：
+请直接输出你的交易计划和分析。用口语化的专业语言，就像你在和另一个交易员讨论行情。
 
-你认为当前价格最可能朝哪个方向移动？为什么？
-
-你看到了什么值得注意的风险或矛盾？
-
-如果要做一笔交易，你会如何设计进场、止损、止盈？止损的依据是什么？
-
-如果不开仓，原因是什么？
-
----
 输出 JSON 格式（不要代码块）：
 {{
   "direction": "long/short/neutral",
@@ -61,7 +53,7 @@ def build_prompt(data: dict, symbol: str) -> str:
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话：方向、区间、止损、止盈、仓位、预计持仓时间。",
-  "reasoning": "用2-3段话叙述你的完整分析，包含价格判断、风险点、交易逻辑或观望理由。",
+  "reasoning": "用口语化的段落叙述你的完整分析，包括你看重的数据和你的推演逻辑。",
   "risk_note": "最坏情况下的应对预案。"
 }}
 """
