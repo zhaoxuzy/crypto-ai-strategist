@@ -227,6 +227,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 - 你必须**亲自分析每一项原始数据**，而非依赖系统给出的定性标签。
 - 你的分析必须包含**具体数值引用**和**对比判断**。
 - 你拥有最终裁决权，可以质疑系统建议，但必须在分析中给出明确理由。
+- 你必须专业分析，你的策略因避免30分钟或180分钟后就失效，就变成了相反的方向。
 
 {warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
 
