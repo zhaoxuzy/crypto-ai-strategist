@@ -6,7 +6,7 @@ from threading import Semaphore
 from utils.logger import logger
 
 class RateLimiter:
-    """速率限制器，确保最小间隔"""
+    """简单的速率限制器，确保最小间隔"""
     def __init__(self, min_interval: float = 1.5):
         self.min_interval = min_interval
         self._last_request_time = 0.0
@@ -26,7 +26,7 @@ class CoinGlassClient:
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
         self._rate_limiter = RateLimiter(min_interval=1.5)
-        self._semaphore = Semaphore(8)  # 提高并发度
+        self._semaphore = Semaphore(8)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -220,8 +220,10 @@ class CoinGlassClient:
         if data and isinstance(data, list):
             total = sum(float(ex.get("balance", 0)) for ex in data)
             change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
-            return {"total_btc": total, "change_24h": change_24h}
-        return {"total_btc": 0.0, "change_24h": 0.0}
+            prev_total = total - change_24h
+            change_pct = (change_24h / prev_total * 100) if prev_total > 0 else 0.0
+            return {"total_btc": total, "change_24h": change_24h, "change_pct": change_pct}
+        return {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
@@ -290,7 +292,7 @@ class CoinGlassClient:
         fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
         netflow = results.get("netflow", 0.0)
         orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
-        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0})
+        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0})
         agg_oi_data = results.get("agg_oi", [])
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
@@ -333,8 +335,15 @@ class CoinGlassClient:
         funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
         funding_percentile = self._calc_percentile(funding_data, funding_current)
 
-        top_ls_current = self._get_close_from_candle(top_ls_data[-1]) if top_ls_data else 0.0
-        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current)
+        # 修复：顶级多空比正确解析
+        top_ls_current = 0.0
+        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
+            latest = top_ls_data[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            else:
+                top_ls_current = self._get_close_from_candle(latest)
+        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
 
         cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
         cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
@@ -380,5 +389,6 @@ class CoinGlassClient:
             "orderbook_imbalance": orderbook.get("imbalance", 0.0),
             "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
             "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "exchange_btc_change_pct": exchange_btc.get("change_pct", 0.0),
             "data_quality": data_quality
         }
