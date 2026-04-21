@@ -44,6 +44,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
+    # 准备纯文本数据源状态
     data_source_status = extra.get("data_source_status", "")
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
     data_source_status = data_source_status.replace('：', ':')
@@ -52,7 +53,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         data_source_status = "清算数据源:model2"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
-    extreme_liq = extra.get("extreme_liq", False)  # 已不在消息中展示
+    extreme_liq = extra.get("extreme_liq", False)
 
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
@@ -89,8 +90,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         if abs(oi) > 5: alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
     except: pass
 
-    # 移除极端清算警报展示
-    # if extreme_liq: alerts.append("🚨极端清算警报")
+    if extreme_liq:
+        alerts.append("🚨极端清算警报")
 
     analysis_summary = strategy.get('analysis_summary', '')
     if not analysis_summary:
@@ -99,7 +100,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
-    trader_reasoning = strategy.get('trader_reasoning', '')
+    final_verdict = ""
+    if "【最终裁决】" in analysis_summary:
+        parts = analysis_summary.split("【最终裁决】")
+        analysis_summary = parts[0].strip()
+        final_verdict = parts[1].strip()
 
     formatted_summary = ""
     if analysis_summary:
@@ -118,6 +123,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     else:
         formatted_summary = "无分析摘要"
 
+    trader_commentary = strategy.get('trader_commentary', '')
+
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
     bear_score = directional_scores.get("bear", 0)
@@ -130,6 +137,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     title_line = f"## {dir_emoji} {dir_text} {symbol}  |  {now_beijing.strftime('%m-%d %H:%M')}"
 
+    # 准备数据快照行的各指标
     atr_val = extra.get('atr', 0)
     funding_val = extra.get('funding_rate', 'N/A')
     oi_val = extra.get('oi_change', 'N/A')
@@ -141,11 +149,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
         funding_val += '%'
 
+    # 【最终修复】强制单行，并将数据源包裹在反引号中，防止任何解析
     snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · `{data_source_status}`"
 
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
-        reasoning_block = f"\n> **📌 交易员推理**：{trader_reasoning}" if trader_reasoning else ""
+        final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
@@ -153,7 +162,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 🧠 AI 研判摘要
 {formatted_summary}
-{reasoning_block}
+{final_block}
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
@@ -203,7 +212,11 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     alerts_str = "  ".join(alerts) if alerts else ""
 
-    reasoning_block = f"\n> **📌 交易员推理**：{trader_reasoning}" if trader_reasoning else ""
+    trader_block = ""
+    if trader_commentary:
+        trader_block = f"\n> 💬 **顶尖交易点评**：{trader_commentary}\n"
+
+    final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
     return f"""{title_line}
 
@@ -216,8 +229,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 🧠 AI 研判摘要
 {formatted_summary}
-{reasoning_block}
-
+{final_block}
+{trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
 
