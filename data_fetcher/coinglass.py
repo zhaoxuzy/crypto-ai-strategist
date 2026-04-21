@@ -29,7 +29,7 @@ class CoinGlassClient:
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 4, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {"accept": "application/json", "coinglassSecret": self.api_key}
+        headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
         exchanges_to_try = [self.primary_exchange] + (self.backup_exchanges if allow_backup else [])
         last_error = None
@@ -87,52 +87,42 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
-    # ---------- 修正后的各 API 方法 ----------
+    # ---------- 各 API 方法 ----------
     def get_kline_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        """价格K线历史 - 端点: /api/futures/price/history"""
         params = {"exchange": "OKX", "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
 
     def get_oi_ohlc_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        """持仓量OHLC历史 - 端点: /api/futures/open-interest/history"""
         params = {"exchange": "OKX", "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        """加权资金费率历史 - 端点: /api/futures/funding-rate/oi-weight-history"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTCUSDT"):
-        """清算热力图(模型2) - 端点: /api/futures/liquidation/heatmap/model2"""
         params = {"exchange": "OKX", "symbol": symbol, "range": "3d"}
         return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        """顶级交易员多空比历史 - 端点: /api/futures/top-long-short-position-ratio/history"""
         params = {"exchange": "OKX", "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 240):
-        """CVD历史 - 端点: /api/futures/cvd/history"""
         params = {"exchange": "OKX", "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
-        """期权最大痛点 - 端点: /api/option/max-pain"""
         params = {"symbol": symbol}
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_fear_and_greed_index(self) -> dict:
-        """恐慌贪婪指数 - 端点: /api/index/fear-greed-history"""
         data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) >= 2:
-            # 返回最近两条记录，第一条为当前值
             return {"current": data[0].get("value", 50), "prev": data[1].get("value", 50)}
         return {"current": 50, "prev": 50}
 
     def get_eth_btc_ratio(self) -> float:
-        """ETH/BTC汇率 - 通过K线获取"""
         try:
             eth = self.get_kline_history("ETHUSDT", "4h", 1)
             btc = self.get_kline_history("BTCUSDT", "4h", 1)
@@ -142,7 +132,6 @@ class CoinGlassClient:
         except:
             return 0.0
 
-    # ---------- 聚合数据 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
         usdt_symbol = f"{base_symbol}USDT"
@@ -180,7 +169,6 @@ class CoinGlassClient:
         fg_data = results.get("fg", {"current": 50, "prev": 50})
         eth_btc_ratio = results.get("eth_btc", 0.0)
 
-        # 价格与波动
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
         atr = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
@@ -188,7 +176,6 @@ class CoinGlassClient:
         vol_factor = atr / avg_atr_7d if avg_atr_7d > 0 else 1.0
         price_percentile = self._calc_percentile(kline_data, mark_price)
 
-        # 清算压力分布
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
             y_axis = heatmap_raw.get("y_axis", [])
@@ -212,7 +199,6 @@ class CoinGlassClient:
                     max_below = max(below_prices, key=lambda p: pain_map[p])
                     below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
 
-        # 多空博弈
         oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
         oi_percentile = self._calc_percentile(oi_data, oi_current)
         oi_change_24h = 0.0
@@ -226,15 +212,11 @@ class CoinGlassClient:
         top_ls_current = self._get_close_from_candle(top_ls_data[-1]) if top_ls_data else 0.0
         top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current)
 
-        # 资金流向
         cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
         cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
         cvd_slope = self._calc_slope(cvd_series)
 
-        # 期权最大痛点
         max_pain = max_pain_data.get("maxPainPrice", 0.0) if max_pain_data else 0.0
-
-        # 恐慌贪婪
         fear_greed = fg_data.get("current", 50)
 
         return {
