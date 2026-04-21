@@ -44,14 +44,16 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     now_beijing = datetime.now(beijing_tz)
     direction = strategy.get("direction", "neutral")
 
+    # 准备纯文本数据源状态
     data_source_status = extra.get("data_source_status", "")
     data_source_status = re.sub(r'[*_`#>\-]', '', data_source_status)
-    data_source_status = data_source_status.replace('：', ':\u200b')
+    data_source_status = data_source_status.replace('：', ':')
     data_source_status = re.sub(r'\s+', ' ', data_source_status).strip()
     if not data_source_status:
-        data_source_status = "清算数据源:\u200b model2(主用)"
+        data_source_status = "清算数据源:model2"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
+    extreme_liq = extra.get("extreme_liq", False)
 
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
@@ -88,23 +90,30 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         if abs(oi) > 5: alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
     except: pass
 
+    if extreme_liq:
+        alerts.append("🚨极端清算警报")
+
     analysis_summary = strategy.get('analysis_summary', '')
     if not analysis_summary:
         reasoning = strategy.get('reasoning', '暂无分析')
-        if "【第五步】" in reasoning:
-            reasoning = reasoning.split("【第五步】")[0].strip()
+        if "【第五步" in reasoning:
+            reasoning = reasoning.split("【第五步")[0].strip()
         analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
 
-    trader_reasoning = strategy.get('trader_reasoning', '')
+    final_verdict = ""
+    if "【最终裁决】" in analysis_summary:
+        parts = analysis_summary.split("【最终裁决】")
+        analysis_summary = parts[0].strip()
+        final_verdict = parts[1].strip()
 
-    # 格式化分析摘要列表
     formatted_summary = ""
     if analysis_summary:
         parts = re.split(r'(?=🔍)', analysis_summary)
         summary_items = []
         for part in parts:
             part = part.strip()
-            if not part: continue
+            if not part:
+                continue
             part = part.replace('\n', '<br>')
             summary_items.append(part)
         if summary_items:
@@ -113,6 +122,8 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
             formatted_summary = analysis_summary
     else:
         formatted_summary = "无分析摘要"
+
+    trader_commentary = strategy.get('trader_commentary', '')
 
     directional_scores = extra.get("directional_scores", {})
     bull_score = directional_scores.get("bull", 0)
@@ -126,22 +137,37 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     title_line = f"## {dir_emoji} {dir_text} {symbol}  |  {now_beijing.strftime('%m-%d %H:%M')}"
 
+    # 准备数据快照行的各指标
+    atr_val = extra.get('atr', 0)
+    funding_val = extra.get('funding_rate', 'N/A')
+    oi_val = extra.get('oi_change', 'N/A')
+    cvd_val = extra.get('cvd_signal', 'N/A')
+    greed_val = extra.get('fear_greed', 'N/A')
+
+    if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
+        oi_val += '%'
+    if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
+        funding_val += '%'
+
+    # 【最终修复】强制单行，并将数据源包裹在反引号中，防止任何解析
+    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}` · `{data_source_status}`"
+
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
-        reasoning_block = f"\n> **📌 交易员推理**：{trader_reasoning}" if trader_reasoning else ""
+        final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
 {alerts_str}
 
-### 🧠 AI 数据深潜
+### 🧠 AI 研判摘要
 {formatted_summary}
-{reasoning_block}
+{final_block}
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
 - 分差：{diff}分（{strength_text}）| 多头{bull_score} vs 空头{bear_score}
-- {data_source_status}
+{snapshot_line}
 """
 
     entry_low = float(strategy.get("entry_price_low", 0))
@@ -185,20 +211,12 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     risk_formatted = "\n> ".join([f"{i+1}. {item.strip()}" for i, item in enumerate(risk_items)])
 
     alerts_str = "  ".join(alerts) if alerts else ""
-    reasoning_block = f"\n> **📌 交易员推理**：{trader_reasoning}" if trader_reasoning else ""
 
-    atr_val = extra.get('atr', 0)
-    funding_val = extra.get('funding_rate', 'N/A')
-    oi_val = extra.get('oi_change', 'N/A')
-    cvd_val = extra.get('cvd_signal', 'N/A')
-    greed_val = extra.get('fear_greed', 'N/A')
+    trader_block = ""
+    if trader_commentary:
+        trader_block = f"\n> 💬 **顶尖交易员点评**：{trader_commentary}\n"
 
-    if isinstance(oi_val, str) and oi_val != 'N/A' and not oi_val.endswith('%'):
-        oi_val += '%'
-    if isinstance(funding_val, str) and funding_val != 'N/A' and not funding_val.endswith('%'):
-        funding_val += '%'
-
-    snapshot_line = f"📎 `ATR {atr_val:.1f}` · `费率 {funding_val}` · `OI {oi_val}` · `CVD {cvd_val}` · `贪婪 {greed_val}`"
+    final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
 
     return f"""{title_line}
 
@@ -206,18 +224,15 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
 ### 📊 市场状态
 趋势强度 {trend_state_desc} ({market_state})  
-⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
+⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text})  
 {alerts_str}
 
-### 🧠 AI 数据深潜
+### 🧠 AI 研判摘要
 {formatted_summary}
-{reasoning_block}
-
+{final_block}
+{trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
 
-{snapshot_line}  
-{data_source_status}
----
-*以上内容由 DeepSeek 生成，仅供参考*
+{snapshot_line}
 """
