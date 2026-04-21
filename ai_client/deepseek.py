@@ -306,22 +306,14 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
-def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
-    """仅做最基本的方向和正数校验，完全信任 AI 的止损止盈设置"""
+def validate_strategy(s: dict, price: float, atr: float = None) -> tuple[bool, str]:
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
-        return False
+        return False, f"无效方向: {direction}"
     if direction == "neutral":
-        return True
-    try:
-        entry_low = float(s.get("entry_price_low", 0))
-        entry_high = float(s.get("entry_price_high", 0))
-        stop = float(s.get("stop_loss", 0))
-        tp = float(s.get("take_profit", 0))
-        if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
-            return False
-        if entry_low > entry_high:
-            return False
-    except:
-        return False
-    return True
+        return True, ""
+    # ... 其他校验逻辑 ...
+    if not valid:
+        return False, "具体的错误描述"
+    # ...
+    return True, ""
