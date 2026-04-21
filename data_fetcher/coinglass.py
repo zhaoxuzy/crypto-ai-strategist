@@ -6,9 +6,9 @@ from threading import Semaphore, Lock
 from utils.logger import logger
 
 class RateLimiter:
-    """全局速率限制器，确保每分钟不超过 20 次请求"""
+    """全局速率限制器，确保每分钟不超过 20 次请求（最小间隔 3 秒）"""
     def __init__(self, max_requests_per_minute: int = 20):
-        self.min_interval = 60.0 / max_requests_per_minute
+        self.min_interval = 60.0 / max_requests_per_minute  # 3.0 秒
         self._last_request_time = 0.0
         self._lock = Lock()
 
@@ -29,6 +29,7 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.exchange = "OKX"
         self._rate_limiter = RateLimiter(max_requests_per_minute=20)
+        # 最大并发数：3 个线程，配合 3 秒间隔，确保瞬时并发不会突破限制
         self._max_workers = 3
         self._semaphore = Semaphore(self._max_workers)
 
@@ -97,9 +98,8 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
-    # ---------- API 方法（使用正确的 symbol 格式） ----------
+    # ---------- API 方法 ----------
     def _get_symbol(self, base: str) -> str:
-        """返回 CoinGlass 要求的交易对格式，例如 BTC-USDT-SWAP"""
         return f"{base}-USDT-SWAP"
 
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
@@ -111,9 +111,8 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        """官方端点: /api/futures/funding-rate/oi-weight-history，symbol 为 BTC"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
+        return self._request("api/futures/funding-rate/oi-weight-ohlc-history", params, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
@@ -128,7 +127,7 @@ class CoinGlassClient:
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
-        params = {"symbol": symbol}
+        params = {"exchange": "Deribit", "symbol": symbol}
         return self._request("api/option/max-pain", params, silent_fail=True)
 
     def get_fear_and_greed_index(self) -> dict:
@@ -173,8 +172,10 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
+        # ETH/BTC 汇率单独获取（需要两次额外请求，顺序执行以免超额）
         eth_btc_ratio = self.get_eth_btc_ratio()
 
+        # 解析数据
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
