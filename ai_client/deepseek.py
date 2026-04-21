@@ -104,12 +104,14 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
     for attempt in range(max_retries):
         try:
-            logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-reasoner",          # ← 修改此处
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=2000
+                # temperature=0.1,                   # ← 删除此行
+                max_tokens=4000                     # ← 增大至 4000
+            )
+            # ... 其余代码保持不变
             )
             content = resp.choices[0].message.content
             logger.info(f"DeepSeek 响应成功，原始内容长度: {len(content)}")
