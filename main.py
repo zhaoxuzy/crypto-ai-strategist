@@ -6,7 +6,7 @@ from collections import deque
 from utils.logger import logger
 from data_fetcher.coinglass import CoinGlassClient
 from data_fetcher.okx_rest import get_current_price, calculate_atr, get_klines, calculate_ema, calculate_atr_percentile, calculate_ema_slope
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy, calculate_signal_strength
+from ai_client.deepseek import call_deepseek, validate_strategy, calculate_signal_strength, build_prompt
 from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
 SYMBOL_MAP = {"BTC": "BTC-USDT-SWAP", "ETH": "ETH-USDT-SWAP", "SOL": "SOL-USDT-SWAP"}
@@ -158,6 +158,7 @@ def compute_macro_three_factor_score(cg: CoinGlassClient, cg_data: dict, btc_pri
 
 
 def compute_directional_scores_v2(symbol: str, cg_data: dict, trend_info: dict, cg: CoinGlassClient, btc_price: float, atr: float) -> dict:
+    # 该函数仅用于内部参考，不再传入 Prompt 给 AI
     bull_score = 0
     bear_score = 0
     current_price = cg_data.get("current_price", btc_price)
@@ -427,14 +428,24 @@ def main():
 
         exchange_balances = cg_data.get("exchange_balances", {})
 
-        signal_strength = calculate_signal_strength(
-            symbol, "long", cg_data, {"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}}, liq_zero_count,
+        # 分别计算多头和空头的信号强度
+        macro_data = {"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}}
+        bull_strength = calculate_signal_strength(
+            symbol, "long", cg_data, macro_data, liq_zero_count,
             cg_data.get("eth_btc_ratio"), exchange_balances, trend_info, extreme_liq
         )
-        score = signal_strength["score"]
-        if score >= 65: signal_grade = "A"
-        elif score >= 40: signal_grade = "B"
-        else: signal_grade = "C"
+        bear_strength = calculate_signal_strength(
+            symbol, "short", cg_data, macro_data, liq_zero_count,
+            cg_data.get("eth_btc_ratio"), exchange_balances, trend_info, extreme_liq
+        )
+
+        bull_score = bull_strength["score"]
+        bear_score = bear_strength["score"]
+        signal_grade = "A" if max(bull_score, bear_score) >= 65 else ("B" if max(bull_score, bear_score) >= 40 else "C")
+
+        # 提取主要加分项（非警告项的前3个）
+        bull_factors = ", ".join([d for d in bull_strength["details"] if not d.startswith("⚠️")][:3])
+        bear_factors = ", ".join([d for d in bear_strength["details"] if not d.startswith("⚠️")][:3])
 
         base_threshold_bull_bear = 8
         base_threshold_warning = 12
@@ -453,11 +464,13 @@ def main():
             temp_direction = "long" if temp_direction == "bull" else "short"
         entry_candidates = get_entry_candidates(price, atr, temp_direction, cg_data.get("nearest_cluster", {}), ema55, key_levels)
 
+        # 构建 Prompt
         prompt = build_prompt(
-            symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data={"fear_greed": {"value": cg_data.get("fear_greed_index", {}).get("current", 50)}},
+            symbol=symbol, price=price, atr=atr, coinglass_data=cg_data, macro_data=macro_data,
             profile=profile, volatility_factor=volatility_factor, trend_info=trend_info,
             extreme_liq=extreme_liq, liq_warning=liq_warning, data_source_status=data_source_status,
-            directional_scores=directional_scores, signal_grade=signal_grade,
+            bull_score=bull_score, bear_score=bear_score, signal_grade=signal_grade,
+            bull_factors=bull_factors, bear_factors=bear_factors,
             entry_candidates=entry_candidates,
             exchange_balances=exchange_balances,
             liq_dynamic_signals=liq_dynamic_signals,
@@ -470,23 +483,32 @@ def main():
         if not strategy: raise Exception("DeepSeek 返回为空")
 
         actual_direction = strategy.get("direction", "neutral")
-        if actual_direction != "neutral":
-            cluster = cg_data.get("nearest_cluster", {})
-            cluster_dir = cluster.get("direction", "")
-            cluster_price = float(cluster.get("price", 0)) if cluster.get("price", "N/A") != "N/A" else 0
-            cluster_intensity = int(cluster.get("intensity", 0)) if cluster.get("intensity", "N/A") != "N/A" else 0
-
-            entry_candidates = get_entry_candidates(price, atr, actual_direction, cluster, ema55, key_levels)
+        # 完全信任 AI 的入场、止损、止盈，不再进行程序自动补全
+        # 仅当 AI 未提供时，才使用默认区间（极少数情况）
+        if float(strategy.get("entry_price_low", 0)) <= 0 or float(strategy.get("entry_price_high", 0)) <= 0:
+            strategy["entry_price_low"] = entry_candidates["rule3"]["low"]
+            strategy["entry_price_high"] = entry_candidates["rule3"]["high"]
+        if float(strategy.get("stop_loss", 0)) <= 0:
+            if actual_direction == "long":
+                strategy["stop_loss"] = round(price - 2.0 * atr, 1)
+            else:
+                strategy["stop_loss"] = round(price + 2.0 * atr, 1)
+        if float(strategy.get("take_profit", 0)) <= 0:
+            if actual_direction == "long":
+                strategy["take_profit"] = round(price + 4.0 * atr, 1)
+            else:
+                strategy["take_profit"] = round(price - 4.0 * atr, 1)
 
         is_probe = strategy.get("is_probe", False)
         probe_history.append(is_probe)
 
         if liq_zero_count >= 2 and strategy.get("direction") != "neutral":
             strategy["direction"] = "neutral"
-            strategy["reasoning"] = "清算数据连续缺失，自动转为观望。"
+            strategy["analysis_summary"] = strategy.get("analysis_summary", "") + "\n[系统] 清算数据连续缺失，自动转为观望。"
 
-        if not validate_strategy(strategy, price, atr):
-            logger.warning("策略校验未通过")
+        is_valid, error_msg = validate_strategy(strategy, price, atr)
+        if not is_valid:
+            logger.warning(f"策略校验未通过: {error_msg}")
 
         extra = {
             "atr": atr, "funding_rate": cg_data.get("funding_rate", "N/A"),
@@ -494,7 +516,7 @@ def main():
             "ls_ratio": cg_data.get("long_short_ratio", "N/A"),
             "cvd_signal": cvd_signal, "skew": cg_data.get("skew", "N/A"),
             "fear_greed": cg_data.get("fear_greed_index", {}).get("current", 50),
-            "signal_strength": signal_strength,
+            "signal_strength": bull_strength,
             "data_source_status": data_source_status, "trend_info": trend_info,
             "volatility_factor": volatility_factor, "extreme_liq": extreme_liq,
             "is_probe": is_probe, "key_support": key_levels["support"],
