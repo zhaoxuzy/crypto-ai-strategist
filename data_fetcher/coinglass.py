@@ -2,70 +2,100 @@ import os
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Semaphore, Lock
+from threading import Semaphore
 from utils.logger import logger
 
 class RateLimiter:
-    def __init__(self, max_requests_per_minute: int = 20):
-        self.min_interval = 60.0 / max_requests_per_minute
+    """速率限制器，确保最小间隔"""
+    def __init__(self, min_interval: float = 1.5):
+        self.min_interval = min_interval
         self._last_request_time = 0.0
-        self._lock = Lock()
 
     def wait(self):
-        with self._lock:
-            now = time.time()
-            elapsed = now - self._last_request_time
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-            self._last_request_time = time.time()
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self._last_request_time = time.time()
 
 
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
-        if not self.api_key:
-            logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置")
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.exchange = "OKX"
-        self._rate_limiter = RateLimiter(max_requests_per_minute=20)
-        self._max_workers = 3
-        self._semaphore = Semaphore(self._max_workers)
+        self.primary_exchange = "OKX"
+        self.backup_exchanges = ["Binance"]
+        self._rate_limiter = RateLimiter(min_interval=1.5)
+        self._semaphore = Semaphore(8)  # 提高并发度
 
-    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, silent_fail: bool = False) -> dict:
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {"accept": "application/json", "X-Api-Key": self.api_key}
-        current_params = params.copy() if params else {}
+        headers = {
+            "accept": "application/json",
+            "X-Api-Key": self.api_key
+        }
+        base_params = params.copy() if params else {}
+        
+        if allow_backup and "exchange" in base_params:
+            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
+        else:
+            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
 
-        for attempt in range(max_retries):
-            with self._semaphore:
-                self._rate_limiter.wait()
-                try:
-                    logger.info(f"请求 CoinGlass: {endpoint} | params={current_params}")
-                    resp = requests.get(url, params=current_params, headers=headers, timeout=15)
-                    data = resp.json()
-                    if data.get("code") in (0, "0"):
-                        return data.get("data", {})
-                    else:
-                        msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                        if "rate limit" in str(msg).lower():
-                            time.sleep(10)
-                            continue
+        last_error = None
+
+        for exchange in exchanges_to_try:
+            current_params = base_params.copy()
+            if exchange is not None and "exchange" in current_params:
+                current_params["exchange"] = exchange
+
+            for attempt in range(max_retries):
+                with self._semaphore:
+                    self._rate_limiter.wait()
+                    try:
+                        logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
+                        resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                        data = resp.json()
+                        if data.get("code") in (0, "0"):
+                            return data.get("data", {})
+                        else:
+                            msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                            last_error = msg
+                            if attempt < max_retries - 1:
+                                if "rate limit" in str(msg).lower():
+                                    wait_time = 10 * (attempt + 1)
+                                else:
+                                    wait_time = 2 ** (attempt + 1)
+                                logger.warning(f"{msg}，{wait_time}秒后重试...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
+                                break
+                    except requests.exceptions.Timeout as e:
+                        last_error = f"请求超时: {e}"
                         if attempt < max_retries - 1:
-                            time.sleep(2 ** (attempt + 1))
+                            wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"请求超时，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
                             continue
-                        if silent_fail:
-                            logger.warning(f"CoinGlass 数据获取失败（静默）: {msg}")
-                            return {}
-                        raise RuntimeError(msg)
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** (attempt + 1))
-                        continue
-                    if silent_fail:
-                        logger.warning(f"CoinGlass 请求异常（静默）: {e}")
-                        return {}
-                    raise RuntimeError(f"CoinGlass 请求失败: {e}")
-        return {}
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
+                            break
+                    except Exception as e:
+                        last_error = f"请求异常: {e}"
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"请求异常，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
+                            break
+
+        if silent_fail:
+            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+            return {}
+        raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
 
     # ---------- 辅助函数 ----------
     @staticmethod
@@ -113,37 +143,37 @@ class CoinGlassClient:
             atrs.append(sum(trs[i-period+1:i+1]) / period)
         return atrs
 
-    # ---------- API 方法 ----------
+    # ---------- 各 API 方法 ----------
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
     def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/price/history", params, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
 
     def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/open-interest/history", params, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
-        return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
+        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/top-long-short-position-ratio/history", params, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/cvd/history", params, silent_fail=True)
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC") -> float:
-        params = {"exchange": "Deribit", "symbol": symbol}
-        data = self._request("api/option/max-pain", params, silent_fail=True)
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+        data = self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict) and item.get("exchange") == "Deribit":
@@ -153,39 +183,40 @@ class CoinGlassClient:
         return 0.0
 
     def get_fear_and_greed_index(self) -> dict:
-        data = self._request("api/index/fear-greed-history", {}, silent_fail=True)
+        data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) >= 8:
             return {
-                "current": data[0].get("value", 50),
-                "prev_7d": data[7].get("value", 50)
+                "current": int(data[0].get("value", 50)),
+                "prev_7d": int(data[7].get("value", 50))
             }
         return {"current": 50, "prev_7d": 50}
 
-    # ---------- 新增指标 ----------
     def get_netflow(self, symbol: str = "BTC") -> float:
-        """期货资金净流入/流出（24h），单位 USDT"""
-        params = {"symbol": symbol}
-        data = self._request("api/futures/coin/netflow", params, silent_fail=True)
+        params = {"symbol": symbol.upper()}
+        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
         if isinstance(data, dict):
             return float(data.get("netflow", 0.0))
         return 0.0
 
     def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
-        """订单簿买卖深度及失衡率"""
-        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
-        data = self._request("api/futures/orderbook/ask-bids-history", params, silent_fail=True)
-        if data and isinstance(data, list) and len(data) > 0:
-            latest = data[0]
-            bids = float(latest.get("bids_usd", 0))
-            asks = float(latest.get("asks_usd", 0))
-            total = bids + asks
-            imbalance = (bids - asks) / total if total > 0 else 0.0
-            return {"bids_usd": bids, "asks_usd": asks, "imbalance": round(imbalance, 4)}
-        return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
+        try:
+            params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
+            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+                bids_usd = float(latest.get("bids_usd", 0))
+                asks_usd = float(latest.get("asks_usd", 0))
+                total = bids_usd + asks_usd
+                if total > 0:
+                    imbalance = (bids_usd - asks_usd) / total
+                    return {"bids_usd": bids_usd, "asks_usd": asks_usd, "imbalance": round(imbalance, 4)}
+            return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
+        except Exception as e:
+            logger.warning(f"获取订单簿失衡率失败: {e}")
+            return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
 
     def get_exchange_btc_balance(self) -> dict:
-        """全市场交易所 BTC 余额及 24h 变化"""
-        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, silent_fail=True)
+        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list):
             total = sum(float(ex.get("balance", 0)) for ex in data)
             change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
@@ -193,9 +224,8 @@ class CoinGlassClient:
         return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        """全市场持仓量聚合历史"""
-        params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/open-interest/aggregated-history", params, silent_fail=True)
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
     def get_eth_btc_ratio(self) -> float:
         try:
@@ -227,10 +257,10 @@ class CoinGlassClient:
         }
 
         results = {}
-        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            futures = {executor.submit(task): key for key, task in tasks.items()}
-            for future in as_completed(futures):
-                key = futures[future]
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
                 try:
                     results[key] = future.result()
                 except Exception as e:
