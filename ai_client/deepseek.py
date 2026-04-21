@@ -106,15 +106,12 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
         try:
             logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
             resp = client.chat.completions.create(
-                model="deepseek-reasoner",          # ← 修改此处
+                model="deepseek-reasoner",
                 messages=[{"role": "user", "content": prompt}],
-                # temperature=0.1,                   # ← 删除此行
-                max_tokens=4000                     # ← 增大至 4000
-            )
-            # ... 其余代码保持不变
+                max_tokens=4000
             )
             content = resp.choices[0].message.content
-            logger.info(f"DeepSeek 响应成功，原始内容长度: {len(content)}")
+            logger.info(f"DeepSeek Reasoner 响应成功，原始内容长度: {len(content)}")
 
             json_str = None
             if "```json" in content:
@@ -128,7 +125,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 if start != -1 and end > start:
                     json_str = content[start:end]
             if not json_str:
-                logger.warning(f"DeepSeek 返回无有效 JSON")
+                logger.warning(f"DeepSeek Reasoner 返回无有效 JSON")
                 if attempt == max_retries - 1:
                     raise ValueError("无法提取 JSON")
                 continue
@@ -138,7 +135,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             s.setdefault("risk_note", "")
             return s
         except Exception as e:
-            logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
                 raise
     return {}
