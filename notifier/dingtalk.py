@@ -60,7 +60,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
-    # 交易指令卡
+    # 合并后的核心指令卡（包含极简执行意图）
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -73,13 +73,24 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     rr = reward / risk if risk > 0 else 0
     rr_str = f"{rr:.2f}" if rr > 0 else "N/A"
     
-    param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
-
-    # 极简执行指令
     execution_plan = strategy.get("execution_plan", "")
-    execution_block = f"> ⚡ {execution_plan}" if execution_plan else ""
+    # 若极简指令已包含价格信息，则只提取持仓时间和离场方式，避免重复
+    if execution_plan:
+        # 尝试提取持仓时间和离场方式
+        time_match = re.search(r'预计持仓[^，。]*', execution_plan)
+        exit_match = re.search(r'离场[^，。]*', execution_plan)
+        extra = []
+        if time_match:
+            extra.append(time_match.group())
+        if exit_match:
+            extra.append(exit_match.group())
+        extra_str = " · " + " · ".join(extra) if extra else ""
+    else:
+        extra_str = ""
+    
+    param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}{extra_str}"
 
-    # 完整六步推演
+    # 完整六步推演（保持原样，确保每个步骤前有换行）
     reasoning = strategy.get("reasoning", "无推理过程")
     if "【步骤" in reasoning and "\n【步骤" not in reasoning:
         reasoning = reasoning.replace("【步骤", "\n【步骤").lstrip("\n")
@@ -111,7 +122,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     return f"""{title}
 
 {param_card}
-{execution_block}
 
 ### 🧠 六步推演
 {reasoning}
