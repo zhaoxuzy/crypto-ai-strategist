@@ -98,7 +98,7 @@ class CoinGlassClient:
         if isinstance(candle, list) and len(candle) >= 5:
             return float(candle[4])
         elif isinstance(candle, dict):
-            return float(candle.get("close", 0))
+            return float(candle.get("cum_vol_delta", candle.get("close", 0)))
         return 0.0
 
     @staticmethod
@@ -197,18 +197,18 @@ class CoinGlassClient:
         data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
         logger.info(f"[Netflow原始数据] 返回内容: {data}")
         if isinstance(data, dict):
-            for field in ["netflow", "netFlow", "flow", "net_inflow", "value"]:
+            for field in ["net_flow_usd_24h", "netflow_24h", "netflow", "netFlow", "flow"]:
                 if field in data:
                     val = data.get(field)
                     if val is not None:
-                        logger.info(f"✅ 期货资金净流获取成功: {val}")
+                        logger.info(f"✅ 期货资金净流获取成功: {val} (字段: {field})")
                         return float(val)
             logger.warning(f"⚠️ 期货资金净流返回数据中无已知字段，原始数据: {data}")
             return 0.0
         elif isinstance(data, list) and len(data) > 0:
             latest = data[0]
             if isinstance(latest, dict):
-                for field in ["netflow", "netFlow", "flow", "value"]:
+                for field in ["net_flow_usd_24h", "netflow_24h", "netflow", "flow", "value"]:
                     if field in latest:
                         return float(latest.get(field, 0))
             logger.warning(f"⚠️ 期货资金净流返回数组，无法解析，原始数据: {data[:2]}")
