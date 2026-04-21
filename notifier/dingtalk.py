@@ -52,7 +52,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     conf_text = conf_map.get(confidence, "🟡中")
 
-    # 紧凑标题行：🟢 做多 BTC · 中仓 · 🟡中 · 04-21 22:32
+    # 紧凑标题行
     title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
     if size_text:
         title_parts.append(size_text)
@@ -60,7 +60,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
-    # 交易指令卡（紧凑）
+    # 交易指令卡
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -75,38 +75,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 市场快照（两行紧凑）
-    price_pct = data.get("price_percentile", 50)
-    atr = data.get("atr", 0)
-    vol = data.get("vol_factor", 1.0)
-    above = data.get("above_liq", 0) / 1e9
-    below = data.get("below_liq", 0) / 1e9
-    ratio = data.get("liq_ratio", 0)
-    imb = data.get("orderbook_imbalance", 0)
-    netflow = data.get("netflow", 0) / 1e6
-    fg = data.get("fear_greed", 50)
-    fg_prev = data.get("fear_greed_prev_7d", 50)
-    fg_trend = "↑" if fg > fg_prev else ("↓" if fg < fg_prev else "→")
-    top_ls = data.get("top_ls_ratio", 0)
-    oi_chg = data.get("oi_change_24h", 0)
-    oi_pct = data.get("oi_percentile", 50)
-    funding = data.get("funding_rate", 0)
-    fund_pct = data.get("funding_percentile", 50)
-    cvd_slope = data.get("cvd_slope", 0)
-    cvd_dir = "↗" if cvd_slope > 0 else ("↘" if cvd_slope < 0 else "→")
+    # 极简执行指令
+    execution_plan = strategy.get("execution_plan", "")
+    execution_block = f"> ⚡ {execution_plan}" if execution_plan else ""
 
-    snapshot_line1 = f"📊 价格{current_price:.0f}({price_pct:.0f}%) · ATR{atr:.0f} · 波动{vol:.2f} · 清算上{above:.2f}B/下{below:.2f}B(比值{ratio:.2f})"
-    snapshot_line2 = f"📖 订单簿{imb:.3f} · 净流{netflow:.1f}M · 贪婪{fg}({fg_trend}) · 顶级{top_ls:.2f} · OI{oi_chg:+.1f}%({oi_pct:.0f}%) · 费率{funding:.4f}%({fund_pct:.0f}%) · CVD{cvd_dir}"
-
-    # 完整六步推演（确保每个步骤标题前有换行）
+    # 完整六步推演
     reasoning = strategy.get("reasoning", "无推理过程")
-    # 如果 reasoning 中没有以换行分隔的步骤，手动格式化
     if "【步骤" in reasoning and "\n【步骤" not in reasoning:
         reasoning = reasoning.replace("【步骤", "\n【步骤").lstrip("\n")
-    # 确保开头不空行
     reasoning = reasoning.strip()
 
-    # 风险提示（简洁编号）
+    # 风险提示
     risk_note = strategy.get("risk_note", "请严格设置止损")
     risk_items = re.split(r'[。；\n]', risk_note)
     risk_lines = []
@@ -121,14 +100,18 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     risk_block = "> ### ⚠️ 风险\n> " + "\n> ".join(risk_lines)
 
     # 脚注
+    atr = data.get("atr", 0)
+    funding = data.get("funding_rate", 0)
+    oi_chg = data.get("oi_change_24h", 0)
+    cvd_slope = data.get("cvd_slope", 0)
+    cvd_dir = "↗" if cvd_slope > 0 else ("↘" if cvd_slope < 0 else "→")
+    fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
     return f"""{title}
 
 {param_card}
-
-{snapshot_line1}
-{snapshot_line2}
+{execution_block}
 
 ### 🧠 六步推演
 {reasoning}
