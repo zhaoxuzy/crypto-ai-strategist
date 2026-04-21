@@ -713,7 +713,19 @@ class CoinGlassClient:
 
         # --- 为 AI 准备原始数据视图 (raw_view) ---
         raw_view = {}
-
+        # 在 raw_view 构建部分增加 15 分钟 EMA 及斜率
+        ema15_val = "N/A"
+        ema15_slope_val = "N/A"
+        if klines and len(klines) >= 15:
+    # 取最近15根4小时K线的收盘价计算15周期EMA（近似15分钟级别）
+        closes = [self._get_close_from_candle(k) for k in klines[-15:]]
+        ema15 = self._calc_ema(closes, 15)
+        ema15_val = f"{ema15:.2f}"
+        if len(closes) >= 16:
+        prev_ema = self._calc_ema(closes[:-1], 15)
+        ema15_slope_val = f"{(ema15 - prev_ema) / prev_ema * 100:.2f}%"
+        raw_view["ema15"] = ema15_val
+        raw_view["ema15_slope"] = ema15_slope_val
         if heatmap_raw:
             liq_view = self._extract_liquidation_profile(
                 heatmap_raw, current_price, atr if atr else (current_price * 0.02)
