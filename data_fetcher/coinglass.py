@@ -29,7 +29,6 @@ class CoinGlassClient:
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.exchange = "OKX"
         self._rate_limiter = RateLimiter(max_requests_per_minute=20)
-        # 最大并发数：3 个线程，配合 3 秒间隔，确保瞬时并发不会突破限制
         self._max_workers = 3
         self._semaphore = Semaphore(self._max_workers)
 
@@ -111,8 +110,9 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        """修正后的端点：/api/futures/funding-rate/oi-weight-history"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/funding-rate/oi-weight-ohlc-history", params, silent_fail=True)
+        return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
         params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
@@ -126,9 +126,17 @@ class CoinGlassClient:
         params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
-    def get_option_max_pain(self, symbol: str = "BTC"):
+    def get_option_max_pain(self, symbol: str = "BTC") -> float:
+        """期权最大痛点返回数组，需提取 Deribit 的数据"""
         params = {"exchange": "Deribit", "symbol": symbol}
-        return self._request("api/option/max-pain", params, silent_fail=True)
+        data = self._request("api/option/max-pain", params, silent_fail=True)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("exchange") == "Deribit":
+                    return float(item.get("maxPainPrice", 0.0))
+        elif isinstance(data, dict):
+            return float(data.get("maxPainPrice", 0.0))
+        return 0.0
 
     def get_fear_and_greed_index(self) -> dict:
         data = self._request("api/index/fear-greed-history", {}, silent_fail=True)
@@ -172,7 +180,7 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        # ETH/BTC 汇率单独获取（需要两次额外请求，顺序执行以免超额）
+        # ETH/BTC 汇率单独获取
         eth_btc_ratio = self.get_eth_btc_ratio()
 
         # 解析数据
@@ -182,7 +190,7 @@ class CoinGlassClient:
         top_ls_data = results.get("top_ls", [])
         cvd_data = results.get("cvd", [])
         heatmap_raw = results.get("heatmap", {})
-        max_pain_data = results.get("max_pain", {})
+        max_pain = results.get("max_pain", 0.0)
         fg_data = results.get("fg", {"current": 50, "prev": 50})
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
@@ -232,7 +240,6 @@ class CoinGlassClient:
         cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
         cvd_slope = self._calc_slope(cvd_series)
 
-        max_pain = max_pain_data.get("maxPainPrice", 0.0) if max_pain_data else 0.0
         fear_greed = fg_data.get("current", 50)
 
         return {
