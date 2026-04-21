@@ -171,16 +171,18 @@ class CoinGlassClient:
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
-    def get_option_max_pain(self, symbol: str = "BTC") -> float:
-        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+    def get_option_max_pain(self, symbol: str = "BTC") -> dict:
+        """返回期权最大痛点及Put/Call Ratio"""
+        params = {"symbol": symbol.upper()}
         data = self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and item.get("exchange") == "Deribit":
-                    return float(item.get("maxPainPrice", 0.0))
-        elif isinstance(data, dict):
-            return float(data.get("maxPainPrice", 0.0))
-        return 0.0
+        if data and isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            max_pain = float(latest.get("max_pain_price", 0))
+            call_oi = float(latest.get("call_open_interest", 0))
+            put_oi = float(latest.get("put_open_interest", 0))
+            put_call_ratio = put_oi / call_oi if call_oi > 0 else 0.0
+            return {"max_pain": max_pain, "put_call_ratio": round(put_call_ratio, 4)}
+        return {"max_pain": 0.0, "put_call_ratio": 0.0}
 
     def get_fear_and_greed_index(self) -> dict:
         data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
@@ -288,7 +290,9 @@ class CoinGlassClient:
         top_ls_data = results.get("top_ls", [])
         cvd_data = results.get("cvd", [])
         heatmap_raw = results.get("heatmap", {})
-        max_pain = results.get("max_pain", 0.0)
+        max_pain_data = results.get("max_pain", {})
+        max_pain = max_pain_data.get("max_pain", 0.0)
+        put_call_ratio = max_pain_data.get("put_call_ratio", 0.0)
         fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
         netflow = results.get("netflow", 0.0)
         orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
@@ -335,7 +339,6 @@ class CoinGlassClient:
         funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
         funding_percentile = self._calc_percentile(funding_data, funding_current)
 
-        # 修复：顶级多空比正确解析
         top_ls_current = 0.0
         if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
             latest = top_ls_data[-1]
@@ -369,6 +372,7 @@ class CoinGlassClient:
             "above_cluster": above_cluster,
             "below_cluster": below_cluster,
             "max_pain": max_pain,
+            "put_call_ratio": put_call_ratio,
             "top_ls_ratio": top_ls_current,
             "top_ls_percentile": top_ls_percentile,
             "funding_rate": funding_current,
