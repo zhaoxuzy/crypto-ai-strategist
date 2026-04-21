@@ -60,7 +60,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
-    # 合并后的核心指令卡（包含极简执行意图）
+    # 交易指令卡
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -74,40 +74,37 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     rr_str = f"{rr:.2f}" if rr > 0 else "N/A"
     
     execution_plan = strategy.get("execution_plan", "")
-    # 若极简指令已包含价格信息，则只提取持仓时间和离场方式，避免重复
+    extra_str = ""
     if execution_plan:
-        # 尝试提取持仓时间和离场方式
         time_match = re.search(r'预计持仓[^，。]*', execution_plan)
-        exit_match = re.search(r'离场[^，。]*', execution_plan)
-        extra = []
         if time_match:
-            extra.append(time_match.group())
-        if exit_match:
-            extra.append(exit_match.group())
-        extra_str = " · " + " · ".join(extra) if extra else ""
-    else:
-        extra_str = ""
+            extra_str = " · " + time_match.group()
     
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}{extra_str}"
 
-    # 完整六步推演（保持原样，确保每个步骤前有换行）
+    # 推理内容
     reasoning = strategy.get("reasoning", "无推理过程")
-    if "【步骤" in reasoning and "\n【步骤" not in reasoning:
-        reasoning = reasoning.replace("【步骤", "\n【步骤").lstrip("\n")
+    if "【1】" in reasoning and "\n【1】" not in reasoning:
+        reasoning = reasoning.replace("【", "\n【").lstrip("\n")
     reasoning = reasoning.strip()
 
-    # 风险提示
+    # 风险提示（彻底清洗已有序号）
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    risk_items = re.split(r'[。；\n]', risk_note)
-    risk_lines = []
-    idx = 1
-    for item in risk_items:
+    # 1. 移除所有前导序号（如 "1.", "1)", "1、", "1.1", "①" 等）
+    risk_note = re.sub(r'^[\s]*[\d]+[\.\、\)]?\s*', '', risk_note, flags=re.MULTILINE)
+    risk_note = re.sub(r'\n[\s]*[\d]+[\.\、\)]?\s*', '\n', risk_note)
+    # 2. 按句号、换行、分号分割
+    raw_items = re.split(r'[。；\n]', risk_note)
+    risk_items = []
+    for item in raw_items:
         item = item.strip()
+        # 再次清洗可能残留的序号
+        item = re.sub(r'^[\d]+[\.\、\)]?\s*', '', item)
         if item and len(item) > 2:
-            risk_lines.append(f"{idx}. {item}")
-            idx += 1
-    if not risk_lines:
-        risk_lines = ["1. 请严格设置止损"]
+            risk_items.append(item)
+    if not risk_items:
+        risk_items = ["请严格设置止损"]
+    risk_lines = [f"{i+1}. {item}" for i, item in enumerate(risk_items)]
     risk_block = "> ### ⚠️ 风险\n> " + "\n> ".join(risk_lines)
 
     # 脚注
@@ -123,7 +120,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
 {param_card}
 
-### 🧠 六步推演
+### 🧠 交易员推理
 {reasoning}
 
 {risk_block}
