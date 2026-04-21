@@ -133,7 +133,12 @@ class CoinGlassClient:
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
         usdt_symbol = f"{base_symbol}USDT"
-
+    data_quality = {
+    "funding_rate": {"status": "success", "source": "api"},
+    "max_pain": {"status": "failed", "fallback": 0.0, "reason": "rate_limit"},
+    "fear_greed": {"status": "fallback", "fallback": 50, "reason": "empty_response"},
+    # ... 其他指标
+    }
         # 串行获取所有数据（每个请求间隔 ≥ 3 秒）
         kline_data = self.get_kline_history(usdt_symbol, "4h", 168)
         oi_data = self.get_oi_ohlc_history(usdt_symbol, "4h", 168)
