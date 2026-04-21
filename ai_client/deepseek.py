@@ -141,7 +141,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
                  entry_candidates: dict = None, exchange_balances: dict = None,
                  liq_dynamic_signals: list = None,
                  threshold_bull_bear: int = 8, threshold_warning: int = 12,
-                 tp_candidates: dict = None) -> str:
+                 tp_candidates: dict = None,
+                 # === 新增参数（向后兼容） ===
+                 bull_score: int = 0, bear_score: int = 0,
+                 bull_factors: str = "", bear_factors: str = "") -> str:
     fg = macro_data.get("fear_greed", {})
     cluster = coinglass_data.get("nearest_cluster", {})
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
@@ -150,8 +153,10 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
     extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n" if extreme_liq else "")
 
-    bull_score = directional_scores.get("bull", 0) if directional_scores else 0
-    bear_score = directional_scores.get("bear", 0) if directional_scores else 0
+    # 优先使用新参数，若未传入则回退到 directional_scores
+    if directional_scores:
+        bull_score = directional_scores.get("bull", bull_score)
+        bear_score = directional_scores.get("bear", bear_score)
     diff = abs(bull_score - bear_score)
     higher_direction = "多头" if bull_score > bear_score else "空头"
 
@@ -212,13 +217,17 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     taker_series = raw_view.get("taker_ratio_series_1h", [])
     taker_series_str = str(taker_series) if taker_series else "无数据"
 
+    # === 修改：双向评分表 ===
     quant_reference_section = f"""
-### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
+### 📟 内部量化引擎输出（仅供参考，AI 必须重新验证）
 
 ⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断。**
 
-- 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
-- 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
+| 方向 | 得分 | 主要加分项 | 主要减分项 |
+|------|------|------------|------------|
+| 多头 | {bull_score} | {bull_factors if bull_factors else '无'} | - |
+| 空头 | {bear_score} | {bear_factors if bear_factors else '无'} | - |
+当前机械评级：{signal_grade}。{higher_direction}领先{diff}分。
 """
 
     prompt = f"""你是一位精通**清算动力学、多空博弈和数据量化分析**的顶尖加密货币短线合约交易员。你必须基于提供的原始数据，对**每一项指标**进行独立的、深度的专业研判。
@@ -379,22 +388,22 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
-def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
+def validate_strategy(s: dict, price: float, atr: float = None) -> tuple[bool, str]:
     """仅做最基本的方向和正数校验，完全信任 AI 的止损止盈设置"""
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
-        return False
+        return False, f"无效方向: {direction}"
     if direction == "neutral":
-        return True
+        return True, ""
     try:
         entry_low = float(s.get("entry_price_low", 0))
         entry_high = float(s.get("entry_price_high", 0))
         stop = float(s.get("stop_loss", 0))
         tp = float(s.get("take_profit", 0))
         if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
-            return False
+            return False, "入场/止损/止盈必须为正数"
         if entry_low > entry_high:
-            return False
-    except:
-        return False
-    return True
+            return False, "入场区间下限大于上限"
+    except Exception as e:
+        return False, f"数值解析失败: {e}"
+    return True, ""
