@@ -53,7 +53,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
         data_source_status = "清算数据源:\u200b model2(主用)"
 
     volatility_factor = extra.get("volatility_factor", 1.0)
-    extreme_liq = extra.get("extreme_liq", False)
+    extreme_liq = extra.get("extreme_liq", False)  # 内部使用，但不展示
 
     trend_info = extra.get("trend_info", {})
     trend_direction = trend_info.get("direction", "neutral")
@@ -76,6 +76,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     dir_emoji = "🟢" if direction == "long" else ("🔴" if direction == "short" else "⚪")
     dir_text = "做多" if direction == "long" else ("做空" if direction == "short" else "观望")
 
+    # 预警信息收集（不再包含极端清算警报）
     alerts = []
     funding_rate_str = extra.get("funding_rate", "0")
     try:
@@ -87,23 +88,20 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     oi_change_str = extra.get("oi_change", "0")
     try:
         oi = float(oi_change_str.strip('%')) if isinstance(oi_change_str, str) else 0
-        if abs(oi) > 5: alerts.append(f"⚠️OI24h变化{oi:.1f}%(大幅{'增' if oi>0 else '减'}仓)")
+        if abs(oi) > 5: alerts.append(f"⚠️OI24h変化{oi:.1f}%(大幅{'増' if oi>0 else '减'}仓)")
     except: pass
 
-    if extreme_liq:
-        alerts.append("🚨极端清算警报")
-
-    # 获取新版字段，若不存在则回退到旧版 analysis_summary
+    # 获取新版字段
     panorama = strategy.get('panorama', '')
     verdict = strategy.get('verdict', '')
 
+    # 回退逻辑：若没有新版字段，尝试使用旧版 analysis_summary
     if not panorama and not verdict:
-        # 回退：使用旧的 analysis_summary
         analysis_summary = strategy.get('analysis_summary', '')
         if not analysis_summary:
             reasoning = strategy.get('reasoning', '暂无分析')
-            if "【第五步" in reasoning:
-                reasoning = reasoning.split("【第五步")[0].strip()
+            if "【第五步】" in reasoning:
+                reasoning = reasoning.split("【第五步】")[0].strip()
             analysis_summary = reasoning[:500] + "..." if len(reasoning) > 500 else reasoning
         panorama = analysis_summary
         verdict = ""
@@ -129,14 +127,6 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     # 格式化深度研判：内部换行用 <br>
     formatted_verdict = verdict.replace('\n', '<br>') if verdict else ""
 
-    # 提取最终裁决（如果 verdict 中包含，可单独展示）
-    final_verdict = ""
-    if "最终裁决:" in verdict or "5.最终裁决:" in verdict:
-        # 从 verdict 中提取最终裁决行
-        match = re.search(r'(?:5\.)?最终裁决[:：]\s*(.+?)(?=\n|$)', verdict, re.DOTALL)
-        if match:
-            final_verdict = match.group(1).strip()
-
     trader_commentary = strategy.get('trader_commentary', '')
 
     directional_scores = extra.get("directional_scores", {})
@@ -153,17 +143,15 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 
     if direction == "neutral":
         alerts_str = "\n".join(alerts) if alerts else ""
-        final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
-        verdict_block = f"\n> **📌 深度研判**：{formatted_verdict}" if formatted_verdict else ""
+        verdict_block = f"\n> ### 📌 深度研判\n> {formatted_verdict}" if formatted_verdict else ""
         return f"""{title_line}
 
 📈 市场状态：{market_state} | 波动因子 {volatility_factor:.2f}
 {alerts_str}
 
-### 🧠 AI 研判摘要
+### 🧠 AI 全景扫描
 {formatted_panorama}
 {verdict_block}
-{final_block}
 
 - 当前价：${current_price:,.1f}
 - 资金费率：{extra.get('funding_rate', 'N/A')}%
@@ -219,8 +207,7 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
     if trader_commentary:
         trader_block = f"\n> 💬 **交易员备注**：{trader_commentary}\n"
 
-    final_block = f"\n> **📌 最终裁决**：{final_verdict}" if final_verdict else ""
-    verdict_block = f"\n> **📌 深度研判**：{formatted_verdict}" if formatted_verdict else ""
+    verdict_block = f"\n> ### 📌 深度研判\n> {formatted_verdict}" if formatted_verdict else ""
 
     # 数据快照行
     atr_val = extra.get('atr', 0)
@@ -245,10 +232,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 ⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text}确信)  
 {alerts_str}
 
-### 🧠 AI 研判摘要
+### 🧠 AI 全景扫描
 {formatted_panorama}
 {verdict_block}
-{final_block}
 {trader_block}
 ### ⚠️ 风险警示
 > {risk_formatted}
