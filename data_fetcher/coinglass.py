@@ -6,7 +6,6 @@ from threading import Semaphore
 from utils.logger import logger
 
 class RateLimiter:
-    """简单的速率限制器，确保最小间隔"""
     def __init__(self, min_interval: float = 1.5):
         self.min_interval = min_interval
         self._last_request_time = 0.0
@@ -30,10 +29,7 @@ class CoinGlassClient:
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        headers = {
-            "accept": "application/json",
-            "X-Api-Key": self.api_key
-        }
+        headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
         
         if allow_backup and "exchange" in base_params:
@@ -97,7 +93,6 @@ class CoinGlassClient:
             return {}
         raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
 
-    # ---------- 辅助函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
         if isinstance(candle, list) and len(candle) >= 5:
@@ -143,7 +138,6 @@ class CoinGlassClient:
             atrs.append(sum(trs[i-period+1:i+1]) / period)
         return atrs
 
-    # ---------- 各 API 方法 ----------
     def _get_symbol(self, base: str) -> str:
         return f"{base}-USDT-SWAP"
 
@@ -169,7 +163,13 @@ class CoinGlassClient:
 
     def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
         params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
-        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+        data = self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+        if data is not None:
+            if isinstance(data, list):
+                logger.info(f"[CVD原始数据] 返回条数: {len(data)}，首条: {data[0] if data else '空'}")
+            else:
+                logger.info(f"[CVD原始数据] 返回类型: {type(data)}，内容: {data}")
+        return data
 
     def get_option_max_pain(self, symbol: str = "BTC") -> dict:
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
@@ -195,8 +195,24 @@ class CoinGlassClient:
     def get_netflow(self, symbol: str = "BTC") -> float:
         params = {"symbol": symbol.upper()}
         data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
+        logger.info(f"[Netflow原始数据] 返回内容: {data}")
         if isinstance(data, dict):
-            return float(data.get("netflow", 0.0))
+            for field in ["netflow", "netFlow", "flow", "net_inflow", "value"]:
+                if field in data:
+                    val = data.get(field)
+                    if val is not None:
+                        logger.info(f"✅ 期货资金净流获取成功: {val}")
+                        return float(val)
+            logger.warning(f"⚠️ 期货资金净流返回数据中无已知字段，原始数据: {data}")
+            return 0.0
+        elif isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            if isinstance(latest, dict):
+                for field in ["netflow", "netFlow", "flow", "value"]:
+                    if field in latest:
+                        return float(latest.get(field, 0))
+            logger.warning(f"⚠️ 期货资金净流返回数组，无法解析，原始数据: {data[:2]}")
+        logger.warning(f"⚠️ 期货资金净流返回类型异常: {type(data)}")
         return 0.0
 
     def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
@@ -240,7 +256,6 @@ class CoinGlassClient:
         except:
             return 0.0
 
-    # ---------- 聚合数据 ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
 
@@ -272,7 +287,6 @@ class CoinGlassClient:
 
         eth_btc_ratio = self.get_eth_btc_ratio()
 
-        # 数据质量标记
         data_quality = {}
         for key in tasks.keys():
             if key == "fg":
@@ -282,7 +296,6 @@ class CoinGlassClient:
             else:
                 data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
 
-        # 解析数据
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
@@ -304,7 +317,6 @@ class CoinGlassClient:
         avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
         vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
         price_percentile = self._calc_percentile(kline_data, mark_price)
-        # 短线用15分钟ATR，简化估算为4h ATR / 4
         atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
 
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
