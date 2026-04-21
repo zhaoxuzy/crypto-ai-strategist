@@ -1,75 +1,88 @@
 import os
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Semaphore, Lock
 from utils.logger import logger
+
+class RateLimiter:
+    """全局速率限制器，确保每分钟不超过 20 次请求"""
+    def __init__(self, max_requests_per_minute: int = 20):
+        self.min_interval = 60.0 / max_requests_per_minute  # 3.0 秒
+        self._last_request_time = 0.0
+        self._lock = Lock()
+
+    def wait(self):
+        with self._lock:
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self._last_request_time = time.time()
+
 
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         if not self.api_key:
-            logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置，API 请求将失败")
+            logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置")
+        # 使用 Keystore 代理
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
-        self.primary_exchange = "OKX"
-        # 严格控制请求间隔，20 req/min = 每 3 秒一次
-        self._min_interval = 3.0
-        self._last_request_time = 0.0
-
-    def _wait_for_rate_limit(self):
-        """强制等待以保证请求间隔 ≥ 3 秒"""
-        now = time.time()
-        elapsed = now - self._last_request_time
-        if elapsed < self._min_interval:
-            sleep_time = self._min_interval - elapsed
-            logger.debug(f"速率限制等待 {sleep_time:.2f} 秒")
-            time.sleep(sleep_time)
-        self._last_request_time = time.time()
+        self.exchange = "OKX"
+        self._rate_limiter = RateLimiter(max_requests_per_minute=20)
+        # 最大并发请求数（控制突发，但速率限制由 RateLimiter 保证）
+        self._max_workers = 3
+        self._semaphore = Semaphore(self._max_workers)
 
     def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, silent_fail: bool = False) -> dict:
-        """发送单次请求，自动处理速率限制和重试"""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         current_params = params.copy() if params else {}
 
         for attempt in range(max_retries):
-            self._wait_for_rate_limit()
-            try:
-                logger.info(f"请求 CoinGlass: {endpoint} | params={current_params}")
-                resp = requests.get(url, params=current_params, headers=headers, timeout=15)
-                data = resp.json()
-                if data.get("code") in (0, "0"):
-                    return data.get("data", {})
-                else:
-                    msg = f"CoinGlass API 错误: {data.get('msg', data)}"
-                    # 如果是速率限制错误，额外等待
-                    if "rate limit" in str(msg).lower():
-                        logger.warning(f"速率限制触发，等待 10 秒...")
-                        time.sleep(10)
-                        continue
+            with self._semaphore:
+                self._rate_limiter.wait()
+                try:
+                    logger.info(f"请求 CoinGlass: {endpoint} | params={current_params}")
+                    resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                    data = resp.json()
+                    if data.get("code") in (0, "0"):
+                        return data.get("data", {})
+                    else:
+                        msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                        if "rate limit" in str(msg).lower():
+                            time.sleep(10)
+                            continue
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** (attempt + 1))
+                            continue
+                        if silent_fail:
+                            logger.warning(f"CoinGlass 数据获取失败（静默）: {msg}")
+                            return {}
+                        raise RuntimeError(msg)
+                except Exception as e:
                     if attempt < max_retries - 1:
                         time.sleep(2 ** (attempt + 1))
                         continue
                     if silent_fail:
-                        logger.warning(f"CoinGlass 数据获取失败（静默）: {msg}")
+                        logger.warning(f"CoinGlass 请求异常（静默）: {e}")
                         return {}
-                    raise RuntimeError(msg)
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** (attempt + 1))
-                    continue
-                if silent_fail:
-                    logger.warning(f"CoinGlass 请求异常（静默）: {e}")
-                    return {}
-                raise RuntimeError(f"CoinGlass 请求失败: {e}")
+                    raise RuntimeError(f"CoinGlass 请求失败: {e}")
+        return {}
 
+    # ---------- 辅助函数 ----------
     @staticmethod
     def _get_close_from_candle(candle) -> float:
-        if isinstance(candle, list) and len(candle) >= 5: return float(candle[4])
-        elif isinstance(candle, dict): return float(candle.get("close", 0))
+        if isinstance(candle, list) and len(candle) >= 5:
+            return float(candle[4])
+        elif isinstance(candle, dict):
+            return float(candle.get("close", 0))
         return 0.0
 
     @staticmethod
     def _calc_percentile(history: list, current: float) -> float:
-        if not history: return 50.0
+        if not history:
+            return 50.0
         values = [CoinGlassClient._get_close_from_candle(item) for item in history]
         values.sort()
         rank = sum(1 for v in values if v < current)
@@ -77,7 +90,8 @@ class CoinGlassClient:
 
     @staticmethod
     def _calc_slope(series: list) -> float:
-        if len(series) < 2: return 0.0
+        if len(series) < 2:
+            return 0.0
         n = len(series)
         x_mean = (n - 1) / 2
         y_mean = sum(series) / n
@@ -85,29 +99,30 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
-    # ---------- API 方法（全部串行调用，无内部重试交易所切换）----------
+    # ---------- API 方法 ----------
     def get_kline_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": symbol, "interval": interval, "limit": limit}
+        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, silent_fail=True)
 
     def get_oi_ohlc_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": symbol, "interval": interval, "limit": limit}
+        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        """官方端点: /api/futures/funding-rate/oi-weight-ohlc-history"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
+        return self._request("api/futures/funding-rate/oi-weight-ohlc-history", params, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTCUSDT"):
-        params = {"exchange": self.primary_exchange, "symbol": symbol, "range": "3d"}
+        params = {"exchange": self.exchange, "symbol": symbol, "range": "3d"}
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.primary_exchange, "symbol": symbol, "interval": interval, "limit": limit}
+        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/top-long-short-position-ratio/history", params, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 240):
-        params = {"exchange": self.primary_exchange, "symbol": symbol, "interval": interval, "limit": limit}
+        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
@@ -130,27 +145,47 @@ class CoinGlassClient:
         except:
             return 0.0
 
+    # ---------- 聚合数据（并行请求） ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
         usdt_symbol = f"{base_symbol}USDT"
-    data_quality = {
-    "funding_rate": {"status": "success", "source": "api"},
-    "max_pain": {"status": "failed", "fallback": 0.0, "reason": "rate_limit"},
-    "fear_greed": {"status": "fallback", "fallback": 50, "reason": "empty_response"},
-    # ... 其他指标
-    }
-        # 串行获取所有数据（每个请求间隔 ≥ 3 秒）
-        kline_data = self.get_kline_history(usdt_symbol, "4h", 168)
-        oi_data = self.get_oi_ohlc_history(usdt_symbol, "4h", 168)
-        funding_data = self.get_weighted_funding_rate_history(base_symbol, "4h", 168)
-        heatmap_raw = self.get_liquidation_heatmap(usdt_symbol)
-        top_ls_data = self.get_top_long_short_ratio_history(usdt_symbol, "4h", 168)
-        cvd_data = self.get_cvd_history(usdt_symbol, "1m", 240)
-        max_pain_data = self.get_option_max_pain(base_symbol)
-        fg_data = self.get_fear_and_greed_index()
+
+        # 定义任务（共 9 个独立请求）
+        tasks = {
+            "kline": lambda: self.get_kline_history(usdt_symbol, "4h", 168),
+            "oi": lambda: self.get_oi_ohlc_history(usdt_symbol, "4h", 168),
+            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
+            "heatmap": lambda: self.get_liquidation_heatmap(usdt_symbol),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(usdt_symbol, "4h", 168),
+            "cvd": lambda: self.get_cvd_history(usdt_symbol, "1m", 240),
+            "max_pain": lambda: self.get_option_max_pain(base_symbol),
+            "fg": lambda: self.get_fear_and_greed_index(),
+        }
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            futures = {executor.submit(task): key for key, task in tasks.items()}
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    logger.error(f"获取 {key} 失败: {e}")
+                    results[key] = None
+
+        # ETH/BTC 汇率需要额外请求（已通过 kline 获取，但 eth_btc 会发起两次新请求，此处顺序执行以控制速率）
         eth_btc_ratio = self.get_eth_btc_ratio()
 
-        # 计算衍生指标
+        # 解析数据
+        kline_data = results.get("kline", [])
+        oi_data = results.get("oi", [])
+        funding_data = results.get("funding", [])
+        top_ls_data = results.get("top_ls", [])
+        cvd_data = results.get("cvd", [])
+        heatmap_raw = results.get("heatmap", {})
+        max_pain_data = results.get("max_pain", {})
+        fg_data = results.get("fg", {"current": 50, "prev": 50})
+
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
         atr = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
