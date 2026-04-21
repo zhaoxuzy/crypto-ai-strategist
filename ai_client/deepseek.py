@@ -1,134 +1,421 @@
 import os
-import json
-from openai import OpenAI
+import time
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Semaphore
 from utils.logger import logger
 
+class RateLimiter:
+    """简单的速率限制器，确保最小间隔"""
+    def __init__(self, min_interval: float = 1.5):
+        self.min_interval = min_interval
+        self._last_request_time = 0.0
 
-def build_prompt(data: dict, symbol: str) -> str:
-    timestamp = data.get("timestamp", "N/A")
-    current = data['mark_price']
-    above_cluster = data.get('above_cluster', 'N/A')
-    below_cluster = data.get('below_cluster', 'N/A')
-    
-    above_distance = "N/A"
-    below_distance = "N/A"
-    if above_cluster != 'N/A' and '-' in above_cluster:
-        above_high = float(above_cluster.split('-')[1])
-        above_distance = f"{above_high - current:.0f}"
-    if below_cluster != 'N/A' and '-' in below_cluster:
-        below_low = float(below_cluster.split('-')[0])
-        below_distance = f"{current - below_low:.0f}"
-
-    prompt = f"""你是一位管理 200 万 U 的顶尖加密货币短线交易员。请基于以下数据，按照你的专业思维框架，完成一次完整的交易决策推理。
-
-【市场数据 | {symbol} | {timestamp}】
-
-价格：{current:.2f}
-15min ATR：{data['atr_15m']:.2f}
-
-清算池：
-- 上方空头清算：{data['above_liq']/1e9:.2f}B，密集区 {above_cluster}，距现价 +{above_distance}
-- 下方多头清算：{data['below_liq']/1e9:.2f}B，密集区 {below_cluster}，距现价 -{below_distance}
-
-订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M，失衡率 {data['orderbook_imbalance']:.4f}
-
-持仓与情绪：
-- 资金费率 {data['funding_rate']:.4f}%（7日分位 {data['funding_percentile']:.0f}%）
-- OI {data['oi']/1e9:.2f}B（7日分位 {data['oi_percentile']:.0f}%），24h变化 {data['oi_change_24h']:+.1f}%
-- 顶级交易员多空比 {data['top_ls_ratio']:.2f}（7日分位 {data['top_ls_percentile']:.0f}%）
-
-资金流向：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M USDT
-
----
-请按照你作为顶尖交易员的思维习惯，依次回答以下六个问题（每个问题必须给出明确结论和依据）：
-
-1. 当前价格处于什么位置？上下方哪个流动性池子对你更有吸引力？为什么？
-
-2. 现在市场拥挤吗？持仓量、资金费率、顶级交易员持仓给你什么信号？谁在犯错？
-
-3. CVD 和资金净流向告诉你什么？主动买盘还是卖盘在主导？是否与你的方向预期一致？
-
-4. 如果你要开仓，止损应该设在哪里？为什么放在那个位置？与 ATR 的关系是什么？
-
-5. 这单的潜在盈亏比大概多少？在你的标准下是否值得出手？仓位怎么配？
-
-6. 如果市场没有按你的预期走，第一个危险信号会是什么？你会如何应对？
-
----
-输出 JSON 格式（不要代码块）：
-{{
-  "direction": "long/short/neutral",
-  "confidence": "high/medium/low",
-  "position_size": "light/medium/heavy/none",
-  "entry_price_low": 0.0,
-  "entry_price_high": 0.0,
-  "stop_loss": 0.0,
-  "take_profit": 0.0,
-  "execution_plan": "一句话：方向、区间、止损、止盈、仓位、预计持仓时间。",
-  "reasoning": "【1】...\\n【2】...\\n【3】...\\n【4】...\\n【5】...\\n【6】...",
-  "risk_note": "最坏情况下的应对预案。"
-}}
-"""
-    return prompt
+    def wait(self):
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self._last_request_time = time.time()
 
 
-def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
-    for attempt in range(max_retries):
+class CoinGlassClient:
+    def __init__(self):
+        self.api_key = os.getenv("COINGLASS_API_KEY", "")
+        self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
+        self.primary_exchange = "OKX"
+        self.backup_exchanges = ["Binance"]
+        self._rate_limiter = RateLimiter(min_interval=1.5)
+        self._semaphore = Semaphore(8)
+
+    def _request(self, endpoint: str, params: dict = None, max_retries: int = 3, allow_backup: bool = True, silent_fail: bool = False) -> dict:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        headers = {
+            "accept": "application/json",
+            "X-Api-Key": self.api_key
+        }
+        base_params = params.copy() if params else {}
+        
+        if allow_backup and "exchange" in base_params:
+            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
+        else:
+            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)]
+
+        last_error = None
+
+        for exchange in exchanges_to_try:
+            current_params = base_params.copy()
+            if exchange is not None and "exchange" in current_params:
+                current_params["exchange"] = exchange
+
+            for attempt in range(max_retries):
+                with self._semaphore:
+                    self._rate_limiter.wait()
+                    try:
+                        logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')} | params={current_params}")
+                        resp = requests.get(url, params=current_params, headers=headers, timeout=15)
+                        data = resp.json()
+                        if data.get("code") in (0, "0"):
+                            return data.get("data", {})
+                        else:
+                            msg = f"CoinGlass API 错误: {data.get('msg', data)}"
+                            last_error = msg
+                            if attempt < max_retries - 1:
+                                if "rate limit" in str(msg).lower():
+                                    wait_time = 10 * (attempt + 1)
+                                else:
+                                    wait_time = 2 ** (attempt + 1)
+                                logger.warning(f"{msg}，{wait_time}秒后重试...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                logger.warning(f"{exchange} 重试{max_retries}次后仍失败: {msg}")
+                                break
+                    except requests.exceptions.Timeout as e:
+                        last_error = f"请求超时: {e}"
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"请求超时，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍超时")
+                            break
+                    except Exception as e:
+                        last_error = f"请求异常: {e}"
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** (attempt + 1)
+                            logger.warning(f"请求异常，{wait_time}秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"{exchange} 重试{max_retries}次后仍异常")
+                            break
+
+        if silent_fail:
+            logger.warning(f"CoinGlass 数据获取失败（静默）: {last_error}")
+            return {}
+        raise RuntimeError(f"CoinGlass 数据获取失败: {last_error}")
+
+    # ---------- 辅助函数 ----------
+    @staticmethod
+    def _get_close_from_candle(candle) -> float:
+        if isinstance(candle, list) and len(candle) >= 5:
+            return float(candle[4])
+        elif isinstance(candle, dict):
+            return float(candle.get("close", 0))
+        return 0.0
+
+    @staticmethod
+    def _calc_percentile(history: list, current: float) -> float:
+        if not history:
+            return 50.0
+        values = [CoinGlassClient._get_close_from_candle(item) for item in history]
+        values.sort()
+        rank = sum(1 for v in values if v < current)
+        return round((rank / len(values)) * 100, 2)
+
+    @staticmethod
+    def _calc_slope(series: list) -> float:
+        if len(series) < 2:
+            return 0.0
+        n = len(series)
+        x_mean = (n - 1) / 2
+        y_mean = sum(series) / n
+        numerator = sum((i - x_mean) * (series[i] - y_mean) for i in range(n))
+        denominator = sum((i - x_mean) ** 2 for i in range(n))
+        return numerator / denominator if denominator != 0 else 0.0
+
+    @staticmethod
+    def _calc_atr(closes: list, period: int = 14) -> float:
+        if len(closes) < period + 1:
+            return 0.0
+        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+        return sum(trs[-period:]) / period if len(trs) >= period else 0.0
+
+    @staticmethod
+    def _calc_atr_list(closes: list, period: int = 14) -> list:
+        if len(closes) < period + 1:
+            return []
+        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+        atrs = []
+        for i in range(period - 1, len(trs)):
+            atrs.append(sum(trs[i-period+1:i+1]) / period)
+        return atrs
+
+    # ---------- 各 API 方法 ----------
+    def _get_symbol(self, base: str) -> str:
+        return f"{base}-USDT-SWAP"
+
+    def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
+
+    def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
+
+    def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
+        return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
+
+    def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
+        return self._request("api/futures/liquidation/heatmap/model2", params, allow_backup=True, silent_fail=True)
+
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=True, silent_fail=True)
+
+    def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
+        params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
+        data = self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
+        if data is not None:
+            if isinstance(data, list):
+                logger.info(f"[CVD原始数据] 返回条数: {len(data)}，首条: {data[0] if data else '空'}")
+            else:
+                logger.info(f"[CVD原始数据] 返回类型: {type(data)}，内容: {data}")
+        return data
+
+    def get_option_max_pain(self, symbol: str = "BTC") -> dict:
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
+        data = self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
+        if data and isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            max_pain = float(latest.get("max_pain_price", 0))
+            call_oi = float(latest.get("call_open_interest", 0))
+            put_oi = float(latest.get("put_open_interest", 0))
+            put_call_ratio = put_oi / call_oi if call_oi > 0 else 0.0
+            return {"max_pain": max_pain, "put_call_ratio": round(put_call_ratio, 4)}
+        return {"max_pain": 0.0, "put_call_ratio": 0.0}
+
+    def get_fear_and_greed_index(self) -> dict:
+        data = self._request("api/index/fear-greed-history", {}, allow_backup=False, silent_fail=True)
+        if data and isinstance(data, list) and len(data) >= 8:
+            return {
+                "current": int(data[0].get("value", 50)),
+                "prev_7d": int(data[7].get("value", 50))
+            }
+        return {"current": 50, "prev_7d": 50}
+
+    def get_netflow(self, symbol: str = "BTC") -> float:
+        params = {"symbol": symbol.upper()}
+        data = self._request("api/futures/coin/netflow", params, allow_backup=False, silent_fail=True)
+        logger.info(f"[Netflow原始数据] 返回内容: {data}")
+        if isinstance(data, dict):
+            for field in ["netflow", "netFlow", "flow", "net_inflow", "value"]:
+                if field in data:
+                    val = data.get(field)
+                    if val is not None:
+                        logger.info(f"✅ 期货资金净流获取成功: {val}")
+                        return float(val)
+            logger.warning(f"⚠️ 期货资金净流返回数据中无已知字段，原始数据: {data}")
+            return 0.0
+        elif isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            if isinstance(latest, dict):
+                for field in ["netflow", "netFlow", "flow", "value"]:
+                    if field in latest:
+                        return float(latest.get(field, 0))
+            logger.warning(f"⚠️ 期货资金净流返回数组，无法解析，原始数据: {data[:2]}")
+        logger.warning(f"⚠️ 期货资金净流返回类型异常: {type(data)}")
+        return 0.0
+
+    def get_orderbook_imbalance(self, symbol: str = "BTC") -> dict:
         try:
-            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
-            resp = client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000
-            )
-            content = resp.choices[0].message.content
-            logger.info(f"DeepSeek Reasoner 响应成功，原始内容长度: {len(content)}")
-
-            json_str = None
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.find("```", start)
-                if end != -1:
-                    json_str = content[start:end].strip()
-            if not json_str:
-                start = content.find('{')
-                end = content.rfind('}') + 1
-                if start != -1 and end > start:
-                    json_str = content[start:end]
-            if not json_str:
-                logger.warning(f"DeepSeek Reasoner 返回无有效 JSON")
-                if attempt == max_retries - 1:
-                    raise ValueError("无法提取 JSON")
-                continue
-
-            s = json.loads(json_str)
-            s.setdefault("position_size", "none")
-            s.setdefault("execution_plan", "")
-            s.setdefault("risk_note", "")
-            return s
+            params = {"exchange": self.primary_exchange, "symbol": self._get_symbol(symbol), "interval": "1m", "limit": 1}
+            data = self._request("api/futures/orderbook/ask-bids-history", params, allow_backup=True, silent_fail=True)
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+                bids_usd = float(latest.get("bids_usd", 0))
+                asks_usd = float(latest.get("asks_usd", 0))
+                total = bids_usd + asks_usd
+                if total > 0:
+                    imbalance = (bids_usd - asks_usd) / total
+                    return {"bids_usd": bids_usd, "asks_usd": asks_usd, "imbalance": round(imbalance, 4)}
+            return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
         except Exception as e:
-            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                raise
-    return {}
+            logger.warning(f"获取订单簿失衡率失败: {e}")
+            return {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0}
 
+    def get_exchange_btc_balance(self) -> dict:
+        data = self._request("api/exchange/balance/list", {"symbol": "BTC"}, allow_backup=False, silent_fail=True)
+        if data and isinstance(data, list):
+            total = sum(float(ex.get("balance", 0)) for ex in data)
+            change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
+            prev_total = total - change_24h
+            change_pct = (change_24h / prev_total * 100) if prev_total > 0 else 0.0
+            return {"total_btc": total, "change_24h": change_24h, "change_pct": change_pct}
+        return {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0}
 
-def validate_strategy(s: dict) -> tuple[bool, str]:
-    direction = s.get("direction")
-    if direction not in ["long", "short", "neutral"]:
-        return False, f"无效方向: {direction}"
-    if direction == "neutral":
-        return True, ""
-    try:
-        entry_low = float(s.get("entry_price_low", 0))
-        entry_high = float(s.get("entry_price_high", 0))
-        stop = float(s.get("stop_loss", 0))
-        tp = float(s.get("take_profit", 0))
-        if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
-            return False, "价格必须为正数"
-        if entry_low > entry_high:
-            return False, "入场区间下限大于上限"
-    except:
-        return False, "数值解析失败"
-    return True, ""
+    def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
+
+    def get_eth_btc_ratio(self) -> float:
+        try:
+            eth = self.get_kline_history("ETH", "4h", 1)
+            btc = self.get_kline_history("BTC", "4h", 1)
+            eth_close = self._get_close_from_candle(eth[0]) if eth else 0
+            btc_close = self._get_close_from_candle(btc[0]) if btc else 1
+            return eth_close / btc_close if btc_close > 0 else 0.0
+        except:
+            return 0.0
+
+    # ---------- 聚合数据 ----------
+    def get_all_data(self, symbol: str = "BTC") -> dict:
+        base_symbol = symbol.upper()
+
+        tasks = {
+            "kline": lambda: self.get_kline_history(base_symbol, "4h", 168),
+            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", 168),
+            "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
+            "heatmap": lambda: self.get_liquidation_heatmap(base_symbol),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", 168),
+            "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
+            "max_pain": lambda: self.get_option_max_pain(base_symbol),
+            "fg": lambda: self.get_fear_and_greed_index(),
+            "netflow": lambda: self.get_netflow(base_symbol),
+            "orderbook": lambda: self.get_orderbook_imbalance(base_symbol),
+            "exchange_btc": lambda: self.get_exchange_btc_balance(),
+            "agg_oi": lambda: self.get_aggregated_oi_history(base_symbol, "4h", 168),
+        }
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_key = {executor.submit(task): key for key, task in tasks.items()}
+            for future in as_completed(future_to_key):
+                key = future_to_key[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    logger.error(f"获取 {key} 失败: {e}")
+                    results[key] = None
+
+        eth_btc_ratio = self.get_eth_btc_ratio()
+
+        # 数据质量标记
+        data_quality = {}
+        for key in tasks.keys():
+            if key == "fg":
+                data_quality["恐慌贪婪指数"] = "✅" if results.get(key) else "⚠️ 回退"
+            elif key == "exchange_btc":
+                data_quality["交易所BTC余额"] = "✅" if results.get(key) else "⚠️ 回退"
+            else:
+                data_quality[key] = "✅" if results.get(key) else "❌ 缺失"
+
+        # 解析数据
+        kline_data = results.get("kline", [])
+        oi_data = results.get("oi", [])
+        funding_data = results.get("funding", [])
+        top_ls_data = results.get("top_ls", [])
+        cvd_data = results.get("cvd", [])
+        heatmap_raw = results.get("heatmap", {})
+        max_pain_data = results.get("max_pain", {})
+        max_pain = max_pain_data.get("max_pain", 0.0)
+        put_call_ratio = max_pain_data.get("put_call_ratio", 0.0)
+        fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
+        netflow = results.get("netflow", 0.0)
+        orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
+        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0})
+        agg_oi_data = results.get("agg_oi", [])
+
+        mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
+        closes = [self._get_close_from_candle(k) for k in kline_data]
+        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
+        avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
+        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
+        price_percentile = self._calc_percentile(kline_data, mark_price)
+        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
+
+        above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
+        if heatmap_raw:
+            y_axis = heatmap_raw.get("y_axis", [])
+            liq_data = heatmap_raw.get("liquidation_leverage_data", [])
+            pain_map = {}
+            for item in liq_data:
+                if isinstance(item, list) and len(item) >= 3:
+                    price = float(y_axis[int(item[1])]) if int(item[1]) < len(y_axis) else 0
+                    intensity = float(item[2])
+                    if price > mark_price: above_liq += intensity
+                    elif price < mark_price: below_liq += intensity
+                    pain_map[price] = intensity
+            liq_ratio = above_liq / below_liq if below_liq > 0 else 0.0
+            if pain_map:
+                above_prices = [p for p in pain_map if p > mark_price]
+                below_prices = [p for p in pain_map if p < mark_price]
+                if above_prices:
+                    max_above = max(above_prices, key=lambda p: pain_map[p])
+                    above_cluster = f"{max_above*0.99:.0f}-{max_above*1.01:.0f}"
+                if below_prices:
+                    max_below = max(below_prices, key=lambda p: pain_map[p])
+                    below_cluster = f"{max_below*0.99:.0f}-{max_below*1.01:.0f}"
+
+        oi_current = self._get_close_from_candle(oi_data[-1]) if oi_data else 0.0
+        oi_percentile = self._calc_percentile(oi_data, oi_current)
+        oi_change_24h = 0.0
+        if len(oi_data) >= 6:
+            oi_24h_ago = self._get_close_from_candle(oi_data[-6])
+            oi_change_24h = (oi_current - oi_24h_ago) / oi_24h_ago * 100 if oi_24h_ago > 0 else 0.0
+
+        funding_current = self._get_close_from_candle(funding_data[-1]) if funding_data else 0.0
+        funding_percentile = self._calc_percentile(funding_data, funding_current)
+
+        top_ls_current = 0.0
+        if top_ls_data and isinstance(top_ls_data, list) and len(top_ls_data) > 0:
+            latest = top_ls_data[-1]
+            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
+                top_ls_current = float(latest.get("top_position_long_short_ratio", 0))
+            else:
+                top_ls_current = self._get_close_from_candle(latest)
+        top_ls_percentile = self._calc_percentile(top_ls_data, top_ls_current) if top_ls_data else 50.0
+
+        cvd_series = [self._get_close_from_candle(c) for c in cvd_data] if cvd_data else []
+        cvd_mean = sum(cvd_series) / len(cvd_series) / 1e6 if cvd_series else 0.0
+        cvd_slope = self._calc_slope(cvd_series)
+
+        agg_oi_current = self._get_close_from_candle(agg_oi_data[-1]) if agg_oi_data else 0.0
+        agg_oi_change_24h = 0.0
+        if len(agg_oi_data) >= 6:
+            agg_oi_24h_ago = self._get_close_from_candle(agg_oi_data[-6])
+            agg_oi_change_24h = (agg_oi_current - agg_oi_24h_ago) / agg_oi_24h_ago * 100 if agg_oi_24h_ago > 0 else 0.0
+
+        fear_greed = fg_data.get("current", 50)
+        fear_greed_prev_7d = fg_data.get("prev_7d", 50)
+
+        return {
+            "mark_price": mark_price,
+            "atr": atr_4h,
+            "atr_15m": atr_15m,
+            "vol_factor": vol_factor,
+            "price_percentile": price_percentile,
+            "above_liq": above_liq,
+            "below_liq": below_liq,
+            "liq_ratio": liq_ratio,
+            "above_cluster": above_cluster,
+            "below_cluster": below_cluster,
+            "max_pain": max_pain,
+            "put_call_ratio": put_call_ratio,
+            "top_ls_ratio": top_ls_current,
+            "top_ls_percentile": top_ls_percentile,
+            "funding_rate": funding_current,
+            "funding_percentile": funding_percentile,
+            "oi": oi_current,
+            "oi_percentile": oi_percentile,
+            "oi_change_24h": oi_change_24h,
+            "agg_oi": agg_oi_current,
+            "agg_oi_change_24h": agg_oi_change_24h,
+            "cvd_mean": cvd_mean,
+            "cvd_slope": cvd_slope,
+            "fear_greed": fear_greed,
+            "fear_greed_prev_7d": fear_greed_prev_7d,
+            "eth_btc_ratio": eth_btc_ratio,
+            "netflow": netflow,
+            "orderbook_bids": orderbook.get("bids_usd", 0.0),
+            "orderbook_asks": orderbook.get("asks_usd", 0.0),
+            "orderbook_imbalance": orderbook.get("imbalance", 0.0),
+            "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
+            "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
+            "exchange_btc_change_pct": exchange_btc.get("change_pct", 0.0),
+            "data_quality": data_quality
+        }
