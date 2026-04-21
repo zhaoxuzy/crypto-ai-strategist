@@ -337,18 +337,17 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
 
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=90.0)
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
     for attempt in range(max_retries):
         try:
-            logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-reasoner",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=2500
+                max_tokens=4000
             )
             content = resp.choices[0].message.content
-            logger.info(f"DeepSeek 响应成功，原始内容长度: {len(content)}")
+            logger.info(f"DeepSeek Reasoner 响应成功，原始内容长度: {len(content)}")
 
             json_str = None
             if "```json" in content:
@@ -362,7 +361,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 if start != -1 and end > start:
                     json_str = content[start:end]
             if not json_str:
-                logger.warning(f"DeepSeek 返回无有效 JSON，原始内容前200字符: {content[:200]}")
+                logger.warning(f"DeepSeek Reasoner 返回无有效 JSON，原始内容前200字符: {content[:200]}")
                 if attempt == max_retries - 1:
                     raise ValueError("无法提取 JSON")
                 continue
@@ -370,10 +369,11 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             s = json.loads(json_str)
             s.setdefault("tp_anchor", "未提供")
             s.setdefault("analysis_summary", "无分析摘要")
-            s.setdefault("trader_commentary", "")
+            s.setdefault("trader_reasoning", "")
+            s.setdefault("risk_note", "")
             return s
         except Exception as e:
-            logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
                 raise
     return {}
