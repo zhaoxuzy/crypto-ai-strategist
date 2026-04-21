@@ -45,21 +45,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     dir_text = "做多" if direction == "long" else ("做空" if direction == "short" else "观望")
     
     position_size = strategy.get("position_size", "none")
-    size_map = {"light": "轻", "medium": "中", "heavy": "重", "none": ""}
+    size_map = {"light": "轻仓", "medium": "中仓", "heavy": "重仓", "none": ""}
     size_text = size_map.get(position_size, "")
     
     confidence = strategy.get("confidence", "medium")
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     conf_text = conf_map.get(confidence, "🟡中")
 
-    # 标题行
-    title_parts = [f"{dir_emoji}{dir_text}{symbol}", now_str]
+    # 紧凑标题行：🟢 做多 BTC · 中仓 · 🟡中 · 04-21 22:32
+    title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
     if size_text:
-        title_parts.append(f"{size_text}仓")
+        title_parts.append(size_text)
     title_parts.append(conf_text)
+    title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
-    # 交易指令卡
+    # 交易指令卡（紧凑）
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -74,7 +75,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 市场快照
+    # 市场快照（两行紧凑）
     price_pct = data.get("price_percentile", 50)
     atr = data.get("atr", 0)
     vol = data.get("vol_factor", 1.0)
@@ -93,48 +94,26 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fund_pct = data.get("funding_percentile", 50)
     cvd_slope = data.get("cvd_slope", 0)
     cvd_dir = "↗" if cvd_slope > 0 else ("↘" if cvd_slope < 0 else "→")
-    max_pain = data.get("max_pain", 0)
 
     snapshot_line1 = f"📊 价格{current_price:.0f}({price_pct:.0f}%) · ATR{atr:.0f} · 波动{vol:.2f} · 清算上{above:.2f}B/下{below:.2f}B(比值{ratio:.2f})"
     snapshot_line2 = f"📖 订单簿{imb:.3f} · 净流{netflow:.1f}M · 贪婪{fg}({fg_trend}) · 顶级{top_ls:.2f} · OI{oi_chg:+.1f}%({oi_pct:.0f}%) · 费率{funding:.4f}%({fund_pct:.0f}%) · CVD{cvd_dir}"
 
-    # 数据缺失声明
-    missing_items = []
-    if max_pain == 0:
-        missing_items.append("期权最大痛点")
-    if netflow == 0:
-        missing_items.append("期货资金净流")
-    missing_text = ""
-    if missing_items:
-        missing_text = f"\n⚠️ 数据缺失：{', '.join(missing_items)}，相关分析置信度降低"
-
-    # 六步推演（确保换行对齐）
+    # 完整六步推演（确保每个步骤标题前有换行）
     reasoning = strategy.get("reasoning", "无推理过程")
-    if "【步骤" in reasoning and "\n" not in reasoning:
-        parts = re.split(r'(【步骤\d+】)', reasoning)
-        new_parts = []
-        for i, p in enumerate(parts):
-            if p.startswith("【步骤"):
-                if i > 0:
-                    new_parts.append("\n")
-                new_parts.append(p)
-            else:
-                new_parts.append(p)
-        reasoning = "".join(new_parts).strip()
+    # 如果 reasoning 中没有以换行分隔的步骤，手动格式化
+    if "【步骤" in reasoning and "\n【步骤" not in reasoning:
+        reasoning = reasoning.replace("【步骤", "\n【步骤").lstrip("\n")
+    # 确保开头不空行
+    reasoning = reasoning.strip()
 
-    # 风险提示清理
+    # 风险提示（简洁编号）
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    risk_note = re.sub(r'^主要风险[：:]\s*', '', risk_note)
-    risk_note = re.sub(r'反面情景预案[：:]', '', risk_note)
-    raw_items = re.split(r'[。；\n]', risk_note)
+    risk_items = re.split(r'[。；\n]', risk_note)
     risk_lines = []
     idx = 1
-    for item in raw_items:
+    for item in risk_items:
         item = item.strip()
-        if not item or len(item) < 3:
-            continue
-        item = re.sub(r'^\s*\d+[\.、\s]*[\)）]?\s*', '', item)
-        if item and not re.match(r'^\d+$', item):
+        if item and len(item) > 2:
             risk_lines.append(f"{idx}. {item}")
             idx += 1
     if not risk_lines:
@@ -149,7 +128,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 {param_card}
 
 {snapshot_line1}
-{snapshot_line2}{missing_text}
+{snapshot_line2}
 
 ### 🧠 六步推演
 {reasoning}
