@@ -156,7 +156,8 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
+        # 该端点不需要 exchange，但某些代理可能需要，我们加上 exchange 以兼容
+        params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
     def get_liquidation_heatmap(self, symbol: str = "BTC"):
@@ -172,8 +173,8 @@ class CoinGlassClient:
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC") -> dict:
-        """返回期权最大痛点及Put/Call Ratio"""
-        params = {"symbol": symbol.upper()}
+        """返回期权最大痛点及Put/Call Ratio，需要 exchange 参数"""
+        params = {"exchange": "Deribit", "symbol": symbol.upper()}
         data = self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) > 0:
             latest = data[0]
