@@ -6,6 +6,7 @@ from threading import Semaphore
 from utils.logger import logger
 
 class RateLimiter:
+    """简单的速率限制器，确保最小间隔"""
     def __init__(self, min_interval: float = 3.0):
         self.min_interval = min_interval
         self._last_request_time = 0.0
@@ -132,7 +133,7 @@ class CoinGlassClient:
 
     def get_top_long_short_ratio_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
-        return self._request("api/futures/top-long-short-position-ratio/history", params, allow_backup=False)
+        return self._request("api/futures/top-long-short-account-ratio/history", params, allow_backup=False)
 
     def get_options_info(self, symbol: str = "BTC"):
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
@@ -147,28 +148,8 @@ class CoinGlassClient:
         return self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
 
     def get_cvd_history(self, symbol: str = "BTC"):
-        aggregated_params = {
-            "exchange_list": "OKX",
-            "symbol": symbol.upper(),
-            "interval": "15m",
-            "limit": 12
-        }
-        logger.info(f"尝试聚合CVD接口，参数: {aggregated_params}")
-        data = self._request("api/futures/aggregated-cvd/history", aggregated_params, allow_backup=False, silent_fail=True)
-        if data and isinstance(data, list) and len(data) > 0:
-            first_item = data[0]
-            if isinstance(first_item, dict) and "cum_vol_delta" in first_item:
-                logger.info(f"{symbol} 聚合CVD接口成功，数据条数: {len(data)}")
-                return data
-
-        logger.warning(f"{symbol} 聚合CVD接口失败或返回无效，回退到旧合约CVD接口")
-        futures_params = {
-            "exchange": "OKX",
-            "symbol": f"{symbol}-USDT-SWAP",
-            "interval": "15m",
-            "limit": 12
-        }
-        return self._request("api/futures/cvd/history", futures_params, allow_backup=True, silent_fail=True)
+        params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1m", "limit": 60}
+        return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     def get_net_position_history(self, symbol: str = "BTC"):
         params = {"exchange": "OKX", "symbol": f"{symbol}-USDT-SWAP", "interval": "1h", "limit": 24}
@@ -239,7 +220,7 @@ class CoinGlassClient:
             logger.warning(f"获取交易所余额失败: {e}")
             return {"btc_flow": "neutral", "stable_flow": "neutral", "btc_change": 0.0, "stable_change": 0.0}
 
-    # ---------- 恐惧贪婪指数 ----------
+    # ---------- 因子一：恐惧贪婪指数 ----------
     def get_fear_greed_index(self) -> dict:
         try:
             import requests as req
@@ -429,18 +410,6 @@ class CoinGlassClient:
         return 0.0
 
     @staticmethod
-    def _get_ratio_from_item(item) -> float:
-        if isinstance(item, dict):
-            for key in ["longShortAccountRatio", "global_account_long_short_ratio", "ratio", "value", "close"]:
-                if key in item:
-                    return float(item[key])
-        elif isinstance(item, list) and len(item) >= 5:
-            return float(item[4])
-        elif isinstance(item, (int, float)):
-            return float(item)
-        return 0.0
-
-    @staticmethod
     def _get_buy_sell_volumes(candle):
         if isinstance(candle, dict):
             return float(candle.get("taker_buy_volume_usd", 0)), float(candle.get("taker_sell_volume_usd", 0))
@@ -451,6 +420,16 @@ class CoinGlassClient:
         if isinstance(candle, dict):
             return float(candle.get("aggregated_buy_volume_usd", 0)), float(candle.get("aggregated_sell_volume_usd", 0))
         return 0.0, 0.0
+
+    @staticmethod
+    def _calc_ema(data: list, period: int) -> float:
+        if len(data) < period:
+            return sum(data) / len(data)
+        k = 2 / (period + 1)
+        ema = sum(data[:period]) / period
+        for price in data[period:]:
+            ema = price * k + ema * (1 - k)
+        return ema
 
     def calculate_volatility_factor(self, symbol: str = "BTC", current_atr: float = None, klines: list = None) -> float:
         if not klines or len(klines) < 20 or current_atr is None:
@@ -474,7 +453,7 @@ class CoinGlassClient:
             "oi": lambda: self.get_open_interest_history(symbol),
             "funding": lambda: self.get_funding_rate_history(symbol),
             "ls": lambda: self.get_long_short_ratio_history(symbol),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(symbol),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(symbol) if symbol.upper() in ("BTC", "ETH") else None,
             "options": lambda: self.get_options_info(symbol),
             "taker": lambda: self.get_taker_volume_history(symbol),
             "max_pain": lambda: self.get_option_max_pain(symbol),
@@ -541,24 +520,22 @@ class CoinGlassClient:
             data["funding_rate"] = "N/A"
 
         ls_history = results.get("ls")
-        ls_series = []
-        ls_valid = False
-        if ls_history and isinstance(ls_history, list):
-            for item in ls_history[-6:]:
-                val = self._get_ratio_from_item(item)
-                if val != 0:
-                    ls_valid = True
-                ls_series.append(round(val, 2))
-        if not ls_valid:
-            logger.warning(f"多空账户人数比序列全为0或无效，数据长度: {len(ls_history) if ls_history else 0}")
+        if ls_history and len(ls_history) > 0:
+            ls_ratio = self._get_close_from_candle(ls_history[-1])
+            data["long_short_ratio"] = ls_ratio
+            data["ls_account_ratio"] = ls_ratio
         else:
-            logger.info(f"多空账户人数比解析成功，序列: {ls_series}")
+            data["long_short_ratio"] = "N/A"
+            data["ls_account_ratio"] = "N/A"
 
-        top_ls = results.get("top_ls")
-        if top_ls and isinstance(top_ls, list) and len(top_ls) > 0:
-            latest = top_ls[-1]
-            if isinstance(latest, dict) and "top_position_long_short_ratio" in latest:
-                data["top_long_short_ratio"] = round(float(latest["top_position_long_short_ratio"]), 2)
+        if symbol.upper() in ("BTC", "ETH"):
+            top_ls = results.get("top_ls")
+            if top_ls and len(top_ls) > 0:
+                latest = top_ls[-1]
+                if isinstance(latest, dict):
+                    data["top_long_short_ratio"] = latest.get("top_account_long_short_ratio", "N/A")
+                else:
+                    data["top_long_short_ratio"] = "N/A"
             else:
                 data["top_long_short_ratio"] = "N/A"
         else:
@@ -598,45 +575,39 @@ class CoinGlassClient:
             data["skew"] = "N/A"
 
         cvd_history = results.get("cvd")
-        cvd_series = []
-        cvd_valid = False
-        if cvd_history and isinstance(cvd_history, list) and len(cvd_history) > 0:
-            first_item = cvd_history[0]
-            if isinstance(first_item, dict) and "cum_vol_delta" in first_item:
-                for item in cvd_history:
-                    val = float(item.get("cum_vol_delta", 0))
-                    if val != 0:
-                        cvd_valid = True
-                    cvd_series.append(round(val / 1000, 0))
-            elif isinstance(first_item, list) and len(first_item) >= 5:
-                for item in cvd_history:
-                    if isinstance(item, list) and len(item) >= 5:
-                        val = float(item[4])
-                        if val != 0:
-                            cvd_valid = True
-                        cvd_series.append(round(val / 1000, 0))
-
-        # 优化后的 CVD 信号计算（基于原始序列，减少 N/A）
-        cvd_signal = "N/A"
-        if cvd_valid and cvd_series:
-            recent = cvd_series[-6:] if len(cvd_series) >= 6 else cvd_series
-            if recent:
-                net_change = recent[-1] - recent[0]
-                if net_change > 100:
-                    cvd_signal = "bullish"
-                elif net_change < -100:
-                    cvd_signal = "bearish"
-                else:
-                    last_val = cvd_series[-1]
-                    if last_val > 0:
-                        cvd_signal = "positive"
-                    elif last_val < 0:
-                        cvd_signal = "negative"
+        if cvd_history and len(cvd_history) >= 30:
+            recent = cvd_history[-30:]
+            values = []
+            for item in recent:
+                if isinstance(item, list) and len(item) >= 5:
+                    values.append(float(item[4]))
+                elif isinstance(item, dict):
+                    values.append(float(item.get("close", 0)))
+            if len(values) >= 2:
+                n = len(values)
+                x_mean = (n - 1) / 2
+                y_mean = sum(values) / n
+                numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
+                denominator = sum((i - x_mean) ** 2 for i in range(n))
+                if denominator != 0:
+                    slope = numerator / denominator
+                    data["cvd_slope"] = round(slope, 4)
+                    if slope > 10:
+                        data["cvd_signal"] = "bullish"
+                    elif slope > 2:
+                        data["cvd_signal"] = "slightly_bullish"
+                    elif slope < -10:
+                        data["cvd_signal"] = "bearish"
+                    elif slope < -2:
+                        data["cvd_signal"] = "slightly_bearish"
                     else:
-                        cvd_signal = "neutral"
+                        data["cvd_signal"] = "neutral"
+                else:
+                    data["cvd_signal"] = "N/A"
             else:
-                cvd_signal = "neutral"
-        data["cvd_signal"] = cvd_signal
+                data["cvd_signal"] = "N/A"
+        else:
+            data["cvd_signal"] = "N/A"
 
         net_pos = results.get("net_pos")
         if net_pos and len(net_pos) > 0:
@@ -713,19 +684,7 @@ class CoinGlassClient:
 
         # --- 为 AI 准备原始数据视图 (raw_view) ---
         raw_view = {}
-        # 在 raw_view 构建部分增加 15 分钟 EMA 及斜率
-        ema15_val = "N/A"
-        ema15_slope_val = "N/A"
-        if klines and len(klines) >= 15:
-    # 取最近15根4小时K线的收盘价计算15周期EMA（近似15分钟级别）
-        closes = [self._get_close_from_candle(k) for k in klines[-15:]]
-        ema15 = self._calc_ema(closes, 15)
-        ema15_val = f"{ema15:.2f}"
-        if len(closes) >= 16:
-        prev_ema = self._calc_ema(closes[:-1], 15)
-        ema15_slope_val = f"{(ema15 - prev_ema) / prev_ema * 100:.2f}%"
-        raw_view["ema15"] = ema15_val
-        raw_view["ema15_slope"] = ema15_slope_val
+
         if heatmap_raw:
             liq_view = self._extract_liquidation_profile(
                 heatmap_raw, current_price, atr if atr else (current_price * 0.02)
@@ -736,12 +695,35 @@ class CoinGlassClient:
             raw_view["liquidation_profile"] = []
             raw_view["top_3_liquidation_zones"] = []
 
+        # CVD 序列（检查有效性）
+        cvd_series = []
+        cvd_valid = False
+        if cvd_history and isinstance(cvd_history, list):
+            for item in cvd_history[-60:]:
+                val = 0.0
+                if isinstance(item, list) and len(item) >= 5:
+                    val = float(item[4])
+                elif isinstance(item, dict):
+                    val = float(item.get("close", 0))
+                if val != 0:
+                    cvd_valid = True
+                cvd_series.append(round(val / 1000, 0))
         raw_view["cvd_valid"] = cvd_valid
         raw_view["cvd_series_1m"] = cvd_series if cvd_valid else []
 
+        # 多空比序列（检查有效性）
+        ls_series = []
+        ls_valid = False
+        if ls_history and isinstance(ls_history, list):
+            for item in ls_history[-6:]:
+                val = self._get_close_from_candle(item)
+                if val != 0:
+                    ls_valid = True
+                ls_series.append(round(val, 2))
         raw_view["ls_valid"] = ls_valid
         raw_view["ls_ratio_series_1h"] = ls_series if ls_valid else []
 
+        # 主动买卖比率序列
         taker_series = []
         if taker and isinstance(taker, list):
             for item in taker[-6:]:
@@ -752,6 +734,19 @@ class CoinGlassClient:
                 else:
                     taker_series.append(0.5)
         raw_view["taker_ratio_series_1h"] = taker_series
+
+        # --- 新增：15分钟 EMA 及斜率 ---
+        ema15_val = "N/A"
+        ema15_slope_val = "N/A"
+        if klines and len(klines) >= 15:
+            closes = [self._get_close_from_candle(k) for k in klines[-15:]]
+            ema15 = self._calc_ema(closes, 15)
+            ema15_val = f"{ema15:.2f}"
+            if len(closes) >= 16:
+                prev_ema = self._calc_ema(closes[:-1], 15)
+                ema15_slope_val = f"{(ema15 - prev_ema) / prev_ema * 100:.2f}%"
+        raw_view["ema15"] = ema15_val
+        raw_view["ema15_slope"] = ema15_slope_val
 
         data["raw_view"] = raw_view
 
