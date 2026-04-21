@@ -14,48 +14,47 @@ def build_prompt(data: dict, symbol: str) -> str:
     below_distance = "N/A"
     if above_cluster != 'N/A' and '-' in above_cluster:
         above_high = float(above_cluster.split('-')[1])
-        above_distance = f"{above_high - current:.0f}"
+        above_distance = f"+{above_high - current:.0f}"
     if below_cluster != 'N/A' and '-' in below_cluster:
         below_low = float(below_cluster.split('-')[0])
-        below_distance = f"{current - below_low:.0f}"
+        below_distance = f"-{current - below_low:.0f}"
 
-    prompt = f"""你是一位管理 200 万 U 的顶尖加密货币短线交易员。请基于以下数据，按照你的专业思维框架，完成一次完整的交易决策推理。
+    data_quality = data.get("data_quality", {})
+    missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
+    missing_str = "、".join(missing) if missing else "无"
 
-【市场数据 | {symbol} | {timestamp}】
+    prompt = f"""你是业内公认的顶尖加密货币短线交易员，管理着 200 万 U 的自有资金。你的每一笔交易都基于对市场微观结构的深刻理解。现在，你面前是一份实时市场数据。请以你的专业习惯，快速扫描，然后给出你的判断。
+
+【{symbol} | {timestamp}】
 
 价格：{current:.2f}
-15min ATR：{data['atr_15m']:.2f}
+15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
 
 清算池：
-- 上方空头清算：{data['above_liq']/1e9:.2f}B，密集区 {above_cluster}，距现价 +{above_distance}
-- 下方多头清算：{data['below_liq']/1e9:.2f}B，密集区 {below_cluster}，距现价 -{below_distance}
+- 上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
+- 下方(多头)：{data['below_liq']/1e9:.2f}B，{below_cluster} (距{below_distance})
+- 比值：{data['liq_ratio']:.3f}
 
 订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M，失衡率 {data['orderbook_imbalance']:.4f}
 
 持仓与情绪：
-- 资金费率 {data['funding_rate']:.4f}%（7日分位 {data['funding_percentile']:.0f}%）
-- OI {data['oi']/1e9:.2f}B（7日分位 {data['oi_percentile']:.0f}%），24h变化 {data['oi_change_24h']:+.1f}%
-- 顶级交易员多空比 {data['top_ls_ratio']:.2f}（7日分位 {data['top_ls_percentile']:.0f}%）
+- 资金费率 {data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
+- OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_change_24h']:+.1f}%
+- 全市场OI {data['agg_oi']/1e9:.2f}B，24h {data['agg_oi_change_24h']:+.1f}%
+- 顶级多空比 {data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
+- 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
 
-资金流向：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M USDT
+期权：最大痛点 {data['max_pain']:.2f}，P/C比 {data['put_call_ratio']:.4f}
 
----
-请按照你作为顶尖交易员的思维习惯，依次回答以下六个问题（每个问题必须给出明确结论和依据）：
+资金流：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M，交易所BTC 24h {data['exchange_btc_change_pct']:+.2f}%
 
-1. 当前价格处于什么位置？上下方哪个流动性池子对你更有吸引力？为什么？
+跨市场：ETH/BTC {data['eth_btc_ratio']:.4f}
 
-2. 现在市场拥挤吗？持仓量、资金费率、顶级交易员持仓给你什么信号？谁在犯错？
-
-3. CVD 和资金净流向告诉你什么？主动买盘还是卖盘在主导？是否与你的方向预期一致？
-
-4. 如果你要开仓，止损应该设在哪里？为什么放在那个位置？与 ATR 的关系是什么？
-
-5. 这单的潜在盈亏比大概多少？在你的标准下是否值得出手？仓位怎么配？
-
-6. 如果市场没有按你的预期走，第一个危险信号会是什么？你会如何应对？
+数据缺失：{missing_str}
 
 ---
-输出 JSON 格式（不要代码块）：
+请给出你完整的交易决策推理。用你自己的语言和框架，就像你在复盘或与同行交流一样。输出 JSON 格式（不要代码块）：
+
 {{
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
@@ -64,9 +63,9 @@ def build_prompt(data: dict, symbol: str) -> str:
   "entry_price_high": 0.0,
   "stop_loss": 0.0,
   "take_profit": 0.0,
-  "execution_plan": "一句话：方向、区间、止损、止盈、仓位、预计持仓时间。",
-  "reasoning": "【1】...\\n【2】...\\n【3】...\\n【4】...\\n【5】...\\n【6】...",
-  "risk_note": "最坏情况下的应对预案。"
+  "execution_plan": "一句话指令。",
+  "reasoning": "你的完整分析，自然段落。",
+  "risk_note": "最坏情况的预案。"
 }}
 """
     return prompt
