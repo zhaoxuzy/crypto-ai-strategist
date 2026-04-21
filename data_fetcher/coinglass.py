@@ -21,6 +21,8 @@ class RateLimiter:
 class CoinGlassClient:
     def __init__(self):
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
+        if not self.api_key:
+            logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置，API 请求将失败")
         self.base_url = "https://open-api-v4.coinglass.com"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
@@ -31,18 +33,24 @@ class CoinGlassClient:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
-        exchanges_to_try = [self.primary_exchange] + (self.backup_exchanges if allow_backup else [])
+
+        # 仅当原始参数包含 'exchange' 时才进行交易所切换
+        if allow_backup and "exchange" in base_params:
+            exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
+        else:
+            exchanges_to_try = [base_params.get("exchange", self.primary_exchange)] if "exchange" in base_params else [None]
+
         last_error = None
 
         for exchange in exchanges_to_try:
             current_params = base_params.copy()
-            if "exchange" in current_params:
+            if exchange is not None and "exchange" in current_params:
                 current_params["exchange"] = exchange
             for attempt in range(max_retries):
                 with self._semaphore:
                     self._rate_limiter.wait()
                     try:
-                        logger.info(f"请求 CoinGlass: {endpoint} | exchange={current_params.get('exchange', 'N/A')}")
+                        logger.info(f"请求 CoinGlass: {endpoint} | params={current_params}")
                         resp = requests.get(url, params=current_params, headers=headers, timeout=15)
                         data = resp.json()
                         if data.get("code") in (0, "0"):
@@ -87,7 +95,7 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
-    # ---------- 各 API 方法 ----------
+    # ---------- API 方法 ----------
     def get_kline_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
         params = {"exchange": "OKX", "symbol": symbol, "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, allow_backup=True, silent_fail=True)
@@ -232,11 +240,8 @@ class CoinGlassClient:
 
     def _calc_atr(self, closes: list, period: int = 14) -> float:
         if len(closes) < period + 1: return 0.0
-        trs = []
-        for i in range(1, len(closes)):
-            tr = abs(closes[i] - closes[i-1])
-            trs.append(tr)
-        return sum(trs[-period:]) / period
+        trs = [abs(closes[i] - closes[i-1]) for i in range(1, len(closes))]
+        return sum(trs[-period:]) / period if len(trs) >= period else 0.0
 
     def _calc_atr_list(self, closes: list, period: int = 14) -> list:
         if len(closes) < period + 1: return []
