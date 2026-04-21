@@ -223,9 +223,9 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float, e
 {param_card}
 
 ### 📊 市场状态
-趋势强度 {trend_state_desc} ({market_state})  
+趋势强度 {trend_state_desc} ({market_state})  {alerts_str}
 ⚖️ 多空得分 `🟢 {bull_score}` vs `🔴 {bear_score}` (分差 {diff}，{strength_text})  
-{alerts_str}
+
 
 ### 🧠 AI 研判摘要
 {formatted_summary}
