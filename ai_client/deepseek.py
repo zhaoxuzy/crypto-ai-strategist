@@ -8,80 +8,86 @@ def build_prompt(data: dict, symbol: str) -> str:
     timestamp = data.get("timestamp", "N/A")
     data_quality = data.get("data_quality", {})
 
-    # 构建数据完整性表格
     quality_rows = []
     for key, status in data_quality.items():
         quality_rows.append(f"| {key} | {status} |")
     quality_table = "\n".join(quality_rows) if quality_rows else "| - | - |"
 
-    prompt = f"""你是一个管理千万美元的对冲基金加密货币交易员。请仅基于以下表格中的原始数据，严格按六步框架完成一次完整的交易决策推理。
+    # 计算清算目标距离
+    current = data['mark_price']
+    above_cluster = data.get('above_cluster', 'N/A')
+    below_cluster = data.get('below_cluster', 'N/A')
+    above_distance = "N/A"
+    below_distance = "N/A"
+    if above_cluster != 'N/A' and '-' in above_cluster:
+        above_high = float(above_cluster.split('-')[1])
+        above_distance = f"{above_high - current:.0f}"
+    if below_cluster != 'N/A' and '-' in below_cluster:
+        below_low = float(below_cluster.split('-')[0])
+        below_distance = f"{current - below_low:.0f}"
 
-【市场数据快照 | {timestamp} | 决策周期: 4h | 标的: {symbol}】
+    prompt = f"""你是一名操作 100万-500万 U 资金的顶级加密货币合约短线交易员。
+核心信条：不扛单，不格局，吃一口流动性就跑。
+语言风格：直接、冷血、关注具体点位和盈亏比，杜绝宏观分析。
 
-### ⚠️ 数据完整性声明
-| 指标 | 状态 |
-|------|------|
+【市场数据快照 | {timestamp} | 标的: {symbol}】
+
+### ⚠️ 数据完整性
 {quality_table}
-> 若核心指标（清算、CVD、资金费率）缺失 ≥2 项，请在推理中降低置信度并说明。
 
-### 1. 价格与波动
-| 指标 | 值 | 单位 | 7日分位数 |
-|------|------|------|-----------|
-| 标记价格 | {data['mark_price']:.2f} | USDT | {data['price_percentile']:.1f}% |
-| 4h ATR | {data['atr']:.2f} | USDT | — |
-| 波动因子 | {data['vol_factor']:.2f} | 比值 | — |
+### 1. 流动性池子
+| 方向 | 累计清算强度 | 最近密集区 | 距现价 |
+|------|-------------|-----------|--------|
+| 上方(空头) | {data['above_liq']/1e9:.2f}B | {above_cluster} | +{above_distance} |
+| 下方(多头) | {data['below_liq']/1e9:.2f}B | {below_cluster} | -{below_distance} |
+| 上方/下方比 | {data['liq_ratio']:.3f} | — | — |
+| 订单簿买盘 | {data['orderbook_bids']/1e6:.1f}M | 卖盘 | {data['orderbook_asks']/1e6:.1f}M |
+| 订单簿失衡率 | {data['orderbook_imbalance']:.4f} | — | — |
 
-### 2. 清算压力分布
-| 方向 | 累计清算强度 | 单位 | 最近密集区价格 |
-|------|-------------|------|---------------|
-| 上方(空头清算) | {data['above_liq']/1e9:.2f}B | USDT | {data['above_cluster']} |
-| 下方(多头清算) | {data['below_liq']/1e9:.2f}B | USDT | {data['below_cluster']} |
-| **上方/下方比** | **{data['liq_ratio']:.3f}** | 比值 | — |
-| 期权最大痛点 | {data['max_pain']:.2f} | USDT | — |
-| Put/Call Ratio | {data['put_call_ratio']:.4f} | 比值 | — |
+### 2. 主动成交脉搏
+| 指标 | 值 |
+|------|------|
+| CVD 4h均值 | {data['cvd_mean']:.2f} M USDT |
+| CVD 4h斜率 | {data['cvd_slope']:.4f} |
+| 期货资金净流(24h) | {data['netflow']/1e6:.1f}M USDT |
 
-### 3. 微观结构
-| 指标 | 值 | 单位 |
-|------|------|------|
-| 订单簿买盘总量 | {data['orderbook_bids']/1e6:.2f}M | USDT |
-| 订单簿卖盘总量 | {data['orderbook_asks']/1e6:.2f}M | USDT |
-| 订单簿失衡率 | {data['orderbook_imbalance']:.4f} | — |
-| 期货资金净流向(24h) | {data['netflow']/1e6:.2f}M | USDT |
+### 3. 拥挤度与燃料
+| 指标 | 值 | 7日分位数 |
+|------|------|-----------|
+| 加权资金费率 | {data['funding_rate']:.4f}% | {data['funding_percentile']:.1f}% |
+| 持仓量(OI) | {data['oi']/1e9:.2f}B | {data['oi_percentile']:.1f}% |
+| OI 24h变化 | {data['oi_change_24h']:+.1f}% | — |
+| 顶级交易员多空比 | {data['top_ls_ratio']:.2f} | {data['top_ls_percentile']:.1f}% |
 
-### 4. 多空博弈
-| 指标 | 值 | 单位 | 7日分位数 |
-|------|------|------|-----------|
-| 顶级交易员多空比 | {data['top_ls_ratio']:.2f} | 比值 | {data['top_ls_percentile']:.1f}% |
-| 加权资金费率 | {data['funding_rate']:.4f} | % | {data['funding_percentile']:.1f}% |
-| 持仓量(OI) | {data['oi']/1e9:.2f}B | USDT | {data['oi_percentile']:.1f}% |
-| OI 24h变化 | {data['oi_change_24h']:+.1f} | % | — |
-| 全市场OI | {data['agg_oi']/1e9:.2f}B | USDT | — |
-| 全市场OI 24h变化 | {data['agg_oi_change_24h']:+.1f} | % | — |
-| 交易所BTC总量 | {data['exchange_btc_total']/1e6:.2f}M | BTC | — |
-| 交易所BTC 24h变化 | {data['exchange_btc_change_pct']:+.2f} | % | — |
-
-### 5. 资金流向
-| 指标 | 值 | 单位 |
-|------|------|------|
-| CVD 4h均值 | {data['cvd_mean']:.2f} | M USDT |
-| CVD 4h斜率 | {data['cvd_slope']:.4f} | — |
-
-### 6. 宏观与期权
-| 指标 | 值 | 单位 |
-|------|------|------|
-| 恐慌贪婪指数 | {data['fear_greed']} | 0-100 |
-| 恐慌贪婪指数(7日前) | {data['fear_greed_prev_7d']} | 0-100 |
-| ETH/BTC 汇率 | {data['eth_btc_ratio']:.4f} | 比值 |
+### 4. 盈亏比参数
+| 指标 | 值 |
+|------|------|
+| 当前价格 | {current:.2f} |
+| 15分钟 ATR | {data['atr_15m']:.2f} |
+| Put/Call Ratio | {data['put_call_ratio']:.4f} |
+| 恐慌贪婪指数 | {data['fear_greed']} (7日前:{data['fear_greed_prev_7d']}) |
 
 ---
-# 分析框架（必须严格遵循以下六步进行推理，不可跳过任何一步）
+# 短线猎杀六步推演（必须严格遵循，每步引用具体数值）
 
-1. **市场状态识别**：基于价格动量、波动因子和ATR，判断当前市场是趋势市还是震荡市。引用具体数值。
-2. **流动性动力学分析**：根据清算压力分布，判断大资金可能推动价格去"猎杀"哪个区域。引用具体数值。
-3. **微观结构验证**：分析订单簿失衡率和期货资金净流向，判断微观层面的买卖力量对比。引用具体数值。
-4. **资金与情绪博弈**：分析资金费率分位数、顶级交易员多空比、持仓量变化、恐惧贪婪趋势、交易所BTC余额变化、Put/Call Ratio。特别注意极端拥挤风险。引用具体数值。
-5. **资金流向验证**：分析CVD的方向与斜率，验证前几步的判断是否得到资金面支持。引用具体数值。
-6. **综合研判与风控**：生成最终交易策略，明确方向、置信度、仓位、入场区间、止损、止盈。必须包含反面情景预案（什么条件下策略失效）。每项风控参数必须说明数据依据。
+**1. 定位流动性池子**
+上方池子在哪？下方池子在哪？哪个更近、更薄、更容易被吃掉？引用具体价位和强度。
+
+**2. 读取主动成交脉搏**
+CVD斜率是陡峭向上、向下还是走平？近期成交量是放大还是萎缩？是否有聪明钱在吸筹或派发？引用具体斜率值。
+
+**3. 评估拥挤度与燃料**
+资金费率处于什么分位数？OI是加速增长还是萎缩？现在追多/追空是否会成为对手盘的燃料？引用具体分位数。
+
+**4. 计算非对称盈亏比**
+如果做多：止损设在哪？（通常为下方清算墙外侧）止盈看哪？（上方清算池前）。用15分钟ATR验证止损是否合理。盈亏比是否≥2:1？
+如果做空：止损设在哪？（上方清算墙外侧）止盈看哪？（下方清算池前）。盈亏比是否≥2:1？
+
+**5. 制定进场与止损计划**
+基于以上分析，选择做多、做空或观望。给出具体入场区间、止损价位、仓位。止损必须有数据依据（清算墙外侧或关键位外）。
+
+**6. 设计离场与滑点控制**
+到达目标位后，是挂限价单还是主动市价出货？若触发清算瀑布如何应对？反面情景预案是什么？
 
 ---
 【输出格式】严格JSON，不要用```json```包裹。
@@ -94,6 +100,7 @@ def build_prompt(data: dict, symbol: str) -> str:
   "entry_price_high": 0.0,
   "stop_loss": 0.0,
   "take_profit": 0.0,
+  "execution_plan": "极简指令：做多/做空，进场区间，止损，止盈，预计持仓时间，离场方式。不超过80字。",
   "reasoning": "【步骤1】...\\n【步骤2】...\\n【步骤3】...\\n【步骤4】...\\n【步骤5】...\\n【步骤6】...",
   "risk_note": "主要风险及反面情景预案"
 }}
@@ -133,6 +140,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
             s = json.loads(json_str)
             s.setdefault("position_size", "none")
+            s.setdefault("execution_plan", "")
             s.setdefault("risk_note", "")
             return s
         except Exception as e:
