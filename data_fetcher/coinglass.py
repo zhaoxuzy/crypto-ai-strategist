@@ -8,7 +8,7 @@ from utils.logger import logger
 class RateLimiter:
     """全局速率限制器，确保每分钟不超过 20 次请求"""
     def __init__(self, max_requests_per_minute: int = 20):
-        self.min_interval = 60.0 / max_requests_per_minute  # 3.0 秒
+        self.min_interval = 60.0 / max_requests_per_minute
         self._last_request_time = 0.0
         self._lock = Lock()
 
@@ -26,11 +26,9 @@ class CoinGlassClient:
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         if not self.api_key:
             logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置")
-        # 使用 Keystore 代理
         self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.exchange = "OKX"
         self._rate_limiter = RateLimiter(max_requests_per_minute=20)
-        # 最大并发请求数（控制突发，但速率限制由 RateLimiter 保证）
         self._max_workers = 3
         self._semaphore = Semaphore(self._max_workers)
 
@@ -99,30 +97,34 @@ class CoinGlassClient:
         denominator = sum((i - x_mean) ** 2 for i in range(n))
         return numerator / denominator if denominator != 0 else 0.0
 
-    # ---------- API 方法 ----------
-    def get_kline_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
+    # ---------- API 方法（使用正确的 symbol 格式） ----------
+    def _get_symbol(self, base: str) -> str:
+        """返回 CoinGlass 要求的交易对格式，例如 BTC-USDT-SWAP"""
+        return f"{base}-USDT-SWAP"
+
+    def get_kline_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/price/history", params, silent_fail=True)
 
-    def get_oi_ohlc_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
+    def get_oi_ohlc_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/history", params, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        """官方端点: /api/futures/funding-rate/oi-weight-ohlc-history"""
+        """官方端点: /api/futures/funding-rate/oi-weight-history，symbol 为 BTC"""
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        return self._request("api/futures/funding-rate/oi-weight-ohlc-history", params, silent_fail=True)
+        return self._request("api/futures/funding-rate/oi-weight-history", params, silent_fail=True)
 
-    def get_liquidation_heatmap(self, symbol: str = "BTCUSDT"):
-        params = {"exchange": self.exchange, "symbol": symbol, "range": "3d"}
+    def get_liquidation_heatmap(self, symbol: str = "BTC"):
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "range": "3d"}
         return self._request("api/futures/liquidation/heatmap/model2", params, silent_fail=True)
 
-    def get_top_long_short_ratio_history(self, symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 168):
-        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
+    def get_top_long_short_ratio_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/top-long-short-position-ratio/history", params, silent_fail=True)
 
-    def get_cvd_history(self, symbol: str = "BTCUSDT", interval: str = "1m", limit: int = 240):
-        params = {"exchange": self.exchange, "symbol": symbol, "interval": interval, "limit": limit}
+    def get_cvd_history(self, symbol: str = "BTC", interval: str = "1m", limit: int = 240):
+        params = {"exchange": self.exchange, "symbol": self._get_symbol(symbol), "interval": interval, "limit": limit}
         return self._request("api/futures/cvd/history", params, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC"):
@@ -137,8 +139,8 @@ class CoinGlassClient:
 
     def get_eth_btc_ratio(self) -> float:
         try:
-            eth = self.get_kline_history("ETHUSDT", "4h", 1)
-            btc = self.get_kline_history("BTCUSDT", "4h", 1)
+            eth = self.get_kline_history("ETH", "4h", 1)
+            btc = self.get_kline_history("BTC", "4h", 1)
             eth_close = self._get_close_from_candle(eth[0]) if eth else 0
             btc_close = self._get_close_from_candle(btc[0]) if btc else 1
             return eth_close / btc_close if btc_close > 0 else 0.0
@@ -148,16 +150,14 @@ class CoinGlassClient:
     # ---------- 聚合数据（并行请求） ----------
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
-        usdt_symbol = f"{base_symbol}USDT"
 
-        # 定义任务（共 9 个独立请求）
         tasks = {
-            "kline": lambda: self.get_kline_history(usdt_symbol, "4h", 168),
-            "oi": lambda: self.get_oi_ohlc_history(usdt_symbol, "4h", 168),
+            "kline": lambda: self.get_kline_history(base_symbol, "4h", 168),
+            "oi": lambda: self.get_oi_ohlc_history(base_symbol, "4h", 168),
             "funding": lambda: self.get_weighted_funding_rate_history(base_symbol, "4h", 168),
-            "heatmap": lambda: self.get_liquidation_heatmap(usdt_symbol),
-            "top_ls": lambda: self.get_top_long_short_ratio_history(usdt_symbol, "4h", 168),
-            "cvd": lambda: self.get_cvd_history(usdt_symbol, "1m", 240),
+            "heatmap": lambda: self.get_liquidation_heatmap(base_symbol),
+            "top_ls": lambda: self.get_top_long_short_ratio_history(base_symbol, "4h", 168),
+            "cvd": lambda: self.get_cvd_history(base_symbol, "1m", 240),
             "max_pain": lambda: self.get_option_max_pain(base_symbol),
             "fg": lambda: self.get_fear_and_greed_index(),
         }
@@ -173,10 +173,8 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        # ETH/BTC 汇率需要额外请求（已通过 kline 获取，但 eth_btc 会发起两次新请求，此处顺序执行以控制速率）
         eth_btc_ratio = self.get_eth_btc_ratio()
 
-        # 解析数据
         kline_data = results.get("kline", [])
         oi_data = results.get("oi", [])
         funding_data = results.get("funding", [])
