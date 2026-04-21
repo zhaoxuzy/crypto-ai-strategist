@@ -27,7 +27,7 @@ def main():
         if not is_valid:
             logger.warning(f"策略校验未通过: {error_msg}")
 
-        markdown_msg = format_strategy_message(symbol, strategy, data["mark_price"])
+        markdown_msg = format_strategy_message(symbol, strategy, data)
         success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
         if success:
             logger.info(f"{symbol} 策略推送成功")
