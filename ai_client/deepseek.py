@@ -1,42 +1,133 @@
 import os
-import sys
-import traceback
-from datetime import datetime, timezone, timedelta
+import json
+from openai import OpenAI
 from utils.logger import logger
-from data_fetcher.coinglass import CoinGlassClient
-from ai_client.deepseek import build_prompt, call_deepseek, validate_strategy
-from notifier.dingtalk import send_dingtalk_message, format_strategy_message
 
-def main():
-    symbol = os.getenv("STRATEGY_SYMBOL", "BTC").upper()
-    logger.info(f"===== 策略生成流程开始 ({symbol}) =====")
+
+def build_prompt(data: dict, symbol: str) -> str:
+    timestamp = data.get("timestamp", "N/A")
+    return f"""你是一个管理千万美元的对冲基金加密货币交易员。请仅基于以下表格中的原始数据，严格按五步框架完成一次完整的交易决策推理。
+
+【市场数据快照 | {timestamp} | 决策周期: 4h | 标的: {symbol}】
+
+### 1. 价格与波动
+| 指标 | 值 | 单位 | 7日分位数 |
+| :--- | :--- | :--- | :--- |
+| 标记价格 | {data['mark_price']:.2f} | USDT | {data['price_percentile']:.1f}% |
+| 4h ATR | {data['atr']:.2f} | USDT | — |
+| 波动因子 | {data['vol_factor']:.2f} | 比值 | — |
+
+### 2. 清算压力分布
+| 方向 | 累计清算强度 | 单位 | 最近密集区价格 |
+| :--- | :--- | :--- | :--- |
+| 上方(空头清算) | {data['above_liq']/1e9:.2f}B | USDT | {data['above_cluster']} |
+| 下方(多头清算) | {data['below_liq']/1e9:.2f}B | USDT | {data['below_cluster']} |
+| **上方/下方比** | **{data['liq_ratio']:.3f}** | 比值 | — |
+| 期权最大痛点 | {data['max_pain']:.2f} | USDT | — |
+
+### 3. 多空博弈
+| 指标 | 值 | 单位 | 7日分位数 |
+| :--- | :--- | :--- | :--- |
+| 顶级交易员多空比 | {data['top_ls_ratio']:.2f} | 比值 | {data['top_ls_percentile']:.1f}% |
+| 加权资金费率 | {data['funding_rate']:.4f} | % | {data['funding_percentile']:.1f}% |
+| 持仓量(OI) | {data['oi']/1e9:.2f}B | USDT | {data['oi_percentile']:.1f}% |
+| OI 24h变化 | {data['oi_change_24h']:+.1f} | % | — |
+
+### 4. 资金流向
+| 指标 | 值 | 单位 |
+| :--- | :--- | :--- |
+| CVD 4h均值 | {data['cvd_mean']:.2f} | M USDT |
+| CVD 4h斜率 | {data['cvd_slope']:.4f} | — |
+
+### 5. 宏观与期权
+| 指标 | 值 | 单位 |
+| :--- | :--- | :--- |
+| 恐慌贪婪指数 | {data['fear_greed']} | 0-100 |
+| ETH/BTC 汇率 | {data['eth_btc_ratio']:.4f} | 比值 |
+
+---
+# 分析框架（必须严格遵循以下步骤进行推理，不可跳过任何一步）
+
+1. **市场状态识别**：基于价格动量、波动因子和ATR，判断当前市场是趋势市还是震荡市。引用具体数值。
+2. **流动性动力学分析**：根据清算压力分布，判断大资金可能推动价格去"猎杀"哪个区域。引用具体数值。
+3. **资金与情绪博弈**：分析资金费率分位数、顶级交易员多空比、持仓量变化。特别注意极端拥挤风险。引用具体数值。
+4. **资金流向验证**：分析CVD的方向与斜率，验证前几步的判断是否得到资金面支持。引用具体数值。
+5. **综合研判与风控**：生成最终交易策略，明确方向、置信度、仓位、入场区间、止损、止盈。必须包含反面情景预案（什么条件下策略失效）。每项风控参数必须说明数据依据。
+
+---
+【输出格式】严格JSON，不要用```json```包裹。
+
+{{
+  "direction": "long" / "short" / "neutral",
+  "confidence": "high" / "medium" / "low",
+  "position_size": "light" / "medium" / "heavy" / "none",
+  "entry_price_low": 0.0,
+  "entry_price_high": 0.0,
+  "stop_loss": 0.0,
+  "take_profit": 0.0,
+  "reasoning": "【步骤1】...\\n【步骤2】...\\n【步骤3】...\\n【步骤4】...\\n【步骤5】...",
+  "risk_note": "主要风险及反面情景预案"
+}}
+"""
+
+
+def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"DeepSeek API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2000
+            )
+            content = resp.choices[0].message.content
+            logger.info(f"DeepSeek 响应成功，原始内容长度: {len(content)}")
+
+            json_str = None
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end != -1:
+                    json_str = content[start:end].strip()
+            if not json_str:
+                start = content.find('{')
+                end = content.rfind('}') + 1
+                if start != -1 and end > start:
+                    json_str = content[start:end]
+            if not json_str:
+                logger.warning(f"DeepSeek 返回无有效 JSON")
+                if attempt == max_retries - 1:
+                    raise ValueError("无法提取 JSON")
+                continue
+
+            s = json.loads(json_str)
+            s.setdefault("position_size", "none")
+            s.setdefault("risk_note", "")
+            return s
+        except Exception as e:
+            logger.warning(f"DeepSeek 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                raise
+    return {}
+
+
+def validate_strategy(s: dict) -> tuple[bool, str]:
+    direction = s.get("direction")
+    if direction not in ["long", "short", "neutral"]:
+        return False, f"无效方向: {direction}"
+    if direction == "neutral":
+        return True, ""
     try:
-        cg = CoinGlassClient()
-        data = cg.get_all_data(symbol)
-        beijing_tz = timezone(timedelta(hours=8))
-        data["timestamp"] = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M")
-        logger.info(f"{symbol} 数据获取完成")
-
-        prompt = build_prompt(data, symbol)
-        strategy = call_deepseek(prompt)
-        if not strategy:
-            raise Exception("DeepSeek 返回为空")
-
-        is_valid, error_msg = validate_strategy(strategy)
-        if not is_valid:
-            logger.warning(f"策略校验未通过: {error_msg}")
-
-        markdown_msg = format_strategy_message(symbol, strategy, data["mark_price"])
-        success = send_dingtalk_message(markdown_msg, f"DeepSeek策略-{symbol}")
-        if success:
-            logger.info(f"{symbol} 策略推送成功")
-        else:
-            logger.error(f"{symbol} 推送失败")
-    except Exception as e:
-        logger.error(f"{symbol} 策略生成失败: {e}")
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-    logger.info(f"===== {symbol} 流程结束 =====\n")
-
-if __name__ == "__main__":
-    main()
+        entry_low = float(s.get("entry_price_low", 0))
+        entry_high = float(s.get("entry_price_high", 0))
+        stop = float(s.get("stop_loss", 0))
+        tp = float(s.get("take_profit", 0))
+        if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
+            return False, "价格必须为正数"
+        if entry_low > entry_high:
+            return False, "入场区间下限大于上限"
+    except:
+        return False, "数值解析失败"
+    return True, ""
