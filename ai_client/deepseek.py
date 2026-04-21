@@ -197,7 +197,7 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     if tp_candidates is None:
         tp_candidates = {"rule1": {"price": 0.0}, "rule2": {"price": 0.0}, "rule3": {"price": 0.0}}
 
-    prompt = f"""你是管理千万美元的对冲基金加密货币交易员。你必须完成以下两个步骤，缺一不可。
+    prompt = f"""你是管理千万美元的对冲基金加密货币交易员。请严格按照以下11项任务顺序执行，不得跳过。
 
 {extreme_liq_text}{warning_text}{trend_desc}
 
@@ -216,8 +216,7 @@ CVD序列:{cvd_str}
 主动买卖序列:{taker_str}
 
 ---
-【第一部分：全景扫描】（逐项输出，每条以 🔍 开头，必须标注多空倾向🟢/🔴/⚪和置信度高/中/低）
-
+【第一部分：数据深潜】(每条以🔍开头，必须标注多空倾向🟢/🔴/⚪和置信度高/中/低)
 1.清算不对称:比值=？≥2或≤0.5？最强三档价格及ATR。
 2.CVD趋势:序列趋势，前后半段变化，与价格背离否？(无效跳过)
 3.持仓矛盾:顶级多空比vs净持仓一致性。
@@ -227,21 +226,17 @@ CVD序列:{cvd_str}
 7.订单簿失衡:当前值及偏向，与主动买卖同向否？
 8.ETH/BTC趋势:方向及对{symbol}影响。
 9.钱包余额:BTC与稳定币流向，资金面偏多/空。
-10.反驳系统({higher_direction}):故意找反驳理由，无则解释。
+10.反驳系统({higher_direction}):故意找出反驳系统结论的理由；若完全认同，解释为何没有反驳证据。
 
-【第二部分：交易员深度研判】（基于第一部分证据，必须引用至少5项🔍编号）
+【第二部分：交易员推理与裁决】(第11项，请用一段连贯文字模拟顶尖交易员的思考过程)
+11. 综合以上10项分析，请模拟一位顶尖交易员的推理过程，并给出最终裁决。必须包含：
+    - 当前市场的核心矛盾和主要风险。
+    - 多空双方的关键筹码对比（引用🔍编号）。
+    - 你最倾向的交易方向及核心理由。
+    - 仓位建议（轻/中/重）和关键止损/止盈位（可基于候选区间调整）。
+    - 反面情景预案：什么条件下你的判断会失效，届时应如何应对。
 
-1.核心矛盾:用1句话概括多空双方最根本的分歧点。
-2.关键证据对比:
-   - 支持做多的最强3条证据(引用🔍编号，标注强度:强/中/弱)
-   - 支持做空的最强3条证据(引用🔍编号，标注强度:强/中/弱)
-3.关键战场:价格更可能先测试上方阻力还是下方支撑？主观概率？
-4.概率与盈亏比:做多预期盈亏比？做空预期盈亏比？
-5.最终裁决:方向、仓位(轻/中/重)、入场区间、止损、止盈、核心逻辑。
-6.反面预案:什么条件下当前策略失效？届时应如何应对？
-
----
-【输出格式】纯JSON(不要代码块):
+输出纯JSON(不要代码块):
 {{
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
@@ -250,8 +245,8 @@ CVD序列:{cvd_str}
   "stop_loss": 0,
   "take_profit": 0,
   "tp_anchor": "",
-  "panorama": "🔍1.xxx🟢置信度:高\\n🔍2.xxx🔴置信度:中\\n...",
-  "verdict": "1.核心矛盾:...\\n2.关键证据对比:\\n-做多:①🔍6主动买盘0.61[中];②...\\n-做空:①🔍1比值2.62[强];②🔍2CVD背离[中];③🔍3顶级偏空[中]\\n3.关键战场:...\\n4.盈亏比:做多约1:1.5，做空约2.1:1\\n5.最终裁决:做空，中仓，入场2305-2310，止损2326，止盈2263，逻辑:清算墙极强+CVD背离+顶级净空\\n6.反面预案:若放量站稳2325则空头失效，可轻仓追多至2380止损2300",
+  "analysis_summary": "🔍1.xxx🟢置信度:高\\n🔍2.xxx🔴置信度:中\\n...\\n🔍10.xxx",
+  "trader_reasoning": "核心矛盾:... 多空对比:... 最终方向:... 仓位建议:... 反面预案:...",
   "risk_note": "..."
 }}
 """
@@ -291,8 +286,8 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
             s = json.loads(json_str)
             s.setdefault("tp_anchor", "未提供")
-            s.setdefault("panorama", "无全景扫描")
-            s.setdefault("verdict", "无深度研判")
+            s.setdefault("analysis_summary", "无分析摘要")
+            s.setdefault("trader_reasoning", "")
             s.setdefault("risk_note", "")
             return s
         except Exception as e:
@@ -303,7 +298,6 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
 
 def validate_strategy(s: dict, price: float, atr: float = None) -> bool:
-    """仅做最基本的方向和正数校验"""
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False
