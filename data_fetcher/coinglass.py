@@ -23,7 +23,8 @@ class CoinGlassClient:
         self.api_key = os.getenv("COINGLASS_API_KEY", "")
         if not self.api_key:
             logger.warning("⚠️ 环境变量 COINGLASS_API_KEY 未设置，API 请求将失败")
-        self.base_url = "https://open-api-v4.coinglass.com"
+        # 使用 Keystore 代理 Base URL
+        self.base_url = "https://proxy.keystore.com.cn/api/v1/proxy/coinglass/v4"
         self.primary_exchange = "OKX"
         self.backup_exchanges = ["Binance"]
         self._rate_limiter = RateLimiter(min_interval=3.0)
@@ -34,7 +35,6 @@ class CoinGlassClient:
         headers = {"accept": "application/json", "X-Api-Key": self.api_key}
         base_params = params.copy() if params else {}
 
-        # 仅当原始参数包含 'exchange' 时才进行交易所切换
         if allow_backup and "exchange" in base_params:
             exchanges_to_try = [self.primary_exchange] + self.backup_exchanges
         else:
