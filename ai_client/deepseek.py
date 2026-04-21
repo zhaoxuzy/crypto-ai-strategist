@@ -19,10 +19,9 @@ def build_prompt(data: dict, symbol: str) -> str:
         below_low = float(below_cluster.split('-')[0])
         below_distance = f"{current - below_low:.0f}"
 
-    prompt = f"""【角色】你是一名管理 200 万 U 的顶尖加密货币短线合约交易员。
-【任务】基于以下数据，给出你独立的交易决策。不要使用固定模板，用自然的段落表达你的判断。
+    prompt = f"""你是一位管理 200 万 U 的顶尖加密货币短线交易员。请基于以下数据，按照你的专业思维框架，完成一次完整的交易决策推理。
 
-【{symbol} | {timestamp}】
+【市场数据 | {symbol} | {timestamp}】
 
 价格：{current:.2f}
 15min ATR：{data['atr_15m']:.2f}
@@ -41,8 +40,21 @@ def build_prompt(data: dict, symbol: str) -> str:
 资金流向：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M USDT
 
 ---
-请直接输出你的交易计划和分析。用口语化的专业语言，就像你在和另一个交易员讨论行情。
+请按照你作为顶尖交易员的思维习惯，依次回答以下六个问题（每个问题必须给出明确结论和依据）：
 
+1. 当前价格处于什么位置？上下方哪个流动性池子对你更有吸引力？为什么？
+
+2. 现在市场拥挤吗？持仓量、资金费率、顶级交易员持仓给你什么信号？谁在犯错？
+
+3. CVD 和资金净流向告诉你什么？主动买盘还是卖盘在主导？是否与你的方向预期一致？
+
+4. 如果你要开仓，止损应该设在哪里？为什么放在那个位置？与 ATR 的关系是什么？
+
+5. 这单的潜在盈亏比大概多少？在你的标准下是否值得出手？仓位怎么配？
+
+6. 如果市场没有按你的预期走，第一个危险信号会是什么？你会如何应对？
+
+---
 输出 JSON 格式（不要代码块）：
 {{
   "direction": "long/short/neutral",
@@ -53,7 +65,7 @@ def build_prompt(data: dict, symbol: str) -> str:
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话：方向、区间、止损、止盈、仓位、预计持仓时间。",
-  "reasoning": "用口语化的段落叙述你的完整分析，包括你看重的数据和你的推演逻辑。",
+  "reasoning": "【1】...\\n【2】...\\n【3】...\\n【4】...\\n【5】...\\n【6】...",
   "risk_note": "最坏情况下的应对预案。"
 }}
 """
