@@ -56,9 +56,9 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
     weight_ob = int(w_ob_r * (1 - t) + w_ob_t * t)
     weight_macro = int(w_macro_r * (1 - t) + w_macro_t * t)
 
+    # 移除 extreme_liq 硬扣分逻辑，仅记录因子
     if extreme_liq:
-        if direction == "long": score -= 50; det.append("⚠️极端清算禁止做多")
-        elif direction == "short": score += 10; det.append("极端清算支持做空")
+        det.append("极端清算警报(未扣分)")
 
     above = float(str(cg.get("above_short_liquidation", "0")).replace(",", ""))
     below = float(str(cg.get("below_long_liquidation", "0")).replace(",", ""))
@@ -137,7 +137,8 @@ def calculate_signal_strength(symbol: str, direction: str, cg: dict, macro: dict
 def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, macro_data: dict,
                  profile: dict, volatility_factor: float = 1.0, trend_info: dict = None,
                  extreme_liq: bool = False, liq_warning: str = "", data_source_status: str = "",
-                 directional_scores: dict = None, signal_grade: str = "B",
+                 bull_score: int = 0, bear_score: int = 0, signal_grade: str = "B",
+                 bull_factors: str = "", bear_factors: str = "",
                  entry_candidates: dict = None, exchange_balances: dict = None,
                  liq_dynamic_signals: list = None,
                  threshold_bull_bear: int = 8, threshold_warning: int = 12,
@@ -147,36 +148,26 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
     liq_max_pain = coinglass_data.get("max_pain_price", "N/A")
     option_pain = coinglass_data.get("skew", "N/A")
     warning_text = f"\n{liq_warning}\n" if liq_warning else ""
-    data_source_text = f"\n**{data_source_status}**\n" if data_source_status else ""
-    extreme_liq_text = ("\n⚠️ **极端清算警报**（系统判定：单侧清算额超过历史均值3倍）\n" if extreme_liq else "")
+    extreme_liq_text = ("\n⚠️ 系统检测到极端清算警报（单侧清算额超历史均值3倍）。你必须在分析中说明该警报如何影响你的判断。\n" if extreme_liq else "")
 
-    bull_score = directional_scores.get("bull", 0) if directional_scores else 0
-    bear_score = directional_scores.get("bear", 0) if directional_scores else 0
-    diff = abs(bull_score - bear_score)
     higher_direction = "多头" if bull_score > bear_score else "空头"
+    diff = abs(bull_score - bear_score)
 
-    macro_signals = directional_scores.get("macro_signals", []) if directional_scores else []
-    macro_signal_lines = []
-    for s in macro_signals:
-        macro_signal_lines.append(f"- {s['text']}：{s['direction']}（权重{s['weight']}）")
-    macro_signals_text = "\n".join(macro_signal_lines) if macro_signal_lines else "- 无明显信号"
+    macro_signals_text = "无"
 
-    liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无显著动态信号"
+    liq_dynamic_text = "、".join(liq_dynamic_signals) if liq_dynamic_signals else "无"
 
     bal_text = ""
     if exchange_balances:
         btc_flow = exchange_balances.get("btc_flow", "neutral")
         stable_flow = exchange_balances.get("stable_flow", "neutral")
-        bal_text = f"BTC 24h净变动: {exchange_balances.get('btc_change', 0):.0f} ({btc_flow})，稳定币24h净变动: {exchange_balances.get('stable_change', 0):.0f} ({stable_flow})"
+        bal_text = f"BTC:{exchange_balances.get('btc_change', 0):.0f}({btc_flow}) 稳定币:{exchange_balances.get('stable_change', 0):.0f}({stable_flow})"
 
     trend_desc = ""
     if trend_info:
         dir_t = trend_info.get('direction', 'neutral')
         score_t = trend_info.get('score', 0)
-        conf_t = trend_info.get('confidence', '低')
-        signals_t = ", ".join(trend_info.get('signals', []))
-        trend_desc = f"**趋势强度**：{dir_t}倾向，得分{score_t}/100（可信度：{conf_t}）\n- 支持信号：{signals_t}"
-        if 30 <= score_t <= 70: trend_desc += "\n⚠️ 市场处于震荡与趋势的过渡期，方向判定存在不确定性。"
+        trend_desc = f"趋势:{dir_t} {score_t}/100"
 
     eth_btc = coinglass_data.get("eth_btc_ratio", {})
     eth_btc_trend = eth_btc.get('trend', 'N/A')
@@ -184,212 +175,93 @@ def build_prompt(symbol: str, price: float, atr: float, coinglass_data: dict, ma
 
     raw_view = coinglass_data.get("raw_view", {})
 
-    liq_profile = raw_view.get("liquidation_profile", [])
-    liq_profile_lines = []
-    for item in liq_profile[:15]:
-        dir_symbol = "⬆️" if item["direction"] == "above" else "⬇️"
-        liq_profile_lines.append(
-            f"| {item['price']:.2f} | {dir_symbol} {item['effect']} | {item['intensity']:.2f} | {item['distance_atr']:+.2f} |"
-        )
-    liq_profile_table = "\n".join(liq_profile_lines) if liq_profile_lines else "无清算数据"
-
     top_3_zones = raw_view.get("top_3_liquidation_zones", [])
-    top_3_lines = []
-    for i, zone in enumerate(top_3_zones, 1):
-        top_3_lines.append(
-            f"{i}. {zone['price']:.2f} ({zone['effect']})，强度 {zone['intensity']:.2f}，距现价 {zone['distance_atr']:+.2f} ATR"
-        )
-    top_3_summary = "\n".join(top_3_lines) if top_3_lines else "无明显清算聚集区"
+    top_3_str = " | ".join([f"{z['price']:.2f}({z['effect']}强{z['intensity']:.1f}距{z['distance_atr']:+.2f}ATR)" for z in top_3_zones[:3]]) if top_3_zones else "无"
 
     cvd_valid = raw_view.get("cvd_valid", False)
     cvd_series = raw_view.get("cvd_series_1m", [])
-    cvd_series_str = str(cvd_series) if cvd_valid else "数据无效"
+    cvd_str = f"[{','.join(map(str, cvd_series))}]" if cvd_valid else "无效"
 
     ls_valid = raw_view.get("ls_valid", False)
     ls_series = raw_view.get("ls_ratio_series_1h", [])
-    ls_series_str = str(ls_series) if ls_valid else "数据无效"
+    ls_str = f"[{','.join(map(str, ls_series))}]" if ls_valid else "无效"
 
     taker_series = raw_view.get("taker_ratio_series_1h", [])
-    taker_series_str = str(taker_series) if taker_series else "无数据"
+    taker_str = f"[{','.join(map(str, taker_series))}]" if taker_series else "无"
 
-    quant_reference_section = f"""
-### 📟 内部量化引擎输出（**仅供参考，AI 必须重新验证**）
+    ema15 = raw_view.get("ema15", "N/A")
+    ema15_slope = raw_view.get("ema15_slope", "N/A")
 
-⚠️ **警告：此分值为机器根据规则硬算得出，未经过上下文校验。你必须基于上方原始数据独立判断。**
+    if entry_candidates is None:
+        entry_candidates = {"rule1": {"low": 0.0, "high": 0.0}, "rule2": {"low": 0.0, "high": 0.0}, "rule3": {"low": 0.0, "high": 0.0}}
+    if tp_candidates is None:
+        tp_candidates = {"rule1": {"price": 0.0}, "rule2": {"price": 0.0}, "rule3": {"price": 0.0}}
 
-- 机械计算得分倾向：多头 {bull_score} vs 空头 {bear_score}。当前{higher_direction}领先{diff}分。
-- 机械评级参考：{signal_grade}（A=共振强烈，B=标准跟随，C=试探信号）
-"""
+    prompt = f"""你是管理千万美元的对冲基金加密货币交易员。请严格按照以下11项任务顺序执行，不得跳过。
 
-    prompt = f"""【角色锚定与思维禁令】
-你是一位精通**清算动力学、多空博弈、微观订单簿博弈与跨市场资金流**的顶级加密货币短线合约交易员。
-你的核心思维铁律：**不要阅读或复述系统给你的标签，你必须像一个刚拿到原始数据的操盘手一样，对每一项指标进行“盲测”式的独立推导。**
-**禁止使用模糊词汇**（如“偏多”、“动能较强”），必须替换为**精确的数值对比或边界定义**。
+{extreme_liq_text}{warning_text}{trend_desc}
 
-⚠️ **核心要求**：
-1.  **数据孤立解构（逐个指标强制引用）**：
-    - 请依次列出以下每项原始数据的具体数值：[请在此处插入具体数据字段，如：OI变动量、CVD差值、资金费率、主动买卖量比、清算热力图层级]。
-    - **强制要求**：在分析每一项时，必须使用句式：“当前[指标名称]的**具体读数为[X]**，相较于前一个周期的[Y]发生了[具体变化百分比或绝对值变化]。”
+【市场数据摘要】
+现价{price} ATR{atr:.2f} 波动{volatility_factor:.2f} 15分钟EMA{ema15} 斜率{ema15_slope}
+清算:上{coinglass_data.get('above_short_liquidation','N/A')} 下{coinglass_data.get('below_long_liquidation','N/A')} 痛点{liq_max_pain} 最近{cluster.get('direction','N/A')}{cluster.get('price','N/A')}强{cluster.get('intensity','N/A')} 动态:{liq_dynamic_text}
+博弈:费率{coinglass_data.get('funding_rate','N/A')}% OI{coinglass_data.get('oi_change_24h','N/A')}% 主动比{coinglass_data.get('taker_ratio','N/A')} 顶级多空{coinglass_data.get('top_long_short_ratio','N/A')} 净持仓{coinglass_data.get('net_position_cum','N/A')} 订单簿{coinglass_data.get('orderbook_imbalance',0.0):.2f}
+资金:CVD{coinglass_data.get('cvd_signal','N/A')} 钱包:{bal_text}
+宏观:期权痛点{option_pain} 恐贪{fg.get('value','50')}(前{fg.get('prev','50')}) ETH/BTC{eth_btc_trend}({eth_btc_ratio:.6f}) 信号:{macro_signals_text}
 
-2.  **多空博弈冲突研判（裁决机制）**：
-    - 识别上述指标中存在的**矛盾信号**（例如：资金费率负值但CVD显示承接）。
-    - **裁决要求**：你拥有最高裁决权。如果系统给出的初步建议与你的数值推演相悖，**你必须明确指出**：“系统建议倾向于[多/空]，但我基于[某关键指标的具体数值]认为此逻辑在30-60分钟级别存在失效风险，理由如下：[结合清算地图点位或OI堆积位置说明]。”
-
-3.  **时效性约束下的策略输出（反脆弱设计）**：
-    - 你的分析必须规避“30分钟后即失效”的噪音行情。
-    - **强制视角**：请重点关注**15分钟级别与1小时级别的共振或背离**。你的策略应明确回答：“**在当前第[X]根K线收盘确认前，[某价位]是不可证伪的博弈边界。**”
-
-{warning_text}{data_source_text}{extreme_liq_text}{trend_desc}
-
-### 核心数据
-
-**价格与波动**
-- 当前价格：{price} USDT
-- 4小时ATR：{atr} USDT
-- 波动因子：{volatility_factor:.2f}
-
-**清算压力**
-- 上方空头清算：{coinglass_data.get('above_short_liquidation', 'N/A')} USD
-- 下方多头清算：{coinglass_data.get('below_long_liquidation', 'N/A')} USD
-- 清算最大痛点：{liq_max_pain} USDT
-- 最近清算密集区：{cluster.get('direction', 'N/A')}方 {cluster.get('price', 'N/A')} USDT，强度{cluster.get('intensity', 'N/A')}/5
-- **清算动态信号**：{liq_dynamic_text}
-
-**多空博弈**
-- 资金费率：{coinglass_data.get('funding_rate', 'N/A')}%
-- 持仓量24h变化：{coinglass_data.get('oi_change_24h', 'N/A')}%
-- 主动吃单比率：{coinglass_data.get('taker_ratio', 'N/A')}
-- 顶级交易员多空比：{coinglass_data.get('top_long_short_ratio', 'N/A')}
-- 净持仓累积：{coinglass_data.get('net_position_cum', 'N/A')}
-- 订单簿失衡率：{coinglass_data.get('orderbook_imbalance', 0.0):.2f}
-
-**资金流向**
-- CVD信号：{coinglass_data.get('cvd_signal', 'N/A')}
-- **交易所钱包余额**：{bal_text}
-
-**期权与宏观**
-- 期权最大痛点：{option_pain} USDT
-- 恐惧贪婪指数：{fg.get('value', '50')} (前值：{fg.get('prev', '50')})
-- **ETH/BTC汇率趋势**：{eth_btc_trend}（当前汇率 {eth_btc_ratio:.6f}）
-- **宏观三因子信号**：
-{macro_signals_text}
-
-### 📁 原始数据视图
-
-**清算强度分布（价格 → 原始强度 → 距现价 ATR）**
-| 价格 | 作用 | 原始强度 | 距现价(ATR) |
-|------|------|----------|-------------|
-{liq_profile_table}
-
-**🔥 前三强清算区（按强度排序）**
-{top_3_summary}
-
-> ⚠️ 注：原始强度值为 CoinGlass 提供的相对量纲，数值越大代表清算压力越集中，并非美元名义金额。
-
-**CVD 序列（单位：千美元）**
-`{cvd_series_str}`
-
-**多空账户人数比序列**
-`{ls_series_str}`
-
-**主动买卖比率序列**
-`{taker_series_str}`
+📁原始数据
+前三强清算:{top_3_str}
+CVD序列:{cvd_str}
+多空比序列:{ls_str}
+主动买卖序列:{taker_str}
 
 ---
+【内部量化引擎输出（仅供参考，AI必须重新验证）】
+| 方向 | 得分 | 主要加分项 | 主要减分项 |
+|------|------|------------|------------|
+| 多头 | {bull_score} | {bull_factors if bull_factors else '无'} | - |
+| 空头 | {bear_score} | {bear_factors if bear_factors else '无'} | - |
+当前机械评级：{signal_grade}。{higher_direction}领先{diff}分。
 
-### 🔬 强制指标逐项分析任务
+⚠️ 警告：此评分基于规则硬算，未经过上下文校验。你必须基于上方原始数据独立判断，允许且鼓励推翻此结论。
 
-【强制执行：十项指标独立审查与交叉质证】
-请严格按照以下编号顺序，对每一项指标执行**先读数、再对比、后定性**的分析流程。
-**数据缺失时必须明确注明“数据缺失，无法研判”，严禁强行解读。**
+【第一部分：数据深潜】(每条以🔍开头，必须标注多空倾向🟢/🔴/⚪和置信度高/中/低)
+1.清算不对称:比值=？≥2或≤0.5？最强三档价格及ATR。
+2.CVD趋势:序列趋势，前后半段变化，与价格背离否？(无效跳过)
+3.持仓矛盾:顶级多空比vs净持仓一致性。
+4.清算信号验证:系统信号在分布表存在否？
+5.宏观边际:恐贪变化，稳定币7日变化超±1%否？
+6.主动买卖比:当前值及方向，持续性。
+7.订单簿失衡:当前值及偏向，与主动买卖同向否？
+8.ETH/BTC趋势:方向及对{symbol}影响。
+9.钱包余额:BTC与稳定币流向，资金面偏多/空。
+10.反驳系统({higher_direction}):故意找出反驳系统结论的理由；若完全认同，解释为何没有反驳证据。
 
-### 🔍 1. 清算不对称性评估
-- **读取数值**：上方/下方累计清算额比值为 `[填入具体数值]`。
-- **阈值判断**：是否触发 ≥2.0（严重偏空） 或 ≤0.5（严重偏多）？
-- **⚠️ 例外条款（必须执行）**：若当前价格位于 **15分钟 EMA 60 上方且该均线斜率向上**，即使比值 ≥3.0 也不得判空，应解读为“多头清算燃料充沛”；反之若价格位于均线下方且斜率向下，即使比值 ≤0.33 也不得判多。
-- **点位量化**：最强三档价格距离当前价的**精确ATR倍数**分别是多少？
-- **独立结论**：[在此仅基于该数值给出单指标倾向]。
+【第二部分：交易员推理与裁决】(第11项)
+11. 综合以上10项分析，请模拟一位顶尖交易员的推理过程，并给出最终裁决。必须包含：
+    - 当前市场的核心矛盾和主要风险。
+    - 多空双方的关键筹码对比（引用🔍编号）。
+    - 你最倾向的交易方向及核心理由。
+    - 仓位建议（轻/中/重）和关键止损/止盈位（完全由你基于当前市场结构自主设定）。
+    - 反面情景预案：什么条件下你的判断会失效，届时应如何应对。
 
-### 🔍 2. CVD（累积成交量Delta）趋势与背离诊断
-- **序列解构**：序列整体趋势是[上升/下降]，**前后半段斜率变化为[前半段值] vs [后半段值]**。
-- **背离检测**：当前价格创[新低/新高]的同时，CVD是否未同步创[新低/新高]？（是/否）。
-- **独立结论**：[动能衰竭/动能加速]。
-
-### 🔍 3. 持仓结构矛盾识别
-- **数值对比**：顶级交易员多空比 `[数值]`，而净持仓累积方向为 `[累积值正/负]`。
-- **噪声过滤**：若持仓量24h变化绝对值 < 2%，则此矛盾降级为“数据噪声”，权重归零。
-- **矛盾判定**：两者指向**一致**还是**冲突**？
-- **独立结论**：[若冲突，指出“散户拥挤”或“大户诱盘”；若一致，指出“趋势共振”；若噪声则标注“忽略”]。
-
-### 🔍 4. 清算信号验证与修正
-- **系统标签**：系统给出信号为 `[系统信号值]`。
-- **分布表对照**：该信号在清算分布表中**存在明确对应点位堆积**吗？（是/否）。
-- **裁决修正**：若不存在，**必须推翻标签**，修正为“虚警信号”。
-
-### 🔍 5. 宏观因子边际变化
-- **精确读数**：恐惧贪婪指数昨值 `[X]` 今值 `[Y]`，**变化绝对值 `[|Y-X|]`**。
-- **资金门槛**：稳定币市值7日变化率 `[具体百分比%]`，是否超过 **±1% 有效阈值**？
-- **独立结论**：[情绪/资金面偏暖/偏冷]。
-
-### 🔍 6. 主动买卖比率持续性
-- **即时读数**：当前主动买卖比为 `[数值]`，主动方向为[买/卖]。
-- **序列持续性**：过去 `[N]` 根K线中该方向连续性如何？（例如：过去6根有5根主动卖）。
-- **独立结论**：[主动资金坚决/犹豫]。
-
-### 🔍 7. 订单簿失衡率与深度验证
-- **当前数值**：失衡率 `[数值]`，深度偏向[买盘墙/卖盘墙]。
-- **同向验证**：是否与**指标6（主动买卖）** 的方向**逻辑一致**？（例如：都是卖压/都是买盘/背离）。
-- **独立结论**：[实压/虚晃]。
-
-### 🔍 8. ETH/BTC 汇率传导效应
-- **汇率趋势**：当前ETH/BTC处于[上升/下降/盘整]通道。
-- **作用域限定（强制）**：若交易标的为 `{symbol}` 且是 **BTC 本位合约**，此项结论强制降权至参考级，仅做背景描述；若为 **ETH 或山寨币合约**，则升权至关键级。
-- **传导逻辑**：对 `{symbol}` 是构成**同向推动**还是**避险抽血**？
-- **独立结论**：[利多/利空/中性，并注明是否因作用域降权]。
-
-### 🔍 9. 交易所钱包余额流向（资金面硬指标）
-- **净流向**：BTC净流出/流入 `[数量]`，稳定币净流出/流入 `[数量]`。
-- **资金面定性**：根据“币流+稳定币流”组合，当前处于[积累/派发/观望]阶段。
-
-### 🔍 10. 强制反方质证（推翻系统结论尝试）
-- **攻击角度**：请刻意寻找**1至2个与系统建议 `[{higher_direction}]` 完全相反的**数据细节（例如：上方某处有大额挂单、费率已过热、CVD明显背离）。
-- **质证结论**：
-    - 若找到有力反证 -> 写明“**存在推翻依据：[具体反证内容]**”。
-    - 若完全找不到 -> 写明“**无法推翻，因[某关键支撑/压力数据]被彻底突破/确认**”。
-
-【最终裁决输出格式】
-在完成上述10项分析后，请单独起一行，使用以下**精确格式**输出最终交易决策（此为数学验证闭环）：
-
-`【最终裁决】推翻/一致系统建议 [做多/做空] → **执行 [做多/做空/观望]**  
-- **核心依据**：因[关键指标1]读数[具体值]与[关键指标2]形成[共振/背离]。  
-- **博弈边界**：确认站上/跌破 [具体价位 USDT] 前，当前多空结构不可证伪；若反向突破 [具体价位 USDT] 则逻辑失效。`
-
-{quant_reference_section}
-
-### 🎯 入场、止损与止盈设置
-
-**你拥有完全的自主权**：请根据你的专业判断，独立设定入场区间、止损价、止盈价。无需参考任何预设公式。
-
----
-
-### 策略输出格式（严格JSON）
-
-**请直接输出纯 JSON，不要用 ```json 代码块包裹。**
-
+输出纯JSON(不要代码块):
 {{
-  "direction": "long" 或 "short" 或 "neutral",
-  "confidence": "high" 或 "medium" 或 "low",
-  "entry_price_low": 入场区间下限,
-  "entry_price_high": 入场区间上限,
-  "stop_loss": 止损价,
-  "take_profit": 止盈价,
-  "tp_anchor": "止盈设置理由",
-  "analysis_summary": "按强制指标逐项分析任务逐项撰写简要核心结论，每条以 🔍 开头，共10项，末尾包含【最终裁决】段落。",
-  "trader_commentary": "顶级交易员观点",
-  "risk_note": "风险提示"
+  "direction": "long/short/neutral",
+  "confidence": "high/medium/low",
+  "entry_price_low": 0,
+  "entry_price_high": 0,
+  "stop_loss": 0,
+  "take_profit": 0,
+  "tp_anchor": "",
+  "analysis_summary": "🔍1.xxx🟢置信度:高\\n🔍2.xxx🔴置信度:中\\n...\\n🔍10.xxx",
+  "trader_reasoning": "核心矛盾:... 多空对比:... 最终方向:... 仓位建议:... 反面预案:...",
+  "uncertainty_factors": ["风险点1", "风险点2"],
+  "risk_note": "..."
 }}
 """
     return prompt
+
+
 def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
     for attempt in range(max_retries):
@@ -424,6 +296,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             s.setdefault("tp_anchor", "未提供")
             s.setdefault("analysis_summary", "无分析摘要")
             s.setdefault("trader_reasoning", "")
+            s.setdefault("uncertainty_factors", [])
             s.setdefault("risk_note", "")
             return s
         except Exception as e:
