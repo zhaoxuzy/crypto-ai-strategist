@@ -57,7 +57,7 @@ def build_prompt(data: dict, symbol: str) -> str:
 | 全市场OI | {data['agg_oi']/1e9:.2f}B | USDT | — |
 | 全市场OI 24h变化 | {data['agg_oi_change_24h']:+.1f} | % | — |
 | 交易所BTC总量 | {data['exchange_btc_total']/1e6:.2f}M | BTC | — |
-| 交易所BTC 24h变化 | {data['exchange_btc_change_24h']:+.1f} | % | — |
+| 交易所BTC 24h变化 | {data['exchange_btc_change_pct']:+.2f} | % | — |
 
 ### 5. 资金流向
 | 指标 | 值 | 单位 |
