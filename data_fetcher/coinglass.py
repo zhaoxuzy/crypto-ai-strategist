@@ -156,7 +156,6 @@ class CoinGlassClient:
         return self._request("api/futures/open-interest/history", params, allow_backup=True, silent_fail=True)
 
     def get_weighted_funding_rate_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
-        # 该端点不需要 exchange，但某些代理可能需要，我们加上 exchange 以兼容
         params = {"exchange": self.primary_exchange, "symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/funding-rate/oi-weight-history", params, allow_backup=False, silent_fail=True)
 
@@ -173,7 +172,6 @@ class CoinGlassClient:
         return self._request("api/futures/cvd/history", params, allow_backup=True, silent_fail=True)
 
     def get_option_max_pain(self, symbol: str = "BTC") -> dict:
-        """返回期权最大痛点及Put/Call Ratio，需要 exchange 参数"""
         params = {"exchange": "Deribit", "symbol": symbol.upper()}
         data = self._request("api/option/max-pain", params, allow_backup=False, silent_fail=True)
         if data and isinstance(data, list) and len(data) > 0:
@@ -302,10 +300,12 @@ class CoinGlassClient:
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
         closes = [self._get_close_from_candle(k) for k in kline_data]
-        atr = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
+        atr_4h = self._calc_atr(closes, 14) if len(closes) >= 14 else 0.0
         avg_atr_7d = sum(self._calc_atr_list(closes, 14)) / len(closes) if closes else 1.0
-        vol_factor = atr / avg_atr_7d if avg_atr_7d > 0 else 1.0
+        vol_factor = atr_4h / avg_atr_7d if avg_atr_7d > 0 else 1.0
         price_percentile = self._calc_percentile(kline_data, mark_price)
+        # 短线用15分钟ATR，简化估算为4h ATR / 4
+        atr_15m = atr_4h * 0.25 if atr_4h > 0 else 0.0
 
         above_liq, below_liq, above_cluster, below_cluster, liq_ratio = 0, 0, "N/A", "N/A", 0.0
         if heatmap_raw:
@@ -364,7 +364,8 @@ class CoinGlassClient:
 
         return {
             "mark_price": mark_price,
-            "atr": atr,
+            "atr": atr_4h,
+            "atr_15m": atr_15m,
             "vol_factor": vol_factor,
             "price_percentile": price_percentile,
             "above_liq": above_liq,
