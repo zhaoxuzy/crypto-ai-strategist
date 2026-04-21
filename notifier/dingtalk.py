@@ -5,8 +5,10 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
+
 
 def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
     webhook = os.getenv("DINGTALK_WEBHOOK_URL", "")
@@ -33,7 +35,8 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
         logger.error(f"钉钉请求异常: {e}")
         return False
 
-def format_strategy_message(symbol: str, strategy: dict, current_price: float) -> str:
+
+def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%m-%d %H:%M")
     direction = strategy.get("direction", "neutral")
@@ -51,16 +54,38 @@ def format_strategy_message(symbol: str, strategy: dict, current_price: float) -
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
     tp = strategy.get("take_profit", 0)
+    current_price = data.get("mark_price", 0)
+
+    entry_mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
+    risk = abs(entry_mid - stop) if stop != 0 else 0
+    reward = abs(tp - entry_mid) if tp != 0 else 0
+    rr = reward / risk if risk > 0 else 0
+    rr_str = f"{rr:.2f}:1" if rr > 0 else "N/A"
+
     reasoning = strategy.get("reasoning", "无推理过程")
     risk_note = strategy.get("risk_note", "无")
 
+    # 数据快照行
+    atr = data.get("atr", 0)
+    funding = data.get("funding_rate", 0)
+    oi_change = data.get("oi_change_24h", 0)
+    cvd_slope = data.get("cvd_slope", 0)
+    cvd_dir = "正向" if cvd_slope > 0 else ("负向" if cvd_slope < 0 else "持平")
+    fear_greed = data.get("fear_greed", 50)
+    netflow = data.get("netflow", 0) / 1e6
+    netflow_dir = "流入" if netflow > 0 else "流出"
+
+    snapshot = f"📎 `ATR {atr:.1f}` · `费率 {funding:.4f}%` · `OI {oi_change:+.1f}%` · `CVD {cvd_dir}` · `贪婪 {fear_greed}` · `资金{netflow_dir} {abs(netflow):.1f}M`"
+
     return f"""{title}
 
-> **现价**：{current_price:.1f} | **入场**：{entry_low:.1f}-{entry_high:.1f} | **止损**：{stop:.1f} | **止盈**：{tp:.1f}
+> **现价**：{current_price:.1f} | **入场**：{entry_low:.1f}-{entry_high:.1f} | **止损**：{stop:.1f} | **止盈**：{tp:.1f} | **盈亏比**：{rr_str}
 
-**📌 交易逻辑**
+### 🧠 AI 六步推演
 {reasoning}
 
-**⚠️ 风险提示**
-{risk_note}
+> ### ⚠️ 风险警示
+> {risk_note}
+
+{snapshot}
 """
