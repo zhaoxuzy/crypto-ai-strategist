@@ -24,7 +24,7 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是拥有十年经验的顶尖加密货币短线交易员，管理200万U资金。请基于以下数据严格按六步推演，每步包含“分析数据”和“做出结论”。
+    prompt = f"""你是拥有十年经验的顶尖加密货币短线交易员，管理200万U资金。请基于以下数据严格按六步推演，每步包含“分析数据”和“做出结论”，必须完全模拟顶尖交易员的逻辑和思维。
 
 【{symbol} | {timestamp}】
 
