@@ -37,14 +37,12 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
 
 
 def format_reasoning(raw_text: str) -> str:
-    """温和结构化处理推理内容，保留原始格式，仅添加引用标记"""
     if not raw_text:
         return "无推理过程"
 
     text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 在关键标题前插入换行
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\1', text)
     text = re.sub(r'(分析数据[：:])', r'\n\1 ', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1 ', text)
@@ -52,9 +50,9 @@ def format_reasoning(raw_text: str) -> str:
     text = re.sub(r'(最终结论[：:])', r'\n\1 ', text)
     text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1 ', text)
     text = re.sub(r'(方向选择[：:])', r'\n\1 ', text)
-    text = re.sub(r'(如果我错了[，,]最可能是因为[：:])', r'\n\1 ', text)
-
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'(入场区间[：:])', r'\n\1 ', text)
+    text = re.sub(r'(止损位[：:])', r'\n\1 ', text)
+    text = re.sub(r'(止盈位[：:])', r'\n\1 ', text)
 
     lines = text.split('\n')
     quoted = []
@@ -68,7 +66,6 @@ def format_reasoning(raw_text: str) -> str:
         else:
             quoted.append(f'> {stripped}')
 
-    # 压缩连续空行
     cleaned = []
     prev_empty = False
     for qline in quoted:
@@ -86,10 +83,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     now_str = datetime.now(beijing_tz).strftime("%m-%d %H:%M")
 
     direction = strategy.get("direction", "neutral")
-    signal_type = strategy.get("signal_type", "neutral")
 
-    # 标题行
-    if direction == "neutral" or signal_type == "neutral":
+    if direction == "neutral":
         title_line = f"## ⚪ 观望 {symbol} · 🔴低 · {now_str}"
     else:
         dir_emoji = "🟢" if direction == "long" else "🔴"
@@ -110,15 +105,13 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         title_parts.append(now_str)
         title_line = "## " + " · ".join(title_parts)
 
-    # 参数卡片
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
     tp = strategy.get("take_profit", 0)
     current_price = data.get("mark_price", 0)
 
-    # 盈亏比优先使用代码计算值
-    rr = strategy.get("calculated_rr")
+    rr = strategy.get("_calculated_rr")
     if rr is None:
         entry_mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
         risk = abs(entry_mid - stop) if stop != 0 else 0
@@ -126,16 +119,14 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         rr = reward / risk if risk > 0 else 0
     rr_str = f"{rr:.2f}" if rr else "N/A"
 
-    if direction == "neutral" or signal_type == "neutral":
+    if direction == "neutral":
         param_card = f"> 现价{current_price:.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
     else:
         param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 推理内容
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
-    # 风险说明
     risk_note = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_note.split('\n'):
@@ -150,7 +141,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
-    # 脚注
     atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
@@ -159,7 +149,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # 拼接最终消息
     message_parts = [
         title_line,
         "",
