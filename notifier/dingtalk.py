@@ -82,10 +82,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # 优化六步标题显示：将"第一步：xxx"转换为加粗样式
+    # 优化六步标题显示：将“第X步：”转换为加粗样式（转义 * 号）
     reasoning = re.sub(r'(第[一二三四五六]步)：', r'**\1：**', reasoning)
-    # 确保步骤之间有适当间距（如果步骤之间没有空行，则添加换行）
-    reasoning = re.sub(r'(**第[一二三四五六]步：**.+?)(?=\*\*第|$)', r'\1\n', reasoning, flags=re.DOTALL)
     reasoning = reasoning.strip()
 
     risk_note = strategy.get("risk_note", "请严格设置止损")
