@@ -108,29 +108,27 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 
 推演与决策（注意：盈亏比和止损距离校验由系统自动完成，你只需提供点位和依据）：
 
-【入场纪律】
+【入场纪律与信号类型】
 - 做多时，入场区间下限必须 ≥ 上方清算集群下沿（突破确认后入场）。
 - 做空时，入场区间上限必须 ≤ 下方清算集群上沿。
-若无法满足，必须输出neutral。
+- 若当前价格已满足入场条件，则 signal_type = "immediate"（即时信号）。
+- 若当前价格未满足入场条件，但你判断价格将很快触发条件（例如先假突破再反转至入场区），你可以输出 signal_type = "pending"（挂单等待），并必须在 execution_plan 中说明等待的触发条件。
+- 若两种情况都不值得出手，必须输出 signal_type = "neutral"。
 
 1. 【价格路径推演 - 三段式】
-   必须包含：① 每段的价格目标（精确到个位数）；② 触发该段运动的具体盘口信号（如“卖一墙被吃掉80%”、“CVD斜率持续>0.5”）；③ 预计持续时间。
-   格式：
-   - 第一段（启动）：先...，触发条件...，目标价位...，预计耗时...。
-   - 第二段（反应）：然后...，判断依据...，关键价位...。
-   - 第三段（终局）：最后...，原因...，终点...。
+   必须包含：① 每段的价格目标（精确到个位数）；② 触发该段运动的具体盘口信号；③ 预计持续时间。
 
 2. 【入场区间】
    提供入场价格区间（下限和上限），并说明为何选择此区间。
 
 3. 【止损位】
-   必须给出具体价格，并明确写出依据的**具体技术结构**（例如“2390附近的15分钟前低下方”、“下方订单簿深度堆积区下沿”）。不要自行计算ATR校验。
+   必须给出具体价格，并明确写出依据的具体技术结构。
 
 4. 【止盈目标】
    给出具体价格，并说明与哪个流动性池或结构相关。
 
 5. 【赔率与胜率的定性权衡】
-   根据逻辑强度，主观判断是否值得出手。若不值得，输出neutral并解释。
+   根据逻辑强度，主观判断是否值得出手。若不值得，输出 neutral。
 
 6. 【仓位选择】（light/medium/heavy）
    若存在显著矛盾信号，仓位至少降一级。
@@ -143,6 +141,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 
 输出JSON（不要代码块）：
 {{
+  "signal_type": "immediate/pending/neutral",
   "direction": "long/short/neutral",
   "confidence": "high/medium/low (若direction为neutral，此项必须为low)",
   "position_size": "light/medium/heavy/none",
@@ -150,8 +149,8 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
   "entry_price_high": 0.0,
   "stop_loss": 0.0,
   "take_profit": 0.0,
-  "execution_plan": "一句话指令。",
-  "reasoning": "（必须包含完整的六步推演，包括第一反应、自我质疑、最终结论，以及推演与决策的所有8项内容）",
+  "execution_plan": "一句话指令。对于pending信号，必须写明触发条件。",
+  "reasoning": "（完整的六步推演）",
   "risk_note": "风险说明，含证伪信号和最坏情况预案。"
 }}
 """
@@ -232,17 +231,17 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             finish_reason = resp.choices[0].finish_reason
             reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
 
-            logger.info(f"finish_reason: {finish_reason}, content长度: {len(content)}, reasoning长度: {len(reasoning) if reasoning else 0}")
+            logger.info(f"finish_reason: {finish_reason}, content长度: {len(content)}")
 
             _log_response_to_file(prompt, content, reasoning)
 
             if not content.strip():
-                logger.warning(f"content 为空，finish_reason={finish_reason}")
                 raise ValueError("模型返回空 content")
 
             json_str = extract_json_from_content(content)
             s = json.loads(json_str)
 
+            s.setdefault("signal_type", "neutral")
             s.setdefault("position_size", "none")
             s.setdefault("execution_plan", "")
             s.setdefault("risk_note", "")
@@ -261,16 +260,14 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     """
-    校验策略输出，代码层全权负责盈亏比和止损距离计算。
-    若关键规则违反则返回 False。
+    校验策略输出，根据 signal_type 执行不同校验规则。
     """
-    direction = s.get("direction")
-    if direction not in ["long", "short", "neutral"]:
-        return False, f"无效方向: {direction}"
+    signal_type = s.get("signal_type", "neutral")
+    direction = s.get("direction", "neutral")
 
-    if direction == "neutral":
+    # neutral 处理
+    if signal_type == "neutral" or direction == "neutral":
         if s.get("confidence") not in ["low"]:
-            logger.warning("direction为neutral，但confidence非low，已强制设为low")
             s["confidence"] = "low"
         entry_low = s.get("entry_price_low", 0)
         entry_high = s.get("entry_price_high", 0)
@@ -278,10 +275,10 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         tp = s.get("take_profit", 0)
         if entry_low > 0 or entry_high > 0 or stop > 0 or tp > 0:
             return False, "方向为 neutral 但提供了非零价格计划"
-        reasoning = s.get("reasoning", "")
-        if "自我质疑" not in reasoning:
-            logger.warning("策略校验警告：reasoning中缺少'自我质疑'环节")
         return True, ""
+
+    if direction not in ["long", "short"]:
+        return False, f"无效方向: {direction}"
 
     try:
         entry_low = float(s.get("entry_price_low", 0))
@@ -295,30 +292,50 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
 
         reasoning = s.get("reasoning", "")
         atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
+        current_price = data.get("mark_price", 0) if data else 0
 
-        # 1. 入场纪律检查（代码层强制）
+        # 1. 入场纪律检查（所有信号必须满足）
         if data:
             above_cluster = data.get("above_cluster", "")
             below_cluster = data.get("below_cluster", "")
             if direction == "long" and above_cluster and '-' in above_cluster:
                 above_low = float(above_cluster.split('-')[0])
                 if entry_low < above_low:
-                    return False, f"做多入场下限{entry_low}低于上方清算集群下沿{above_low}，违反入场纪律"
+                    return False, f"做多入场下限{entry_low}低于上方清算集群下沿{above_low}"
             elif direction == "short" and below_cluster and '-' in below_cluster:
                 below_high = float(below_cluster.split('-')[1])
                 if entry_high > below_high:
-                    return False, f"做空入场上限{entry_high}高于下方清算集群上沿{below_high}，违反入场纪律"
+                    return False, f"做空入场上限{entry_high}高于下方清算集群上沿{below_high}"
 
-        # 2. 止损距离检查（代码层强制）
+        # 2. 根据信号类型执行现价距离校验
+        if signal_type == "immediate":
+            if current_price > 0:
+                if direction == "long" and entry_low < current_price:
+                    return False, f"即时做多信号要求入场下限≥现价，但{entry_low} < {current_price}"
+                if direction == "short" and entry_high > current_price:
+                    return False, f"即时做空信号要求入场上限≤现价，但{entry_high} > {current_price}"
+        elif signal_type == "pending":
+            if current_price > 0:
+                if direction == "long" and entry_low >= current_price:
+                    logger.warning(f"挂单做多信号但入场下限{entry_low}≥现价{current_price}，可能应为即时信号")
+                if direction == "short" and entry_high <= current_price:
+                    logger.warning(f"挂单做空信号但入场上限{entry_high}≤现价{current_price}，可能应为即时信号")
+            # 检查 execution_plan 是否包含触发条件
+            exec_plan = s.get("execution_plan", "")
+            if "触发" not in exec_plan and "等待" not in exec_plan:
+                logger.warning("pending 信号的 execution_plan 缺少触发条件描述")
+        else:
+            return False, f"无效的 signal_type: {signal_type}"
+
+        # 3. 止损距离检查
         if atr_1h > 0:
             worst_entry = entry_high if direction == "long" else entry_low
             stop_distance = abs(worst_entry - stop)
-            min_distance = 1.2 * atr_1h
-            if stop_distance < min_distance:
-                return False, f"止损距离{stop_distance:.2f}小于1.2倍1h ATR({min_distance:.2f})"
+            if stop_distance < 1.2 * atr_1h:
+                return False, f"止损距离{stop_distance:.2f}小于1.2倍1h ATR({1.2*atr_1h:.2f})"
 
-        # 3. 盈亏比计算与校验（代码层强制）
-        MIN_RR = 1.5  # 最低盈亏比要求，可配置
+        # 4. 盈亏比计算与校验
+        MIN_RR = 1.5
         if direction == "long":
             worst_entry = entry_high
             if worst_entry >= tp or worst_entry <= stop:
@@ -336,18 +353,17 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if rr < MIN_RR:
             return False, f"盈亏比{rr:.2f}低于最低要求{MIN_RR}"
 
-        # 将计算出的盈亏比存入 strategy 供后续展示（可选）
         s["_calculated_rr"] = round(rr, 2)
         s["_calculated_risk"] = round(risk, 2)
         s["_calculated_reward"] = round(reward, 2)
 
-        # 4. 深度思考痕迹检查（仅警告）
+        # 5. 深度思考痕迹检查
         if "自我质疑" not in reasoning:
             logger.warning("策略校验警告：reasoning中缺少'自我质疑'环节")
         if "如果我错了" not in reasoning:
             logger.warning("策略校验警告：reasoning中缺少'如果我错了'的反思陈述")
 
-        # 5. 仓位与矛盾信号联动（强制降级）
+        # 6. 仓位与矛盾信号联动
         contradiction_keywords = ["矛盾", "背离", "冲突", "不一致"]
         if any(kw in reasoning for kw in contradiction_keywords):
             if s.get("position_size") == "heavy":
