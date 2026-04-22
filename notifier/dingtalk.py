@@ -75,24 +75,27 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ========== 推理内容处理（彻底分段） ==========
+    # ========== 推理内容处理（增加换行 + 分段） ==========
     reasoning_raw = strategy.get("reasoning", "无推理过程")
 
-    # 1. 统一换行符，并清理多余空白行
+    # 1. 统一换行符
     reasoning = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
-    reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)  # 最多保留两个连续换行
+    reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
 
-    # 2. 将步骤标题加粗（钉钉支持 **加粗**）
+    # 2. 强制在“分析数据”和“做出结论”前后插入换行，确保独立成行
+    reasoning = re.sub(r'(分析数据[：:])', r'\n\1\n', reasoning)
+    reasoning = re.sub(r'(做出结论[：:])', r'\n\1\n', reasoning)
+
+    # 3. 将步骤标题加粗
     reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
 
-    # 3. 按段落分割（以连续两个换行为准），再按行添加引用标记
+    # 4. 按段落分割（以连续两个换行为准）
     paragraphs = reasoning.split('\n\n')
     formatted_paragraphs = []
 
     for para in paragraphs:
         if not para.strip():
             continue
-        # 每个段落内部的行，都加上 '> '
         lines = para.split('\n')
         quoted_lines = []
         for line in lines:
@@ -103,10 +106,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                 quoted_lines.append(line)
             else:
                 quoted_lines.append(f'> {line}')
-        # 段落内行与行之间用 \n 连接（钉钉会保留换行）
+        # 段落内用单换行连接，钉钉会保留换行效果
         formatted_paragraphs.append('\n'.join(quoted_lines))
 
-    # 段落之间用 \n\n 连接（钉钉需要空行来分段）
+    # 段落之间用双换行分隔
     reasoning_block = '\n\n'.join(formatted_paragraphs)
 
     # ========== 风险说明处理 ==========
@@ -115,14 +118,12 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     for part in risk_note.split('\n'):
         part = part.strip()
         if part:
-            # 去掉可能的数字编号前缀
             part = re.sub(r'^[\d\.、\)）]+\s*', '', part)
             if part and part not in risk_lines:
                 risk_lines.append(part)
     if not risk_lines:
         risk_lines = ["请严格设置止损"]
 
-    # 风险说明列表，每行加 '> '
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
@@ -135,17 +136,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # ========== 最终消息拼接（确保空行存在） ==========
+    # ========== 最终消息拼接 ==========
     message_parts = [
         title_line,
-        "",                 # 空行
+        "",
         param_card,
-        "",                 # 空行
+        "",
         "### 🧠 交易员推理",
         reasoning_block,
-        "",                 # 空行
+        "",
         risk_block,
-        "",                 # 空行
+        "",
         footnote
     ]
     final_message = '\n\n'.join(message_parts)
