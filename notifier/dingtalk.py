@@ -75,42 +75,52 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ========== 推理内容处理（增加换行 + 分段） ==========
+    # ========== 推理内容精细化格式化 ==========
     reasoning_raw = strategy.get("reasoning", "无推理过程")
 
-    # 1. 统一换行符
+    # 1. 统一换行符，并压缩多余空行
     reasoning = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
     reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
 
-    # 2. 强制在“分析数据”和“做出结论”前后插入换行，确保独立成行
-    reasoning = re.sub(r'(分析数据[：:])', r'\n\1\n', reasoning)
-    reasoning = re.sub(r'(做出结论[：:])', r'\n\1\n', reasoning)
-
-    # 3. 将步骤标题加粗
+    # 2. 步骤标题加粗（第一步、第二步……）
     reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
 
-    # 4. 按段落分割（以连续两个换行为准）
-    paragraphs = reasoning.split('\n\n')
-    formatted_paragraphs = []
+    # 3. 强制在“分析数据：”和“做出结论：”前后换行，但不在它们后面额外加空行
+    reasoning = re.sub(r'分析数据[：:]', r'\n分析数据：\n', reasoning)
+    reasoning = re.sub(r'做出结论[：:]', r'\n做出结论：\n', reasoning)
 
-    for para in paragraphs:
-        if not para.strip():
+    # 4. 处理第六步中的特殊子标题，确保它们单独成行且左对齐
+    #    交叉验证与裁决、主逻辑、推演与决策、微观盘口确认
+    reasoning = re.sub(r'(交叉验证与裁决)[：:]', r'\n\1：\n', reasoning)
+    reasoning = re.sub(r'(主逻辑)[：:]', r'\n\1：\n', reasoning)
+    reasoning = re.sub(r'(推演与决策)[：:]', r'\n\1：\n', reasoning)
+    reasoning = re.sub(r'(微观盘口确认)[：:]', r'\n\1：\n', reasoning)
+
+    # 5. 将文本按行拆分，每行添加引用标记 "> "
+    lines = reasoning.split('\n')
+    quoted_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            # 空行保留为单独的引用行（显示为空引用块），保持段落间距
+            quoted_lines.append('> ')
             continue
-        lines = para.split('\n')
-        quoted_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith('>'):
-                quoted_lines.append(line)
-            else:
-                quoted_lines.append(f'> {line}')
-        # 段落内用单换行连接，钉钉会保留换行效果
-        formatted_paragraphs.append('\n'.join(quoted_lines))
+        if stripped.startswith('>'):
+            quoted_lines.append(stripped)
+        else:
+            quoted_lines.append(f'> {stripped}')
 
-    # 段落之间用双换行分隔
-    reasoning_block = '\n\n'.join(formatted_paragraphs)
+    # 6. 将连续的空引用行压缩为最多一个（避免过多空行）
+    cleaned_quoted = []
+    prev_empty = False
+    for qline in quoted_lines:
+        is_empty = (qline.strip() == '>')
+        if is_empty and prev_empty:
+            continue
+        cleaned_quoted.append(qline)
+        prev_empty = is_empty
+
+    reasoning_block = '\n'.join(cleaned_quoted)
 
     # ========== 风险说明处理 ==========
     risk_note = strategy.get("risk_note", "请严格设置止损")
