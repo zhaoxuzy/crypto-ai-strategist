@@ -153,12 +153,12 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
-        timeout=180.0  # 增加到180秒
+        timeout=180.0
     )
     
     for attempt in range(max_retries):
         try:
-            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})")
             resp = client.chat.completions.create(
                 model="deepseek-reasoner",
                 messages=[{"role": "user", "content": prompt}],
@@ -167,46 +167,27 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             )
             content = resp.choices[0].message.content
             
-            # 记录推理过程（如果有）
-            if hasattr(resp.choices[0].message, 'reasoning_content'):
-                reasoning_content = resp.choices[0].message.reasoning_content
-                logger.info(f"模型推理内容长度: {len(reasoning_content)}")
-                # 可选：持久化到文件
-                _log_response_to_file(prompt, content, reasoning_content)
-            else:
-                _log_response_to_file(prompt, content)
-                
-            logger.info(f"DeepSeek Reasoner 响应成功，内容长度: {len(content)}")
-
-            json_str = None
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.find("```", start)
-                if end != -1:
-                    json_str = content[start:end].strip()
-            if not json_str:
-                start = content.find('{')
-                end = content.rfind('}') + 1
-                if start != -1 and end > start:
-                    json_str = content[start:end]
-            if not json_str:
-                raise ValueError("无法提取 JSON")
-
+            # 记录推理内容（如果有）
+            reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
+            _log_response_to_file(prompt, content, reasoning)
+            
+            logger.info(f"响应成功，内容长度: {len(content)}")
+            
+            # 鲁棒提取 JSON
+            json_str = extract_json_from_content(content)
             s = json.loads(json_str)
+            
             s.setdefault("position_size", "none")
             s.setdefault("execution_plan", "")
             s.setdefault("risk_note", "")
             return s
-
+            
         except Exception as e:
-            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.warning(f"调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                wait_time = 2 ** (attempt + 1)
-                logger.info(f"等待 {wait_time} 秒后重试...")
-                time.sleep(wait_time)
+                time.sleep(2 ** (attempt + 1))
             else:
                 raise
-
     return {}
 
 
