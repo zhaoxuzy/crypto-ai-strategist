@@ -23,11 +23,14 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是一名管理200万U资金的顶尖加密货币短线交易员。现在，请撰写一份简洁的交易日志，记录你对当前市场的观察、判断和计划。
+    prompt = f"""你是业内顶尖的加密货币短线交易员，管理着200万U的自有资金。每天无数次，你打开这张数据面板，快速扫描，形成判断。你不需要别人告诉你该看什么——你的眼球会自动按照你最熟悉的路径移动，你的大脑会自动将碎片拼成完整的图景。
 
-【市场数据 | {symbol} | {timestamp}】
+现在，请完成一次这样的看盘。
 
-价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
+【{symbol} | {timestamp}】
+
+价格：{current:.2f}
+15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
 
 清算池：
 上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
@@ -52,17 +55,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
 数据缺失：{missing_str}
 
 ---
-你的交易日志应是一段连贯的文字，自然覆盖以下要点（不要用序号或问答格式）：
-
-- 当前市场处于什么状态（趋势/震荡/极端位），波动环境如何。
-- 上下方流动性池哪个更近、更脆，订单簿是否构成阻碍。
-- 市场拥挤吗？谁在犯错？顶级交易员、资金费率、OI、恐慌贪婪给出了什么信号。
-- 期权最大痛点和P/C比是否提供额外线索。
-- 资金流向（CVD、期货净流、交易所BTC余额、ETH/BTC）是支持还是背离你的方向判断。
-- 你的交易计划：方向、入场区间、止损位及其数据依据、止盈目标、盈亏比评估、仓位选择。
-- 最坏情况的预案：什么信号意味着你错了，如何应对。
-
-用交易员的口语化专业语言，像在复盘或与同行交流。不要用“【步骤1】”这类标题。
+请写一份简洁的交易决策备忘录，把你从这些数据中读出的信息、你的判断、你的计划，用连贯的段落写下来。不要用问答或步骤标题，就像你写给自己的笔记一样。
 
 输出JSON格式（不要代码块）：
 {{
@@ -74,7 +67,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令。",
-  "reasoning": "你的完整交易日志，连贯段落。",
+  "reasoning": "你的交易决策备忘录。",
   "risk_note": "最坏情况的预案。"
 }}
 """
