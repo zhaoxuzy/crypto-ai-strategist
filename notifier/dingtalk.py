@@ -5,7 +5,7 @@ import hashlib
 import base64
 import urllib.parse
 import requests
-import re  # 新增导入
+import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
@@ -80,6 +80,11 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         if not line:
             quoted.append('> ')
         else:
+            # 对关键标题加粗（第一步、价格路径推演等）
+            if re.match(r'^(第[一二三四五六]步)[：:]', line):
+                line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
+            elif re.match(r'^价格路径推演[：:]', line):
+                line = re.sub(r'^(价格路径推演)', r'**\1**', line)
             quoted.append(f'> {line}' if not line.startswith('>') else line)
     reasoning_block = '\n'.join(quoted)
 
@@ -90,9 +95,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         part = part.strip()
         if not part:
             continue
-        # 移除行首的各种序号格式：数字+点、数字+顿号、数字+括号、罗马数字等
+        # 移除行首的各种序号格式
         part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
-        # 移除可能残留的"主要风险："等前缀中的序号干扰
         part = re.sub(r'^主要风险[：:]\s*', '', part)
         part = part.strip()
         if part and part not in risk_lines:
@@ -101,7 +105,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     if not risk_lines:
         risk_lines = ["请严格设置止损"]
 
-    # 外层统一添加数字序号
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
