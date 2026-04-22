@@ -82,27 +82,26 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
     reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
 
-    # 2. 步骤标题加粗（第一步、第二步……）
+    # 2. 步骤标题加粗
     reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
 
-    # 3. 强制在“分析数据：”和“做出结论：”前后换行，但不在它们后面额外加空行
+    # 3. 强制换行
     reasoning = re.sub(r'分析数据[：:]', r'\n分析数据：\n', reasoning)
     reasoning = re.sub(r'做出结论[：:]', r'\n做出结论：\n', reasoning)
-
-    # 4. 处理第六步中的特殊子标题，确保它们单独成行且左对齐
-    #    交叉验证与裁决、主逻辑、推演与决策、微观盘口确认
     reasoning = re.sub(r'(交叉验证与裁决)[：:]', r'\n\1：\n', reasoning)
     reasoning = re.sub(r'(主逻辑)[：:]', r'\n\1：\n', reasoning)
     reasoning = re.sub(r'(推演与决策)[：:]', r'\n\1：\n', reasoning)
     reasoning = re.sub(r'(微观盘口确认)[：:]', r'\n\1：\n', reasoning)
+    
+    # 4. 特别处理价格路径推演（第1条），加上📈图标高亮
+    reasoning = re.sub(r'(1\.\s*价格路径推演[：:]?)', r'\n📈 **价格路径推演**：\n', reasoning)
 
-    # 5. 将文本按行拆分，每行添加引用标记 "> "
+    # 5. 按行添加引用标记
     lines = reasoning.split('\n')
     quoted_lines = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
-            # 空行保留为单独的引用行（显示为空引用块），保持段落间距
             quoted_lines.append('> ')
             continue
         if stripped.startswith('>'):
@@ -110,7 +109,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         else:
             quoted_lines.append(f'> {stripped}')
 
-    # 6. 将连续的空引用行压缩为最多一个（避免过多空行）
+    # 6. 压缩连续空引用行
     cleaned_quoted = []
     prev_empty = False
     for qline in quoted_lines:
