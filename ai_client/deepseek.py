@@ -1,7 +1,7 @@
 import os
 import json
+import time
 from openai import OpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from utils.logger import logger
 
 
@@ -100,47 +100,55 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
     return prompt
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=15),
-    retry=retry_if_exception_type((Exception,)),
-    reraise=True
-)
-def call_deepseek(prompt: str) -> dict:
+def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     client = OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
         timeout=120.0
     )
-    logger.info(f"DeepSeek Reasoner API 调用，Prompt 长度: {len(prompt)} 字符")
-    resp = client.chat.completions.create(
-        model="deepseek-reasoner",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=4000,
-        timeout=120
-    )
-    content = resp.choices[0].message.content
-    logger.info(f"DeepSeek Reasoner 响应成功，内容长度: {len(content)}")
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
+            resp = client.chat.completions.create(
+                model="deepseek-reasoner",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4000,
+                timeout=120
+            )
+            content = resp.choices[0].message.content
+            logger.info(f"DeepSeek Reasoner 响应成功，内容长度: {len(content)}")
 
-    json_str = None
-    if "```json" in content:
-        start = content.find("```json") + 7
-        end = content.find("```", start)
-        if end != -1:
-            json_str = content[start:end].strip()
-    if not json_str:
-        start = content.find('{')
-        end = content.rfind('}') + 1
-        if start != -1 and end > start:
-            json_str = content[start:end]
-    if not json_str:
-        raise ValueError("无法提取 JSON")
+            json_str = None
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end != -1:
+                    json_str = content[start:end].strip()
+            if not json_str:
+                start = content.find('{')
+                end = content.rfind('}') + 1
+                if start != -1 and end > start:
+                    json_str = content[start:end]
+            if not json_str:
+                raise ValueError("无法提取 JSON")
 
-    s = json.loads(json_str)
-    s.setdefault("position_size", "none")
-    s.setdefault("execution_plan", "")
-    s.setdefault("risk_note", "")
-    return s
+            s = json.loads(json_str)
+            s.setdefault("position_size", "none")
+            s.setdefault("execution_plan", "")
+            s.setdefault("risk_note", "")
+            return s
+
+        except Exception as e:
+            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)  # 2, 4, 8 秒
+                logger.info(f"等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
+            else:
+                raise
+
+    return {}
 
 
 def validate_strategy(s: dict) -> tuple[bool, str]:
