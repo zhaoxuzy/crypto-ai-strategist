@@ -75,32 +75,25 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # ========== 格式化优化 ==========
-    # 1. 步骤标题加粗
+    # 格式化优化
     reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1：**', reasoning)
-    
-    # 2. “分析数据”和“做出结论”单独成行并加粗标记
     reasoning = re.sub(r'分析数据[：:]', r'\n> 📊 **分析数据**\n> ', reasoning)
     reasoning = re.sub(r'做出结论[：:]', r'\n> 📌 **做出结论**\n> ', reasoning)
-    
-    # 3. 第六步内部的关键节点单独成行并加粗
     reasoning = re.sub(r'交叉验证与裁决[：:]', r'\n> 🔍 **交叉验证与裁决**\n> ', reasoning)
     reasoning = re.sub(r'最终裁决[：:]', r'\n> ⚖️ **最终裁决**\n> ', reasoning)
     reasoning = re.sub(r'主逻辑[：:]', r'\n> 🧩 **主逻辑**\n> ', reasoning)
     reasoning = re.sub(r'核心逻辑[：:]', r'\n> 🧩 **核心逻辑**\n> ', reasoning)
     reasoning = re.sub(r'推演与决策[：:]', r'\n> 🎯 **推演与决策**\n> ', reasoning)
+    reasoning = re.sub(r'微观盘口确认[：:]', r'\n> 🔬 **微观盘口确认**\n> ', reasoning)
     
-    # 4. 重构推演与决策中的列表项
+    # 重构推演与决策中的列表项
     if '🎯 **推演与决策**' in reasoning:
         parts = reasoning.split('🎯 **推演与决策**')
         if len(parts) == 2:
             before = parts[0] + '🎯 **推演与决策**'
             after = parts[1]
-            
-            # 按数字序号分割
             items = re.split(r'\n?(\d+)\.[ \t]*', after)
             formatted_items = []
-            
             i = 0
             while i < len(items):
                 if i == 0 and items[0].strip():
@@ -115,44 +108,29 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
                     i += 2
                 else:
                     i += 1
-            
             if formatted_items:
                 after = '\n> '.join(formatted_items)
             reasoning = before + '\n> ' + after
 
-    # 5. 清理多余的连续换行
     reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
     reasoning = reasoning.strip()
-    
     if not reasoning.startswith('>'):
         lines = reasoning.split('\n')
         reasoning = '\n'.join([f'> {line}' if not line.startswith('>') and line.strip() else line for line in lines])
 
-    # ========== 风险说明彻底清洗 ==========
+    # 风险说明清洗
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    
-    # 第一步：移除所有常见的序号前缀（数字+点/顿号/右括号/空格）
     risk_note = re.sub(r'^\s*\d+[\.、\)）]\s*', '', risk_note, flags=re.MULTILINE)
-    
-    # 第二步：按句号、分号、换行分割成独立句子
     raw_sentences = re.split(r'[。；\n]+', risk_note)
-    
-    # 第三步：清洗每个句子，移除残留的序号和空白
     clean_sentences = []
     for s in raw_sentences:
         s = s.strip()
-        # 再次移除可能残留的序号
         s = re.sub(r'^\d+[\.、\)）]?\s*', '', s)
-        # 移除开头的风险提示字样
         s = re.sub(r'^(风险说明|风险提示|风险|主要风险)[：:]?\s*', '', s)
-        # 只保留长度大于2的有效句子
         if len(s) > 2:
             clean_sentences.append(s)
-    
-    # 第四步：统一重新编号
     if not clean_sentences:
         clean_sentences = ["请严格设置止损"]
-    
     risk_lines = [f"{i+1}. {s}" for i, s in enumerate(clean_sentences)]
     risk_block = "> ### ⚠️ 风险说明\n> " + "\n> ".join(risk_lines)
 
