@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from openai import OpenAI
 from utils.logger import logger
 
@@ -24,6 +25,12 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
+    # 期权硬规则提示
+    max_pain = data['max_pain']
+    max_pain_bias = "偏空信号（卖方对冲压制）" if current > max_pain else "偏多信号（卖方对冲支撑）"
+    put_call_ratio = data['put_call_ratio']
+    pc_bias = "偏空信号" if put_call_ratio > 1.0 else "偏多信号"
+
     prompt = f"""你是拥有十年经验的顶尖加密货币短线交易员，管理200万U资金。请基于以下数据严格按六步推演，每步包含“分析数据”和“做出结论”。
 
 【{symbol} | {timestamp}】
@@ -44,7 +51,9 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 顶级多空比{data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
 
-期权：最大痛点{data['max_pain']:.2f} | P/C比{data['put_call_ratio']:.4f}
+期权信号硬规则：
+- 最大痛点{max_pain:.2f}（现价{current:.2f}）：判定为【{max_pain_bias}】。若现价>最大痛点，卖方对冲形成向下引力；若现价<最大痛点，形成向上引力。
+- P/C比{put_call_ratio:.4f}：判定为【{pc_bias}】（>1.0偏空，<1.0偏多）。
 
 资金流：CVD斜率{data['cvd_slope']:.4f} | 期货24h净流{data['netflow']/1e6:.1f}M | 交易所BTC 24h变化{data['exchange_btc_change_24h']:+.0f} BTC
 
@@ -71,27 +80,36 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 做出结论：资金流是否支持猎物方向，三个指标是否共振或背离。
 
 第五步：辅助信号扫描
-分析数据：期权最大痛点、P/C比、ETH/BTC汇率。
+分析数据：期权最大痛点、P/C比（严格参照上方硬规则解读）、ETH/BTC汇率。
 做出结论：这些信号是加强还是削弱主逻辑，有无隐藏风险。
 
 第六步：矛盾裁决与决策
 交叉验证与裁决：比对前五步结论，指出印证与矛盾点，明确权重分配，形成主逻辑。
 
 推演与决策：
-1. 【价格路径推演 - 必须按三段式详细描述】
-   请用“先……然后……最后……”的结构，写出价格最可能的完整演变过程，每段必须包含：
-   - 第一段（启动）：从当前价格{current:.2f}开始，首先朝哪个方向移动？触发原因是什么（例如突破某个清算墙或订单簿失衡）？会猎杀哪一侧的止损？价格会到达哪个具体点位？
-   - 第二段（反应）：到达第一目标后市场如何反应？回踩至哪个支撑/阻力？是否形成震荡区间？用数据（如CVD变化、订单簿厚度）支撑你的判断。
-   - 第三段（终局）：最终价格会走向何处？可能触及的第二个目标、最大痛点或流动性池是什么？为什么？
-   注意：此处必须明确写出具体价格数字，例如“先上冲至2430附近，然后回踩2405确认支撑，最后再向2460进发”。
+【入场纪律】做多时，入场区间下限必须 ≥ 上方清算集群下沿（突破确认后入场）；做空时，入场区间上限必须 ≤ 下方清算集群上沿。若无法满足，必须输出neutral。
 
-2. 入场区间。以入场区间最差点（做多取上沿，做空取下沿）作为成本，写出完整的盈亏比计算公式：`|止损 - 最差入场| : |止盈 - 最差入场|`。
-3. 止损位及数据依据。止损必须同时满足：① 在关键清算墙或结构位外侧；② 距离 ≥ 1.2倍 1小时 ATR。取两者较大值。
+1. 【价格路径推演 - 三段式】
+   用“先……然后……最后……”描述完整演变：
+   - 第一段（启动）：从当前价{current:.2f}开始，首先朝哪个方向移动？触发原因？猎杀哪一侧止损？到达何价位？
+   - 第二段（反应）：到达第一目标后如何反应？回踩至何处？有何数据支撑？
+   - 第三段（终局）：最终走向何处？触及哪个目标或流动性池？为什么？
+
+2. 【盈亏比唯一计算】
+   定义：最差入场价 = 做多时的入场区间上沿，做空时的入场区间下沿。
+   输出格式：`盈亏比 = (止盈 - 最差入场) / (最差入场 - 止损)`，并在reasoning中输出该数值。禁止使用中位价计算。
+
+3. 止损位及数据依据：① 在关键清算墙或结构位外侧；② 距离 ≥ 1.2倍 1小时 ATR。取两者较大值。
+
 4. 止盈目标与流动性池关系。
-5. 赔率与胜率的权衡：基于上述盈亏比，结合证据链强弱，独立判断期望值是否为正。若赔率较低但你认为胜率极高，必须明确写出论证。若不值得出手，输出neutral并解释。
-6. 仓位选择与证据链强弱挂钩。
+
+5. 赔率与胜率的权衡：基于盈亏比和证据链强弱判断期望值。若不值得出手，输出neutral并解释。
+
+6. 仓位选择与证据链强弱挂钩（light/medium/heavy）。
+
 7. 主动证伪信号（时间/价格/指标条件）。
-8. 微观盘口确认：假如你此刻必须用实盘200万U执行此计划，且滑点设置为0.05%，你会因为什么具体的微观盘口细节（例如卖一挂单厚度）而延迟3秒入场？
+
+8. 微观盘口确认：实盘200万U、滑点0.05%下，何种盘口细节会延迟3秒入场？
 
 输出JSON（不要代码块）：
 {{
@@ -103,7 +121,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令。",
-  "reasoning": "第一步：环境定调\\n分析数据：...\\n做出结论：...\\n\\n第二步：...\\n\\n...\\n\\n第六步：矛盾裁决与决策\\n交叉验证与裁决：...\\n推演与决策：\\n1. 价格路径推演：先...然后...最后...\\n2. 入场区间：...\\n3. 止损位：...\\n4. 止盈目标：...\\n5. 赔率与胜率权衡：...\\n6. 仓位选择：...\\n7. 主动证伪信号：...\\n8. 微观盘口确认：...",
+  "reasoning": "第一步：环境定调\\n分析数据：...\\n做出结论：...\\n\\n第二步：...\\n\\n第六步：矛盾裁决与决策\\n交叉验证与裁决：...\\n推演与决策：\\n1. 价格路径推演：...\\n2. 盈亏比计算：...\\n3. 止损位：...\\n4. 止盈目标：...\\n5. 赔率与胜率权衡：...\\n6. 仓位选择：...\\n7. 主动证伪信号：...\\n8. 微观盘口确认：...",
   "risk_note": "风险说明，含证伪信号和最坏情况预案。"
 }}
 """
@@ -161,7 +179,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
-def validate_strategy(s: dict) -> tuple[bool, str]:
+def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
@@ -184,6 +202,44 @@ def validate_strategy(s: dict) -> tuple[bool, str]:
             return False, "价格必须为正数"
         if entry_low > entry_high:
             return False, "入场区间下限大于上限"
-    except:
-        return False, "数值解析失败"
-    return True, ""
+
+        # ========== 新增逻辑一致性校验 ==========
+        reasoning = s.get("reasoning", "")
+        
+        # 1. 盈亏比一致性检查
+        rr_match = re.search(r'盈亏比[＝=:：]\s*(\d+\.?\d*)', reasoning)
+        if rr_match:
+            claimed_rr = float(rr_match.group(1))
+            if direction == "long":
+                worst_entry = entry_high
+                actual_rr = round((tp - worst_entry) / (worst_entry - stop), 2) if worst_entry != stop else 0
+            else:
+                worst_entry = entry_low
+                actual_rr = round((worst_entry - tp) / (stop - worst_entry), 2) if stop != worst_entry else 0
+            if abs(claimed_rr - actual_rr) > 0.1:
+                logger.warning(f"策略校验警告：盈亏比不一致。声称{claimed_rr}，实际{actual_rr}")
+                # 可选：强制返回失败，或仅警告
+                # return False, f"盈亏比矛盾: {claimed_rr} vs {actual_rr}"
+
+        # 2. 期权最大痛点逻辑检查（如果data提供）
+        if data:
+            current = data.get("mark_price", 0)
+            max_pain = data.get("max_pain", 0)
+            if current > max_pain and direction == "long":
+                if "支持向上" in reasoning and "最大痛点" in reasoning:
+                    logger.warning("策略校验警告：期权最大痛点低于现价，但reasoning中误判为支持向上。")
+            elif current < max_pain and direction == "short":
+                if "支持向下" in reasoning and "最大痛点" in reasoning:
+                    logger.warning("策略校验警告：期权最大痛点高于现价，但reasoning中误判为支持向下。")
+
+        # 3. 入场纪律检查（做多时入场下限应≥上方清算下沿）
+        if direction == "long" and "上方" in reasoning and "清算" in reasoning:
+            match = re.search(r'上方.*?(\d{4,6})[^\d]', reasoning)
+            if match:
+                wall_low = float(match.group(1))
+                if entry_low < wall_low:
+                    logger.warning(f"策略校验警告：做多入场下限{entry_low}低于上方清算墙下沿{wall_low}，违反入场纪律。")
+
+        return True, ""
+    except Exception as e:
+        return False, f"数值解析失败: {e}"
