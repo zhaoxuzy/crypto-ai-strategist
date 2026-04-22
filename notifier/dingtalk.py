@@ -75,97 +75,77 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # ========== 格式化优化 ==========
-    # 1. 步骤标题加粗
-    reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1：**', reasoning)
+    # ========== 全新格式化策略：逐行解析 + 推演区域特殊处理 ==========
+    lines = reasoning.split('\n')
+    formatted_lines = []
+    in_tuijue = False
     
-    # 2. “分析数据”和“做出结论”单独成行并加粗标记
-    reasoning = re.sub(r'分析数据[：:]', r'\n> 📊 **分析数据**\n> ', reasoning)
-    reasoning = re.sub(r'做出结论[：:]', r'\n> 📌 **做出结论**\n> ', reasoning)
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+            
+        # 检测是否进入推演与决策区域
+        if '🎯 **推演与决策**' in line or '推演与决策' in line:
+            in_tuijue = True
+            formatted_lines.append('> 🎯 **推演与决策**')
+            continue
+        
+        # 如果在推演区域内，处理列表项
+        if in_tuijue:
+            # 匹配数字序号（1. 2. 等）
+            match = re.match(r'^>?\s*(\d+)\.[ \t]*(.+)$', stripped)
+            if match:
+                num = match.group(1)
+                content = match.group(2).strip()
+                content = re.sub(r'\n', ' ', content)
+                content = re.sub(r'^>?\s*', '', content)
+                formatted_lines.append(f'> **{num}.** {content}')
+                continue
+            # 匹配带emoji的格式
+            match = re.match(r'^>?\s*(\d+)\.[ \t]*🔬\s*(.+)$', stripped)
+            if match:
+                num = match.group(1)
+                content = match.group(2).strip()
+                content = re.sub(r'\n', ' ', content)
+                formatted_lines.append(f'> **{num}.** 🔬 {content}')
+                continue
+        
+        # 默认处理：应用标题加粗规则
+        processed = stripped
+        processed = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1：**', processed)
+        processed = re.sub(r'分析数据[：:]', r'> 📊 **分析数据**\n> ', processed)
+        processed = re.sub(r'做出结论[：:]', r'> 📌 **做出结论**\n> ', processed)
+        processed = re.sub(r'交叉验证与裁决[：:]', r'> 🔍 **交叉验证与裁决**\n> ', processed)
+        processed = re.sub(r'主逻辑[：:]', r'> 🧩 **主逻辑**\n> ', processed)
+        processed = re.sub(r'微观盘口确认[：:]', r'> 🔬 **微观盘口确认**\n> ', processed)
+        
+        # 确保以引用格式开头
+        if not processed.startswith('>'):
+            processed = '> ' + processed
+        formatted_lines.append(processed)
     
-    # 3. 第六步内部的关键节点单独成行并加粗
-    reasoning = re.sub(r'交叉验证与裁决[：:]', r'\n> 🔍 **交叉验证与裁决**\n> ', reasoning)
-    reasoning = re.sub(r'最终裁决[：:]', r'\n> ⚖️ **最终裁决**\n> ', reasoning)
-    reasoning = re.sub(r'主逻辑[：:]', r'\n> 🧩 **主逻辑**\n> ', reasoning)
-    reasoning = re.sub(r'核心逻辑[：:]', r'\n> 🧩 **核心逻辑**\n> ', reasoning)
-    reasoning = re.sub(r'推演与决策[：:]', r'\n> 🎯 **推演与决策**\n> ', reasoning)
-    reasoning = re.sub(r'微观盘口确认[：:]', r'\n> 🔬 **微观盘口确认**\n> ', reasoning)
-    
-    # 4. 重构推演与决策中的列表项（包括第8条微观盘口确认）
-    if '🎯 **推演与决策**' in reasoning:
-        parts = reasoning.split('🎯 **推演与决策**')
-        if len(parts) == 2:
-            before = parts[0] + '🎯 **推演与决策**'
-            after = parts[1]
-            
-            # 将 "8. 🔬 微观盘口确认" 这种格式也纳入列表处理
-            # 首先，如果存在 "8. 🔬" 但前面没有换行，我们手动给它加换行
-            after = re.sub(r'(\d+)\.\s*🔬', r'\n\1. 🔬', after)
-            
-            items = re.split(r'\n?(\d+)\.[ \t]*', after)
-            formatted_items = []
-            
-            i = 0
-            while i < len(items):
-                if i == 0 and items[0].strip():
-                    formatted_items.append(items[0].strip())
-                    i += 1
-                elif i + 1 < len(items):
-                    num = items[i]
-                    content = items[i+1].strip()
-                    # 清理内容中的多余换行和符号
-                    content = re.sub(r'\n>?\s*', ' ', content)
-                    content = re.sub(r'^>?\s*', '', content)
-                    formatted_items.append(f'**{num}.** {content}')
-                    i += 2
-                else:
-                    i += 1
-            
-            if formatted_items:
-                after = '\n> '.join(formatted_items)
-            reasoning = before + '\n> ' + after
-
-    # 5. 清理多余的连续换行
+    reasoning = '\n'.join(formatted_lines)
     reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
-    reasoning = reasoning.strip()
-    
-    if not reasoning.startswith('>'):
-        lines = reasoning.split('\n')
-        reasoning = '\n'.join([f'> {line}' if not line.startswith('>') and line.strip() else line for line in lines])
 
-    # ========== 风险说明彻底清洗（修复重复序号） ==========
+    # ========== 风险说明彻底清洗 ==========
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    
-    # 第一步：彻底移除所有形式的序号前缀（数字+点/顿号/右括号/空格）
-    # 多次清洗，确保残留的 "1."、"1) "、"1、" 等全部移除
     risk_note = re.sub(r'^\s*\d+[\.、\)）]\s*', '', risk_note, flags=re.MULTILINE)
     risk_note = re.sub(r'\n\s*\d+[\.、\)）]\s*', '\n', risk_note)
-    
-    # 第二步：按句号、分号、换行分割成独立句子
     raw_sentences = re.split(r'[。；\n]+', risk_note)
-    
-    # 第三步：清洗每个句子
     clean_sentences = []
     for s in raw_sentences:
         s = s.strip()
-        # 再次移除可能残留的任何序号（包括多级序号如 1.1）
         s = re.sub(r'^[\d\.、\)）]+\s*', '', s)
-        # 移除开头的风险提示字样
         s = re.sub(r'^(风险说明|风险提示|风险|主要风险)[：:]?\s*', '', s)
-        # 只保留长度大于2的有效句子
         if len(s) > 2:
             clean_sentences.append(s)
-    
-    # 第四步：去重（有时AI会输出重复的风险条目）
     unique_sentences = []
     for s in clean_sentences:
         if s not in unique_sentences:
             unique_sentences.append(s)
-    
-    # 第五步：统一重新编号
     if not unique_sentences:
         unique_sentences = ["请严格设置止损"]
-    
     risk_lines = [f"{i+1}. {s}" for i, s in enumerate(unique_sentences)]
     risk_block = "> ### ⚠️ 风险说明\n> " + "\n> ".join(risk_lines)
 
