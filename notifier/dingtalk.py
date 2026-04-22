@@ -36,6 +36,62 @@ def send_dingtalk_message(markdown_content: str, title: str = "策略推送"):
         return False
 
 
+def format_reasoning(raw_text: str) -> str:
+    """
+    温和结构化处理：仅在关键位置插入换行，其余保留原样。
+    """
+    if not raw_text:
+        return "无推理过程"
+
+    # 1. 统一换行符，并压缩多余空行
+    text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 2. 在步骤标题前插入换行（确保每步独立成段）
+    text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\1', text)
+
+    # 3. 在“分析数据”和“做出结论”前插入换行，使其独立成行（但后面不额外换行）
+    text = re.sub(r'(分析数据[：:])', r'\n\1 ', text)   # 加空格避免与后面内容粘连
+    text = re.sub(r'(做出结论[：:])', r'\n\1 ', text)
+
+    # 4. 在“交叉验证与裁决”、“推演与决策”前插入换行
+    text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1 ', text)
+    text = re.sub(r'(推演与决策[：:])', r'\n\1 ', text)
+
+    # 5. 处理推演中的数字列表项（如 "1. 价格路径推演："），在前面换行
+    text = re.sub(r'(\d+\.\s*价格路径推演[：:])', r'\n\1', text)
+    text = re.sub(r'(\d+\.\s*入场区间)', r'\n\1', text)
+    text = re.sub(r'(\d+\.\s*止损位)', r'\n\1', text)
+
+    # 6. 移除可能产生的连续换行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 7. 按行添加引用标记 "> "
+    lines = text.split('\n')
+    quoted = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            quoted.append('> ')   # 空行保留为引用块空行
+            continue
+        if stripped.startswith('>'):
+            quoted.append(stripped)
+        else:
+            quoted.append(f'> {stripped}')
+
+    # 8. 压缩连续的空引用行（最多保留一个）
+    cleaned = []
+    prev_empty = False
+    for qline in quoted:
+        is_empty = (qline.strip() == '>')
+        if is_empty and prev_empty:
+            continue
+        cleaned.append(qline)
+        prev_empty = is_empty
+
+    return '\n'.join(cleaned)
+
+
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%m-%d %H:%M")
@@ -75,40 +131,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ========== 推理内容：极简处理，保留原始结构 ==========
+    # 推理内容格式化
     reasoning_raw = strategy.get("reasoning", "无推理过程")
+    reasoning_block = format_reasoning(reasoning_raw)
 
-    # 1. 统一换行符为 \n，并压缩超过2个的连续换行
-    reasoning = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
-    reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
-
-    # 2. 将步骤标题加粗（简单的正则，不会破坏结构）
-    reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
-
-    # 3. 按行添加引用标记 "> "
-    lines = reasoning.split('\n')
-    quoted_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            # 保留空行，钉钉引用块内的空行有助于分段
-            quoted_lines.append('> ')
-            continue
-        if stripped.startswith('>'):
-            quoted_lines.append(stripped)
-        else:
-            quoted_lines.append(f'> {stripped}')
-
-    reasoning_block = '\n'.join(quoted_lines)
-
-    # ========== 风险说明：清晰列表 ==========
+    # 风险说明
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    # 简单拆分并清理前缀编号
     risk_lines = []
     for part in risk_note.split('\n'):
         part = part.strip()
         if part:
-            # 移除开头的数字或符号编号
+            # 移除开头的编号前缀
             part = re.sub(r'^[\d\.、\)）]+\s*', '', part)
             if part and part not in risk_lines:
                 risk_lines.append(part)
@@ -118,7 +151,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
-    # ========== 脚注 ==========
+    # 脚注
     atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
@@ -127,18 +160,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # ========== 最终拼接：用明确的空行分隔各部分 ==========
+    # 拼接最终消息
     message_parts = [
         title_line,
-        "",                 # 空行
+        "",
         param_card,
-        "",                 # 空行
+        "",
         "### 🧠 交易员推理",
         reasoning_block,
-        "",                 # 空行
+        "",
         risk_block,
-        "",                 # 空行
+        "",
         footnote
     ]
-    final_message = '\n\n'.join(message_parts)
-    return final_message
+    return '\n\n'.join(message_parts)
