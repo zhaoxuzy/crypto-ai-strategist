@@ -91,7 +91,10 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning = re.sub(r'推演与决策[：:]', r'\n> 🎯 **推演与决策**\n> ', reasoning)
     reasoning = re.sub(r'价格(?:最可能)?路径[：:]', r'\n> 📈 **价格路径**\n> ', reasoning)
     
-    # 4. 清理多余的连续换行和引用符号
+    # 4. 对推演与决策内的列表项进行美化（匹配 "1. xxx" 或 "1) xxx" 或 "1、xxx"）
+    reasoning = re.sub(r'(\d+)[\.、\)]\s*', r'**\1.** ', reasoning)
+    
+    # 5. 清理多余的连续换行和引用符号
     reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
     reasoning = reasoning.strip()
     
