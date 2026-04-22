@@ -7,7 +7,6 @@ from openai import OpenAI
 from utils.logger import logger
 
 
-# ==================== Prompt 构建 ====================
 def build_prompt(data: dict, symbol: str) -> str:
     timestamp = data.get("timestamp", "N/A")
     current = data['mark_price']
@@ -78,26 +77,35 @@ ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
 自我质疑：
 最终结论：
 
-第六步：矛盾裁决与方向判断
+第六步：矛盾裁决与决策
 交叉验证与裁决：
 如果我错了，最可能是因为：
-方向选择（仅输出 long/short/neutral）及置信度（high/medium/low）：
-
-【注意】你只需要输出方向和置信度，具体的入场、止损、止盈将由系统根据风控模型自动计算。若方向为 neutral，则无需提供价格。
+方向选择（long/short/neutral）：
+置信度（high/medium/low）：
+仓位（light/medium/heavy）：
+入场区间（例如 79000-79200，并说明为何选择此区间）：
+止损位（例如 78500，并说明依据的技术结构或清算墙）：
+止盈位（例如 81000，并说明与流动性池或结构的关系）：
+主动证伪信号（时间/价格/指标条件）：
+微观盘口确认（什么细节会让你延迟3秒入场）：
 
 输出JSON（不要代码块）：
 {{
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
   "position_size": "light/medium/heavy/none",
-  "reasoning": "（完整的六步推演内容）",
+  "entry_price_low": 0.0,
+  "entry_price_high": 0.0,
+  "stop_loss": 0.0,
+  "take_profit": 0.0,
+  "execution_plan": "一句话指令。",
+  "reasoning": "（完整的六步推演内容，包含上述所有环节）",
   "risk_note": "主要风险和证伪条件"
 }}
 """
     return prompt
 
 
-# ==================== API 调用与响应处理 ====================
 def _log_response_to_file(prompt: str, content: str, reasoning_content: str = None):
     try:
         log_dir = "logs"
@@ -175,6 +183,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
             json_str = extract_json_from_content(content)
             s = json.loads(json_str)
             s.setdefault("position_size", "none")
+            s.setdefault("execution_plan", "")
             s.setdefault("reasoning", "")
             s.setdefault("risk_note", "")
             return s
@@ -187,68 +196,16 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
-# ==================== 科学点位计算 ====================
-def calculate_entry_stop_tp(direction: str, data: dict) -> dict:
-    current = data['mark_price']
-    atr_1h = data.get('atr_1h', data['atr_15m'] * 2)
-    above_cluster = data.get('above_cluster', '')
-    below_cluster = data.get('below_cluster', '')
-
-    above_low = above_high = below_low = below_high = None
-    if '-' in above_cluster:
-        above_low, above_high = map(float, above_cluster.split('-'))
-    if '-' in below_cluster:
-        below_low, below_high = map(float, below_cluster.split('-'))
-
-    if direction == "long":
-        if above_low is None:
-            return None
-        entry_low = above_low
-        entry_high = min(current * 1.003, above_high)
-        if entry_low > entry_high:
-            entry_high = entry_low + atr_1h * 0.5
-
-        technical_stop = below_low if below_low else entry_low - atr_1h * 1.5
-        stop = min(entry_low - atr_1h * 1.5, technical_stop)
-
-        risk = entry_high - stop
-        tp_by_rr = entry_high + risk * 2.0
-        tp = min(tp_by_rr, above_high) if above_high else tp_by_rr
-
-    else:  # short
-        if below_high is None:
-            return None
-        entry_high = below_high
-        entry_low = max(current * 0.997, below_low)
-        if entry_low > entry_high:
-            entry_low = entry_high - atr_1h * 0.5
-
-        technical_stop = above_high if above_high else entry_high + atr_1h * 1.5
-        stop = max(entry_high + atr_1h * 1.5, technical_stop)
-
-        risk = stop - entry_low
-        tp_by_rr = entry_low - risk * 2.0
-        tp = max(tp_by_rr, below_low) if below_low else tp_by_rr
-
-    if direction == "long":
-        rr = (tp - entry_high) / (entry_high - stop) if (entry_high - stop) > 0 else 0
-    else:
-        rr = (entry_low - tp) / (stop - entry_low) if (stop - entry_low) > 0 else 0
-
-    return {
-        "entry_price_low": round(entry_low, 2),
-        "entry_price_high": round(entry_high, 2),
-        "stop_loss": round(stop, 2),
-        "take_profit": round(tp, 2),
-        "calculated_rr": round(rr, 2)
-    }
-
-
-# ==================== 策略校验与点位注入 ====================
-def validate_and_enrich_strategy(s: dict, data: dict) -> tuple[bool, str, dict]:
+def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
+    """
+    校验 AI 输出的策略。
+    - 若 data 未提供，仅做基础字段校验。
+    - 若 data 提供，则计算实际盈亏比和止损距离，若低于安全阈值则发出警告，但不阻断信号。
+    返回 (bool, str)，True 表示信号可推送，False 表示存在严重格式错误。
+    """
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
-        return False, f"无效方向: {direction}", s
+        return False, f"无效方向: {direction}"
 
     if direction == "neutral":
         s["signal_type"] = "neutral"
@@ -257,62 +214,68 @@ def validate_and_enrich_strategy(s: dict, data: dict) -> tuple[bool, str, dict]:
         s["entry_price_high"] = 0
         s["stop_loss"] = 0
         s["take_profit"] = 0
-        return True, "", s
-
-    reasoning = s.get("reasoning", "")
-    if "自我质疑" not in reasoning:
-        logger.warning("缺少自我质疑环节")
-
-    points = calculate_entry_stop_tp(direction, data)
-    if points is None:
-        return False, "无法计算入场点位（清算集群数据缺失）", s
-
-    current = data['mark_price']
-    if direction == "long" and points["entry_price_low"] < current * 0.995:
-        return False, f"做多入场下限{points['entry_price_low']:.2f}低于现价过多", s
-    if direction == "short" and points["entry_price_high"] > current * 1.005:
-        return False, f"做空入场上限{points['entry_price_high']:.2f}高于现价过多", s
-
-    s.update(points)
-    s["signal_type"] = "immediate"
-    s["execution_plan"] = "立即入场"
-
-    contradiction_kws = ["矛盾", "背离", "冲突"]
-    if any(kw in reasoning for kw in contradiction_kws):
-        if s.get("position_size") == "heavy":
-            s["position_size"] = "medium"
-            logger.warning("存在矛盾信号，仓位降为medium")
-
-    return True, "", s
-
-
-# ==================== 兼容旧接口 ====================
-def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
-    """
-    兼容旧版调用接口。
-    若未提供 data，则仅做基础校验（方向、neutral 等）。
-    若提供 data，则进行完整校验和点位注入。
-    """
-    if data is None:
-        logger.warning("validate_strategy 未传入 data 参数，仅执行基础校验")
-        direction = s.get("direction")
-        if direction not in ["long", "short", "neutral"]:
-            return False, f"无效方向: {direction}"
-        if direction == "neutral":
-            s["signal_type"] = "neutral"
-            s["confidence"] = "low"
-            s["entry_price_low"] = 0
-            s["entry_price_high"] = 0
-            s["stop_loss"] = 0
-            s["take_profit"] = 0
-            return True, ""
-        # 基础存在性检查
-        if not s.get("reasoning"):
-            return False, "缺少 reasoning 字段"
         return True, ""
 
-    valid, msg, enriched = validate_and_enrich_strategy(s, data)
-    if valid:
-        # 将计算出的点位合并回原字典（影响外部引用）
-        s.update(enriched)
-    return valid, msg
+    # 基础字段存在性检查
+    required = ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]
+    for field in required:
+        if s.get(field) is None:
+            return False, f"缺少必要字段: {field}"
+
+    try:
+        entry_low = float(s["entry_price_low"])
+        entry_high = float(s["entry_price_high"])
+        stop = float(s["stop_loss"])
+        tp = float(s["take_profit"])
+    except:
+        return False, "价格字段必须为数字"
+
+    if entry_low <= 0 or entry_high <= 0 or stop <= 0 or tp <= 0:
+        return False, "价格必须为正数"
+    if entry_low > entry_high:
+        return False, "入场区间下限大于上限"
+
+    # 如果有 data，进行风控校验（仅警告，不阻断）
+    if data:
+        atr_1h = data.get('atr_1h', data.get('atr_15m', 0) * 2)
+        current = data.get('mark_price', 0)
+
+        # 1. 盈亏比计算
+        if direction == "long":
+            worst_entry = entry_high
+            risk = worst_entry - stop
+            reward = tp - worst_entry
+        else:
+            worst_entry = entry_low
+            risk = stop - worst_entry
+            reward = worst_entry - tp
+
+        if risk > 0:
+            rr = reward / risk
+            s["_calculated_rr"] = round(rr, 2)
+            if rr < 1.5:
+                logger.warning(f"盈亏比 {rr:.2f} 低于 1.5，建议人工复核")
+        else:
+            logger.warning("止损距离为零或负，风险计算异常")
+
+        # 2. 止损距离校验
+        if atr_1h > 0:
+            stop_distance = abs(worst_entry - stop)
+            min_distance = 1.2 * atr_1h
+            if stop_distance < min_distance:
+                logger.warning(f"止损距离 {stop_distance:.2f} 小于 1.2倍1h ATR ({min_distance:.2f})")
+
+        # 3. 入场区与现价关系检查
+        if current > 0:
+            if direction == "long" and entry_low < current * 0.995:
+                logger.warning(f"做多入场下限 {entry_low:.2f} 低于现价 {current:.2f} 较多，可能为挂单策略")
+            if direction == "short" and entry_high > current * 1.005:
+                logger.warning(f"做空入场上限 {entry_high:.2f} 高于现价 {current:.2f} 较多，可能为挂单策略")
+
+    # 深度思考痕迹检查
+    reasoning = s.get("reasoning", "")
+    if "自我质疑" not in reasoning:
+        logger.warning("reasoning 中缺少'自我质疑'环节")
+
+    s["signal_type"] = "immediate"
+    return True, ""
