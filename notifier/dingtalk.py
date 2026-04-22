@@ -52,7 +52,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     conf_text = conf_map.get(confidence, "🟡中")
 
-    # 紧凑标题行
     title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
     if size_text:
         title_parts.append(size_text)
@@ -60,7 +59,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
-    # 交易指令卡
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -82,32 +80,28 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}{extra_str}"
 
-    # 推理内容
     reasoning = strategy.get("reasoning", "无推理过程")
-    if "【1】" in reasoning and "\n【1】" not in reasoning:
-        reasoning = reasoning.replace("【", "\n【").lstrip("\n")
+    
+    # 优化六步标题显示：将"第一步：xxx"转换为加粗样式
+    reasoning = re.sub(r'(第[一二三四五六]步)：', r'**\1：**', reasoning)
+    # 确保步骤之间有适当间距（如果步骤之间没有空行，则添加换行）
+    reasoning = re.sub(r'(**第[一二三四五六]步：**.+?)(?=\*\*第|$)', r'\1\n', reasoning, flags=re.DOTALL)
     reasoning = reasoning.strip()
 
-    # 风险提示（彻底清洗已有序号）
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    # 1. 移除所有前导序号（如 "1.", "1)", "1、", "1.1", "①" 等）
-    risk_note = re.sub(r'^[\s]*[\d]+[\.\、\)]?\s*', '', risk_note, flags=re.MULTILINE)
-    risk_note = re.sub(r'\n[\s]*[\d]+[\.\、\)]?\s*', '\n', risk_note)
-    # 2. 按句号、换行、分号分割
-    raw_items = re.split(r'[。；\n]', risk_note)
-    risk_items = []
-    for item in raw_items:
+    risk_items = re.split(r'[。；\n]', risk_note)
+    risk_lines = []
+    idx = 1
+    for item in risk_items:
         item = item.strip()
-        # 再次清洗可能残留的序号
         item = re.sub(r'^[\d]+[\.\、\)]?\s*', '', item)
         if item and len(item) > 2:
-            risk_items.append(item)
-    if not risk_items:
-        risk_items = ["请严格设置止损"]
-    risk_lines = [f"{i+1}. {item}" for i, item in enumerate(risk_items)]
+            risk_lines.append(f"{idx}. {item}")
+            idx += 1
+    if not risk_lines:
+        risk_lines = ["1. 请严格设置止损"]
     risk_block = "> ### ⚠️ 风险\n> " + "\n> ".join(risk_lines)
 
-    # 脚注
     atr = data.get("atr", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
