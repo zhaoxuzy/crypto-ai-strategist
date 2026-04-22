@@ -23,38 +23,51 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是业内公认的顶尖加密货币短线交易员，管理着 200 万 U 的自有资金。你的每一笔交易都基于对市场微观结构的深刻理解。现在，你面前是一份实时市场数据。请以你的专业习惯，快速扫描，然后给出你的判断。
+    prompt = f"""角色：资深加密货币短线交易员，管理 200 万 U 资金。
+任务：基于以下市场数据，形成完整的交易决策。请确保你的分析覆盖全部四个维度。
 
 【{symbol} | {timestamp}】
 
-价格：{current:.2f}
-15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
+一、价格与波动背景
+标记价格：{current:.2f}
+15min ATR：{data['atr_15m']:.2f}
+波动因子：{data['vol_factor']:.2f}
+7日价格分位数：{data['price_percentile']:.0f}%
 
-清算池：
-- 上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
-- 下方(多头)：{data['below_liq']/1e9:.2f}B，{below_cluster} (距{below_distance})
-- 比值：{data['liq_ratio']:.3f}
-
+二、流动性战场
+上方空头清算：{data['above_liq']/1e9:.2f}B，密集区 {above_cluster} (距{above_distance})
+下方多头清算：{data['below_liq']/1e9:.2f}B，密集区 {below_cluster} (距{below_distance})
+上方/下方比值：{data['liq_ratio']:.3f}
 订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M，失衡率 {data['orderbook_imbalance']:.4f}
 
-持仓与情绪：
-- 资金费率 {data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
-- OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_change_24h']:+.1f}%
-- 全市场OI {data['agg_oi']/1e9:.2f}B，24h {data['agg_oi_change_24h']:+.1f}%
-- 顶级多空比 {data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
-- 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
+三、情绪与持仓结构
+资金费率：{data['funding_rate']:.4f}% (7日分位{data['funding_percentile']:.0f}%)
+OI：{data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h变化 {data['oi_change_24h']:+.1f}%
+全市场OI：{data['agg_oi']/1e9:.2f}B，24h变化 {data['agg_oi_change_24h']:+.1f}%
+顶级多空比：{data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
+恐慌贪婪：{data['fear_greed']} (7日前 {data['fear_greed_prev_7d']})
+期权最大痛点：{data['max_pain']:.2f}
+Put/Call Ratio：{data['put_call_ratio']:.4f}
 
-期权：最大痛点 {data['max_pain']:.2f}，P/C比 {data['put_call_ratio']:.4f}
+四、资金流向验证
+CVD斜率：{data['cvd_slope']:.4f}
+期货24h净流：{data['netflow']/1e6:.1f}M USDT
+交易所BTC 24h变化：{data['exchange_btc_change_pct']:+.2f}%
+ETH/BTC汇率：{data['eth_btc_ratio']:.4f}
 
-资金流：CVD斜率 {data['cvd_slope']:.4f}，期货24h净流 {data['netflow']/1e6:.1f}M，交易所BTC 24h {data['exchange_btc_change_pct']:+.2f}%
-
-跨市场：ETH/BTC {data['eth_btc_ratio']:.4f}
-
-数据缺失：{missing_str}
+数据缺失项：{missing_str}
 
 ---
-请给出你完整的交易决策推理。用你自己的语言和框架，就像你在复盘或与同行交流一样。输出 JSON 格式（不要代码块）：
+请按以下框架组织你的完整分析（这是你作为交易员的思考习惯，每个维度都必须有明确结论）：
 
+1. 环境定性：基于价格分位数、波动因子、ATR，判断当前市场处于什么状态（趋势/震荡/高低位）。
+2. 猎物与战场：对比上下方清算池的吸引力，评估订单簿的厚薄，确定价格最可能被牵引的方向。
+3. 情绪与对手盘：综合OI、资金费率、顶级多空比、恐慌贪婪趋势、期权信号，判断市场拥挤度与谁在犯错。
+4. 资金面验证：CVD、期货净流、交易所余额、ETH/BTC是否支持你的方向判断？是否存在背离？
+5. 交易计划：止损位的数据依据，止盈目标的选择，盈亏比评估，仓位配置。
+6. 风险预案：策略失效的关键信号及应对措施。
+
+输出JSON格式（不要代码块）：
 {{
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
@@ -64,7 +77,7 @@ def build_prompt(data: dict, symbol: str) -> str:
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令。",
-  "reasoning": "你的完整分析，自然段落。",
+  "reasoning": "按上述框架展开的完整分析。",
   "risk_note": "最坏情况的预案。"
 }}
 """
