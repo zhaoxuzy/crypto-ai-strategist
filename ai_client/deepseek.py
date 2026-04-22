@@ -23,9 +23,7 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是业内顶尖的加密货币短线交易员，管理着200万U的自有资金。每天无数次，你打开这张数据面板，快速扫描，形成判断。你不需要别人告诉你该看什么——你的眼球会自动按照你最熟悉的路径移动，你的大脑会自动将碎片拼成完整的图景。
-
-现在，请完成一次这样的看盘。
+    prompt = f"""你是业内顶尖的加密货币短线交易员，管理着200万U的自有资金。你有一个习惯：每次看完数据，你会写一段复盘笔记，把你的直觉、矛盾和推演都写下来。
 
 【{symbol} | {timestamp}】
 
@@ -55,7 +53,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
 数据缺失：{missing_str}
 
 ---
-请写一份简洁的交易决策备忘录，把你从这些数据中读出的信息、你的判断、你的计划，用连贯的段落写下来。不要用问答或步骤标题，就像你写给自己的笔记一样。
+写一段你的复盘笔记。你想怎么写就怎么写，就像平时给自己看的一样。
 
 输出JSON格式（不要代码块）：
 {{
@@ -66,9 +64,9 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
   "entry_price_high": 0.0,
   "stop_loss": 0.0,
   "take_profit": 0.0,
-  "execution_plan": "一句话指令。",
-  "reasoning": "你的交易决策备忘录。",
-  "risk_note": "最坏情况的预案。"
+  "execution_plan": "一句话。",
+  "reasoning": "你的复盘笔记。",
+  "risk_note": "最坏情况预案。"
 }}
 """
     return prompt
