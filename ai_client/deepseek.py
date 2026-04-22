@@ -226,16 +226,26 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 max_tokens=4000,
                 timeout=180
             )
-            content = resp.choices[0].message.content
-            
-            # 记录推理内容（如果有）
+            content = resp.choices[0].message.content or ""
+            finish_reason = resp.choices[0].finish_reason
             reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
+            
+            logger.info(f"finish_reason: {finish_reason}, content长度: {len(content)}, reasoning长度: {len(reasoning) if reasoning else 0}")
+            
+            # 持久化响应
             _log_response_to_file(prompt, content, reasoning)
             
-            logger.info(f"响应成功，内容长度: {len(content)}")
+            # 确定用于提取 JSON 的文本源
+            source_text = content
+            if not source_text.strip() and reasoning:
+                logger.info("content 为空，尝试从 reasoning_content 提取 JSON")
+                source_text = reasoning
+            
+            if not source_text.strip():
+                raise ValueError("响应内容为空，无法提取 JSON")
             
             # 鲁棒提取 JSON
-            json_str = extract_json_from_content(content)
+            json_str = extract_json_from_content(source_text)
             s = json.loads(json_str)
             
             s.setdefault("position_size", "none")
@@ -246,7 +256,9 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
         except Exception as e:
             logger.warning(f"调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** (attempt + 1))
+                wait_time = 2 ** (attempt + 1)
+                logger.info(f"等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
             else:
                 raise
     return {}
