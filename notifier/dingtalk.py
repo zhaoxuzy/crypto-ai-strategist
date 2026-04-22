@@ -89,37 +89,71 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning = re.sub(r'主逻辑[：:]', r'\n> 🧩 **主逻辑**\n> ', reasoning)
     reasoning = re.sub(r'核心逻辑[：:]', r'\n> 🧩 **核心逻辑**\n> ', reasoning)
     reasoning = re.sub(r'推演与决策[：:]', r'\n> 🎯 **推演与决策**\n> ', reasoning)
-    reasoning = re.sub(r'价格(?:最可能)?路径[：:]', r'\n> 📈 **价格路径**\n> ', reasoning)
     
-    # 4. 清理推演与决策中的列表项格式混乱
-    # 4.1 先移除所有可能存在的孤立的 ">" 符号（在数字序号前）
-    reasoning = re.sub(r'(\d+\.)\s*>\s*', r'\1 ', reasoning)
-    # 4.2 将 "1. " 或 "1. " 格式的列表项统一转换为加粗格式，并确保换行
-    reasoning = re.sub(r'(?<!\*\*)(\d+)\.[ \t]+', r'**\1.** ', reasoning)
-    # 4.3 处理可能存在的 "1) " 或 "1、 " 格式
-    reasoning = re.sub(r'(\d+)[\)、][ \t]+', r'**\1.** ', reasoning)
-    
-    # 5. 清理多余的连续换行和引用符号
+    # 4. 重构推演与决策中的列表项
+    if '🎯 **推演与决策**' in reasoning:
+        parts = reasoning.split('🎯 **推演与决策**')
+        if len(parts) == 2:
+            before = parts[0] + '🎯 **推演与决策**'
+            after = parts[1]
+            
+            # 按数字序号分割
+            items = re.split(r'\n?(\d+)\.[ \t]*', after)
+            formatted_items = []
+            
+            i = 0
+            while i < len(items):
+                if i == 0 and items[0].strip():
+                    formatted_items.append(items[0].strip())
+                    i += 1
+                elif i + 1 < len(items):
+                    num = items[i]
+                    content = items[i+1].strip()
+                    content = re.sub(r'\n>?\s*', ' ', content)
+                    content = re.sub(r'^>?\s*', '', content)
+                    formatted_items.append(f'**{num}.** {content}')
+                    i += 2
+                else:
+                    i += 1
+            
+            if formatted_items:
+                after = '\n> '.join(formatted_items)
+            reasoning = before + '\n> ' + after
+
+    # 5. 清理多余的连续换行
     reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
     reasoning = reasoning.strip()
     
-    # 如果推理内容不是以引用格式开始，则添加引用格式
     if not reasoning.startswith('>'):
         lines = reasoning.split('\n')
         reasoning = '\n'.join([f'> {line}' if not line.startswith('>') and line.strip() else line for line in lines])
 
+    # ========== 风险说明彻底清洗 ==========
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    risk_items = re.split(r'[。；\n]', risk_note)
-    risk_lines = []
-    idx = 1
-    for item in risk_items:
-        item = item.strip()
-        item = re.sub(r'^[\d]+[\.\、\)]?\s*', '', item)
-        if item and len(item) > 2:
-            risk_lines.append(f"{idx}. {item}")
-            idx += 1
-    if not risk_lines:
-        risk_lines = ["1. 请严格设置止损"]
+    
+    # 第一步：移除所有常见的序号前缀（数字+点/顿号/右括号/空格）
+    risk_note = re.sub(r'^\s*\d+[\.、\)）]\s*', '', risk_note, flags=re.MULTILINE)
+    
+    # 第二步：按句号、分号、换行分割成独立句子
+    raw_sentences = re.split(r'[。；\n]+', risk_note)
+    
+    # 第三步：清洗每个句子，移除残留的序号和空白
+    clean_sentences = []
+    for s in raw_sentences:
+        s = s.strip()
+        # 再次移除可能残留的序号
+        s = re.sub(r'^\d+[\.、\)）]?\s*', '', s)
+        # 移除开头的风险提示字样
+        s = re.sub(r'^(风险说明|风险提示|风险|主要风险)[：:]?\s*', '', s)
+        # 只保留长度大于2的有效句子
+        if len(s) > 2:
+            clean_sentences.append(s)
+    
+    # 第四步：统一重新编号
+    if not clean_sentences:
+        clean_sentences = ["请严格设置止损"]
+    
+    risk_lines = [f"{i+1}. {s}" for i, s in enumerate(clean_sentences)]
     risk_block = "> ### ⚠️ 风险说明\n> " + "\n> ".join(risk_lines)
 
     atr = data.get("atr", 0)
