@@ -85,7 +85,7 @@ ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
 置信度（high/medium/low）：
 仓位（light/medium/heavy）：
 
-【价格路径推演 - 三段式】
+【价格路径推演 - 三段式，不能缺】
 请用“先……然后……最后……”详细描述价格最可能的演变过程，每段必须包含：
 - 具体价格目标
 - 触发该段运动的盘口信号或条件
