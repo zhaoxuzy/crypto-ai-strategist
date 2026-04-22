@@ -5,7 +5,6 @@ import hashlib
 import base64
 import urllib.parse
 import requests
-import re
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
@@ -52,6 +51,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     conf_text = conf_map.get(confidence, "🟡中")
 
+    # 标题行
     title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
     if size_text:
         title_parts.append(size_text)
@@ -59,6 +59,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     title_parts.append(now_str)
     title = "## " + " · ".join(title_parts)
 
+    # 价格参数卡片
     entry_low = strategy.get("entry_price_low", 0)
     entry_high = strategy.get("entry_price_high", 0)
     stop = strategy.get("stop_loss", 0)
@@ -73,92 +74,53 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    reasoning = strategy.get("reasoning", "无推理过程")
+    # 处理推理内容：保留原始结构，只做基础美化（不破坏换行）
+    reasoning_raw = strategy.get("reasoning", "无推理过程")
     
-    # ========== 全新格式化策略：先结构化，再渲染 ==========
-    # 1. 先为关键节点强制添加换行（确保正则能匹配）
-    reasoning = re.sub(r'(第[一二三四五六]步)[：:]?\s*', r'\n【\1】\n', reasoning)
-    reasoning = re.sub(r'分析数据[：:]', r'\n📊 **分析数据**\n', reasoning)
-    reasoning = re.sub(r'做出结论[：:]', r'\n📌 **做出结论**\n', reasoning)
-    reasoning = re.sub(r'交叉验证与裁决[：:]', r'\n🔍 **交叉验证与裁决**\n', reasoning)
-    reasoning = re.sub(r'主逻辑[：:]', r'\n🧩 **主逻辑**\n', reasoning)
-    reasoning = re.sub(r'推演与决策[：:]', r'\n🎯 **推演与决策**\n', reasoning)
-    reasoning = re.sub(r'微观盘口确认[：:]', r'\n🔬 **微观盘口确认**\n', reasoning)
+    # 将连续的换行压缩为两个换行（段落分隔），但保留单换行用于列表
+    import re
+    reasoning = re.sub(r'\n{3,}', '\n\n', reasoning_raw)
     
-    # 2. 按行处理，重建结构
+    # 将步骤标题加粗（钉钉支持 **加粗**）
+    reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
+    
+    # 确保推演部分每一项独立成行
+    reasoning = re.sub(r'(\d+)\.\s*', r'\n\1. ', reasoning)
+    
+    # 分割为行并添加引用标记 >
     lines = reasoning.split('\n')
-    formatted_lines = []
-    in_tuijue = False
-    
+    formatted_reasoning_lines = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        
-        # 检测推演区域
-        if '🎯 **推演与决策**' in stripped or '推演与决策' in stripped:
-            in_tuijue = True
-            formatted_lines.append('> 🎯 **推演与决策**')
-            continue
-        
-        # 检测微观盘口确认（可能单独出现）
-        if '🔬 **微观盘口确认**' in stripped or '微观盘口确认' in stripped:
-            in_tuijue = False
-            formatted_lines.append('> 🔬 **微观盘口确认**')
-            continue
-        
-        # 步骤标题特殊处理
-        if stripped.startswith('【') and '】' in stripped:
-            step_name = stripped.strip('【】')
-            formatted_lines.append(f'> **{step_name}**')
-            continue
-        
-        # 推演区域内处理列表项
-        if in_tuijue:
-            match = re.match(r'^(\d+)\.[ \t]*(.+)$', stripped)
-            if match:
-                num = match.group(1)
-                content = match.group(2).strip()
-                content = re.sub(r'\n', ' ', content)
-                formatted_lines.append(f'> **{num}.** {content}')
-                continue
-        
-        # 已格式化的标题行直接保留
-        if stripped.startswith('📊') or stripped.startswith('📌') or stripped.startswith('🔍') or stripped.startswith('🧩'):
-            formatted_lines.append(f'> {stripped}')
-            continue
-        
-        # 默认：添加引用标记
-        if not stripped.startswith('>'):
-            formatted_lines.append(f'> {stripped}')
+        # 避免重复引用标记
+        if stripped.startswith('>'):
+            formatted_reasoning_lines.append(stripped)
         else:
-            formatted_lines.append(stripped)
+            formatted_reasoning_lines.append(f'> {stripped}')
     
-    reasoning = '\n'.join(formatted_lines)
-    reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
+    reasoning_block = '\n'.join(formatted_reasoning_lines)
 
-    # ========== 风险说明彻底清洗 ==========
+    # 风险说明处理
     risk_note = strategy.get("risk_note", "请严格设置止损")
-    risk_note = re.sub(r'^\s*\d+[\.、\)）]\s*', '', risk_note, flags=re.MULTILINE)
-    risk_note = re.sub(r'\n\s*\d+[\.、\)）]\s*', '\n', risk_note)
-    raw_sentences = re.split(r'[。；\n]+', risk_note)
-    clean_sentences = []
-    for s in raw_sentences:
-        s = s.strip()
-        s = re.sub(r'^[\d\.、\)）]+\s*', '', s)
-        s = re.sub(r'^(风险说明|风险提示|风险|主要风险)[：:]?\s*', '', s)
-        if len(s) > 2:
-            clean_sentences.append(s)
-    unique_sentences = []
-    for s in clean_sentences:
-        if s not in unique_sentences:
-            unique_sentences.append(s)
-    if not unique_sentences:
-        unique_sentences = ["请严格设置止损"]
-    risk_lines = [f"{i+1}. {s}" for i, s in enumerate(unique_sentences)]
-    risk_block = "> ### ⚠️ 风险说明\n> " + "\n> ".join(risk_lines)
+    # 简单清理列表符号
+    risk_lines = []
+    for part in risk_note.split('\n'):
+        part = part.strip()
+        if part:
+            # 去除可能的前缀编号
+            part = re.sub(r'^[\d\.、\)）]+\s*', '', part)
+            if part and part not in risk_lines:
+                risk_lines.append(part)
+    if not risk_lines:
+        risk_lines = ["请严格设置止损"]
+    
+    risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
+    risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
-    atr = data.get("atr", 0)
+    # 脚注
+    atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
     cvd_slope = data.get("cvd_slope", 0)
@@ -166,14 +128,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    return f"""{title}
+    # 拼接最终消息
+    message = f"""{title}
 
 {param_card}
 
 ### 🧠 交易员推理
-{reasoning}
+{reasoning_block}
 
 {risk_block}
 
 {footnote}
 """
+    return message
