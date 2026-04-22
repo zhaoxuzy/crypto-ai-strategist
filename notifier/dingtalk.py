@@ -75,7 +75,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # ========== 全新格式化策略：逐行解析 + 推演区域特殊处理 ==========
+    # ========== 全新格式化策略：先结构化，再渲染 ==========
+    # 1. 先为关键节点强制添加换行（确保正则能匹配）
+    reasoning = re.sub(r'(第[一二三四五六]步)[：:]?\s*', r'\n【\1】\n', reasoning)
+    reasoning = re.sub(r'分析数据[：:]', r'\n📊 **分析数据**\n', reasoning)
+    reasoning = re.sub(r'做出结论[：:]', r'\n📌 **做出结论**\n', reasoning)
+    reasoning = re.sub(r'交叉验证与裁决[：:]', r'\n🔍 **交叉验证与裁决**\n', reasoning)
+    reasoning = re.sub(r'主逻辑[：:]', r'\n🧩 **主逻辑**\n', reasoning)
+    reasoning = re.sub(r'推演与决策[：:]', r'\n🎯 **推演与决策**\n', reasoning)
+    reasoning = re.sub(r'微观盘口确认[：:]', r'\n🔬 **微观盘口确认**\n', reasoning)
+    
+    # 2. 按行处理，重建结构
     lines = reasoning.split('\n')
     formatted_lines = []
     in_tuijue = False
@@ -84,46 +94,45 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-            
-        # 检测是否进入推演与决策区域
-        if '🎯 **推演与决策**' in line or '推演与决策' in line:
+        
+        # 检测推演区域
+        if '🎯 **推演与决策**' in stripped or '推演与决策' in stripped:
             in_tuijue = True
             formatted_lines.append('> 🎯 **推演与决策**')
             continue
         
-        # 如果在推演区域内，处理列表项
+        # 检测微观盘口确认（可能单独出现）
+        if '🔬 **微观盘口确认**' in stripped or '微观盘口确认' in stripped:
+            in_tuijue = False
+            formatted_lines.append('> 🔬 **微观盘口确认**')
+            continue
+        
+        # 步骤标题特殊处理
+        if stripped.startswith('【') and '】' in stripped:
+            step_name = stripped.strip('【】')
+            formatted_lines.append(f'> **{step_name}**')
+            continue
+        
+        # 推演区域内处理列表项
         if in_tuijue:
-            # 匹配数字序号（1. 2. 等）
-            match = re.match(r'^>?\s*(\d+)\.[ \t]*(.+)$', stripped)
+            match = re.match(r'^(\d+)\.[ \t]*(.+)$', stripped)
             if match:
                 num = match.group(1)
                 content = match.group(2).strip()
                 content = re.sub(r'\n', ' ', content)
-                content = re.sub(r'^>?\s*', '', content)
                 formatted_lines.append(f'> **{num}.** {content}')
                 continue
-            # 匹配带emoji的格式
-            match = re.match(r'^>?\s*(\d+)\.[ \t]*🔬\s*(.+)$', stripped)
-            if match:
-                num = match.group(1)
-                content = match.group(2).strip()
-                content = re.sub(r'\n', ' ', content)
-                formatted_lines.append(f'> **{num}.** 🔬 {content}')
-                continue
         
-        # 默认处理：应用标题加粗规则
-        processed = stripped
-        processed = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1：**', processed)
-        processed = re.sub(r'分析数据[：:]', r'> 📊 **分析数据**\n> ', processed)
-        processed = re.sub(r'做出结论[：:]', r'> 📌 **做出结论**\n> ', processed)
-        processed = re.sub(r'交叉验证与裁决[：:]', r'> 🔍 **交叉验证与裁决**\n> ', processed)
-        processed = re.sub(r'主逻辑[：:]', r'> 🧩 **主逻辑**\n> ', processed)
-        processed = re.sub(r'微观盘口确认[：:]', r'> 🔬 **微观盘口确认**\n> ', processed)
+        # 已格式化的标题行直接保留
+        if stripped.startswith('📊') or stripped.startswith('📌') or stripped.startswith('🔍') or stripped.startswith('🧩'):
+            formatted_lines.append(f'> {stripped}')
+            continue
         
-        # 确保以引用格式开头
-        if not processed.startswith('>'):
-            processed = '> ' + processed
-        formatted_lines.append(processed)
+        # 默认：添加引用标记
+        if not stripped.startswith('>'):
+            formatted_lines.append(f'> {stripped}')
+        else:
+            formatted_lines.append(stripped)
     
     reasoning = '\n'.join(formatted_lines)
     reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
