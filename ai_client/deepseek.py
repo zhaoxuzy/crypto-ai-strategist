@@ -1,6 +1,7 @@
 import os
 import json
 from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from utils.logger import logger
 
 
@@ -23,71 +24,66 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是一位拥有十年经验的顶尖加密货币短线交易员，管理着200万U的自有资金。请基于以下数据，严格按照六个步骤进行深度推演。每一步必须包含“分析数据”和“做出结论”两个明确部分。
+    prompt = f"""你是拥有十年经验的顶尖加密货币短线交易员，管理200万U资金。请基于以下数据严格按六步推演，每步包含“分析数据”和“做出结论”。
 
-【数据面板 | {symbol} | {timestamp}】
+【{symbol} | {timestamp}】
 
-价格：{current:.2f}
-15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
+价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
 
 清算池：
 上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
 下方(多头)：{data['below_liq']/1e9:.2f}B，{below_cluster} (距{below_distance})
 比值：{data['liq_ratio']:.3f}
 
-订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M | 失衡率 {data['orderbook_imbalance']:.4f}
+订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
 
 持仓与情绪：
-资金费率 {data['funding_rate']:.4f}% (7日分位{data['funding_percentile']:.0f}%)
-OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_change_24h']:+.1f}%
-全市场OI {data['agg_oi']/1e9:.2f}B，24h {data['agg_oi_change_24h']:+.1f}%
-顶级多空比 {data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
+资金费率{data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
+OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_change_24h']:+.1f}%
+全市场OI {data['agg_oi']/1e9:.2f}B，24h{data['agg_oi_change_24h']:+.1f}%
+顶级多空比{data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
 
-期权：最大痛点 {data['max_pain']:.2f} | P/C比 {data['put_call_ratio']:.4f}
+期权：最大痛点{data['max_pain']:.2f} | P/C比{data['put_call_ratio']:.4f}
 
-资金流：CVD斜率 {data['cvd_slope']:.4f} | 期货24h净流 {data['netflow']/1e6:.1f}M | 交易所BTC 24h变化 {data['exchange_btc_change_24h']:+.0f} BTC
+资金流：CVD斜率{data['cvd_slope']:.4f} | 期货24h净流{data['netflow']/1e6:.1f}M | 交易所BTC 24h变化{data['exchange_btc_change_24h']:+.0f} BTC
 
 跨市场：ETH/BTC {data['eth_btc_ratio']:.4f}
 
 数据缺失：{missing_str}
 
 ---
-请按以下六步进行推演，每一步都要用“第一步：环境定调”这样的标题，并明确分为“分析数据：”和“做出结论：”两部分：
-
 第一步：环境定调
 分析数据：价格7日分位数、15min ATR、波动因子。
-做出结论：判断市场处于什么状态（高位/低位/中位？高波动/低波动？波动放大还是收敛？）。给出一个定性标签，并说明策略基调。
+做出结论：市场状态定性（高位/低位、波动放大/收敛），策略基调。
 
 第二步：猎物定位
-分析数据：上下方清算池的距离与强度、清算比值、订单簿买盘卖盘量、失衡率。
-做出结论：对比上下方哪个池子更近、更脆、更容易被突破。判断大资金最可能去猎杀哪个方向。给出明确的方向倾向。
+分析数据：上下方清算池距离/强度、比值、订单簿买卖盘量、失衡率。
+做出结论：哪个方向池子更近更脆，大资金最可能猎杀方向。
 
 第三步：对手盘解剖
-分析数据：OI分位数及变化、全市场OI变化、资金费率分位数、顶级多空比分位数、恐慌贪婪指数及趋势。
-做出结论：判断市场拥挤度，找出谁的头寸最脆弱、谁可能成为反向燃料。给出犯错方判断。
+分析数据：OI分位数及变化、全市场OI变化、资金费率分位数、顶级多空比分位数、恐慌贪婪及趋势。
+做出结论：市场拥挤度，谁头寸脆弱、谁可能成为燃料。
 
 第四步：资金流验证
-分析数据：CVD斜率的方向和量级、期货24h净流、交易所BTC余额变化。
-做出结论：判断资金流是否支持第三步的方向。三个资金指标是否共振？如果背离，矛盾在哪里？给出验证结果。
+分析数据：CVD斜率方向/量级、期货24h净流、交易所BTC余额变化。
+做出结论：资金流是否支持猎物方向，三个指标是否共振或背离。
 
 第五步：辅助信号扫描
 分析数据：期权最大痛点、P/C比、ETH/BTC汇率。
-做出结论：判断这些信号是加强还是削弱主逻辑。有没有隐藏风险？给出辅助判断。
+做出结论：这些信号是加强还是削弱主逻辑，有无隐藏风险。
 
 第六步：矛盾裁决与决策
-交叉验证与裁决：将前五步的结论放在一起比对。明确指出哪些信号互相印证、哪些彼此矛盾。如果存在矛盾，你必须给出明确的权重分配（例如：在当前高位环境下，我更信赖资金流的持续性，还是更警惕拥挤度的反转风险？为什么？）。最终形成一条主逻辑证据链。
+交叉验证与裁决：比对前五步结论，指出印证与矛盾点，明确权重分配（例如更信赖资金流还是拥挤度），形成主逻辑。
 推演与决策：
-1. 基于主逻辑，推演价格最可能的运行路径。
-2. 给出具体的入场区间，并**以入场区间的最差点（做多取上沿，做空取下沿）来计算最差盈亏比**。计算过程必须明确写出。
-3. 止损位必须写明数据依据（如：放在哪个清算墙或结构位外侧，与ATR的关系）。
-4. 止盈目标必须写明与流动性池或关键结构位的关系。
-5. 仓位选择必须与证据链的强弱和矛盾程度挂钩。
-6. **必须设定一个主动证伪信号**（例如：价格在X小时内无法突破Y位置，或CVD斜率开始走平），而不仅仅是被动止损。
+1. 推演价格最可能路径。
+2. 入场区间，并以入场区间最差点计算最差盈亏比（做多取上沿，做空取下沿）。
+3. 止损位及数据依据（清算墙外侧、ATR倍数）。
+4. 止盈目标与流动性池关系。
+5. 仓位选择与证据链强弱挂钩。
+6. 主动证伪信号（时间/价格/指标条件）。
 
-注意：每一步都必须引用具体数据，不能泛泛而谈。所有提供的数据都要在你的推演中找到位置。
-
-输出JSON格式（不要代码块）：
+输出JSON（不要代码块）：
 {{
   "direction": "long/short/neutral",
   "confidence": "high/medium/low",
@@ -97,53 +93,54 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令。",
-  "reasoning": "第一步：环境定调\\n分析数据：...\\n做出结论：...\\n\\n第二步：猎物定位\\n分析数据：...\\n做出结论：...\\n\\n第三步：对手盘解剖\\n分析数据：...\\n做出结论：...\\n\\n第四步：资金流验证\\n分析数据：...\\n做出结论：...\\n\\n第五步：辅助信号扫描\\n分析数据：...\\n做出结论：...\\n\\n第六步：矛盾裁决与决策\\n交叉验证与裁决：...\\n推演与决策：...",
-  "risk_note": "风险说明，包含证伪信号和最坏情况预案。"
+  "reasoning": "第一步：环境定调\\n分析数据：...\\n做出结论：...\\n\\n第二步：...",
+  "risk_note": "风险说明，含证伪信号和最坏情况预案。"
 }}
 """
     return prompt
 
 
-def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
-    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com/v1", timeout=120.0)
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})，Prompt 长度: {len(prompt)} 字符")
-            resp = client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000
-            )
-            content = resp.choices[0].message.content
-            logger.info(f"DeepSeek Reasoner 响应成功，原始内容长度: {len(content)}")
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=15),
+    retry=retry_if_exception_type((Exception,)),
+    reraise=True
+)
+def call_deepseek(prompt: str) -> dict:
+    client = OpenAI(
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com/v1",
+        timeout=120.0
+    )
+    logger.info(f"DeepSeek Reasoner API 调用，Prompt 长度: {len(prompt)} 字符")
+    resp = client.chat.completions.create(
+        model="deepseek-reasoner",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4000,
+        timeout=120
+    )
+    content = resp.choices[0].message.content
+    logger.info(f"DeepSeek Reasoner 响应成功，内容长度: {len(content)}")
 
-            json_str = None
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.find("```", start)
-                if end != -1:
-                    json_str = content[start:end].strip()
-            if not json_str:
-                start = content.find('{')
-                end = content.rfind('}') + 1
-                if start != -1 and end > start:
-                    json_str = content[start:end]
-            if not json_str:
-                logger.warning(f"DeepSeek Reasoner 返回无有效 JSON")
-                if attempt == max_retries - 1:
-                    raise ValueError("无法提取 JSON")
-                continue
+    json_str = None
+    if "```json" in content:
+        start = content.find("```json") + 7
+        end = content.find("```", start)
+        if end != -1:
+            json_str = content[start:end].strip()
+    if not json_str:
+        start = content.find('{')
+        end = content.rfind('}') + 1
+        if start != -1 and end > start:
+            json_str = content[start:end]
+    if not json_str:
+        raise ValueError("无法提取 JSON")
 
-            s = json.loads(json_str)
-            s.setdefault("position_size", "none")
-            s.setdefault("execution_plan", "")
-            s.setdefault("risk_note", "")
-            return s
-        except Exception as e:
-            logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                raise
-    return {}
+    s = json.loads(json_str)
+    s.setdefault("position_size", "none")
+    s.setdefault("execution_plan", "")
+    s.setdefault("risk_note", "")
+    return s
 
 
 def validate_strategy(s: dict) -> tuple[bool, str]:
