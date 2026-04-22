@@ -237,10 +237,8 @@ class CoinGlassClient:
         if data and isinstance(data, list):
             total = sum(float(ex.get("balance", 0)) for ex in data)
             change_24h = sum(float(ex.get("balance_change_1d", 0)) for ex in data)
-            prev_total = total - change_24h
-            change_pct = (change_24h / prev_total * 100) if prev_total > 0 else 0.0
-            return {"total_btc": total, "change_24h": change_24h, "change_pct": change_pct}
-        return {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0}
+            return {"total_btc": total, "change_24h": change_24h}
+        return {"total_btc": 0.0, "change_24h": 0.0}
 
     def get_aggregated_oi_history(self, symbol: str = "BTC", interval: str = "4h", limit: int = 168):
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
@@ -308,7 +306,7 @@ class CoinGlassClient:
         fg_data = results.get("fg", {"current": 50, "prev_7d": 50})
         netflow = results.get("netflow", 0.0)
         orderbook = results.get("orderbook", {"bids_usd": 0.0, "asks_usd": 0.0, "imbalance": 0.0})
-        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0, "change_pct": 0.0})
+        exchange_btc = results.get("exchange_btc", {"total_btc": 0.0, "change_24h": 0.0})
         agg_oi_data = results.get("agg_oi", [])
 
         mark_price = self._get_close_from_candle(kline_data[-1]) if kline_data else 0.0
@@ -407,6 +405,5 @@ class CoinGlassClient:
             "orderbook_imbalance": orderbook.get("imbalance", 0.0),
             "exchange_btc_total": exchange_btc.get("total_btc", 0.0),
             "exchange_btc_change_24h": exchange_btc.get("change_24h", 0.0),
-            "exchange_btc_change_pct": exchange_btc.get("change_pct", 0.0),
             "data_quality": data_quality
         }
