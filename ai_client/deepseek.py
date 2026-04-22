@@ -220,15 +220,20 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     for attempt in range(max_retries):
         try:
             logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})")
-            resp = client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000,
-                timeout=180
-            )
-            content = resp.choices[0].message.content or ""
-            finish_reason = resp.choices[0].finish_reason
-            reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
+           resp = client.chat.completions.create(
+           model="deepseek-reasoner",
+           messages=[{"role": "user", "content": prompt}],
+           max_tokens=6000,  # 增加到 6000
+           timeout=180
+    )
+
+      content = resp.choices[0].message.content or ""
+      reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
+
+# 如果 content 为空，记录警告并重试（不直接回退）
+if not content.strip():
+    logger.warning(f"content 为空，finish_reason={resp.choices[0].finish_reason}")
+    raise ValueError("模型返回空 content，可能是输出被截断或格式异常")
             
             logger.info(f"finish_reason: {finish_reason}, content长度: {len(content)}, reasoning长度: {len(reasoning) if reasoning else 0}")
             
