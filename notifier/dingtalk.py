@@ -52,7 +52,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
     conf_text = conf_map.get(confidence, "🟡中")
 
-    # 标题
+    # 标题行
     title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
     if size_text:
         title_parts.append(size_text)
@@ -75,33 +75,23 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ========== 推理内容精细化格式化 ==========
+    # ========== 推理内容：极简处理，保留原始结构 ==========
     reasoning_raw = strategy.get("reasoning", "无推理过程")
 
-    # 1. 统一换行符，并压缩多余空行
+    # 1. 统一换行符为 \n，并压缩超过2个的连续换行
     reasoning = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
     reasoning = re.sub(r'\n{3,}', '\n\n', reasoning)
 
-    # 2. 步骤标题加粗
+    # 2. 将步骤标题加粗（简单的正则，不会破坏结构）
     reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1**：', reasoning)
 
-    # 3. 强制换行
-    reasoning = re.sub(r'分析数据[：:]', r'\n分析数据：\n', reasoning)
-    reasoning = re.sub(r'做出结论[：:]', r'\n做出结论：\n', reasoning)
-    reasoning = re.sub(r'(交叉验证与裁决)[：:]', r'\n\1：\n', reasoning)
-    reasoning = re.sub(r'(主逻辑)[：:]', r'\n\1：\n', reasoning)
-    reasoning = re.sub(r'(推演与决策)[：:]', r'\n\1：\n', reasoning)
-    reasoning = re.sub(r'(微观盘口确认)[：:]', r'\n\1：\n', reasoning)
-    
-    # 4. 特别处理价格路径推演（第1条），加上📈图标高亮
-    reasoning = re.sub(r'(1\.\s*价格路径推演[：:]?)', r'\n📈 **价格路径推演**：\n', reasoning)
-
-    # 5. 按行添加引用标记
+    # 3. 按行添加引用标记 "> "
     lines = reasoning.split('\n')
     quoted_lines = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            # 保留空行，钉钉引用块内的空行有助于分段
             quoted_lines.append('> ')
             continue
         if stripped.startswith('>'):
@@ -109,24 +99,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         else:
             quoted_lines.append(f'> {stripped}')
 
-    # 6. 压缩连续空引用行
-    cleaned_quoted = []
-    prev_empty = False
-    for qline in quoted_lines:
-        is_empty = (qline.strip() == '>')
-        if is_empty and prev_empty:
-            continue
-        cleaned_quoted.append(qline)
-        prev_empty = is_empty
+    reasoning_block = '\n'.join(quoted_lines)
 
-    reasoning_block = '\n'.join(cleaned_quoted)
-
-    # ========== 风险说明处理 ==========
+    # ========== 风险说明：清晰列表 ==========
     risk_note = strategy.get("risk_note", "请严格设置止损")
+    # 简单拆分并清理前缀编号
     risk_lines = []
     for part in risk_note.split('\n'):
         part = part.strip()
         if part:
+            # 移除开头的数字或符号编号
             part = re.sub(r'^[\d\.、\)）]+\s*', '', part)
             if part and part not in risk_lines:
                 risk_lines.append(part)
@@ -145,17 +127,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     footnote = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # ========== 最终消息拼接 ==========
+    # ========== 最终拼接：用明确的空行分隔各部分 ==========
     message_parts = [
         title_line,
-        "",
+        "",                 # 空行
         param_card,
-        "",
+        "",                 # 空行
         "### 🧠 交易员推理",
         reasoning_block,
-        "",
+        "",                 # 空行
         risk_block,
-        "",
+        "",                 # 空行
         footnote
     ]
     final_message = '\n\n'.join(message_parts)
