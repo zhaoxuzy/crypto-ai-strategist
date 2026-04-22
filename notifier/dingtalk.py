@@ -5,6 +5,7 @@ import hashlib
 import base64
 import urllib.parse
 import requests
+import re  # 新增导入
 from datetime import datetime, timezone, timedelta
 from utils.logger import logger
 
@@ -82,28 +83,27 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             quoted.append(f'> {line}' if not line.startswith('>') else line)
     reasoning_block = '\n'.join(quoted)
 
-   # ========== 风险说明（彻底清理内部序号，仅保留外层统一编号） ==========
-risk_raw = strategy.get("risk_note", "请严格设置止损")
-risk_lines = []
-for part in risk_raw.split('\n'):
-    part = part.strip()
-    if not part:
-        continue
-    # 移除行首的各种序号格式：数字+点、数字+顿号、数字+括号、罗马数字等
-    # 匹配模式：开头可以是 1. / 1、/ 1) / （1） / ① 等
-    part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
-    # 移除可能残留的"主要风险："等前缀中的序号干扰（可选）
-    part = re.sub(r'^主要风险[：:]\s*', '', part)
-    part = part.strip()
-    if part and part not in risk_lines:
-        risk_lines.append(part)
+    # ========== 风险说明（彻底清理内部序号，仅保留外层统一编号） ==========
+    risk_raw = strategy.get("risk_note", "请严格设置止损")
+    risk_lines = []
+    for part in risk_raw.split('\n'):
+        part = part.strip()
+        if not part:
+            continue
+        # 移除行首的各种序号格式：数字+点、数字+顿号、数字+括号、罗马数字等
+        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
+        # 移除可能残留的"主要风险："等前缀中的序号干扰
+        part = re.sub(r'^主要风险[：:]\s*', '', part)
+        part = part.strip()
+        if part and part not in risk_lines:
+            risk_lines.append(part)
 
-if not risk_lines:
-    risk_lines = ["请严格设置止损"]
+    if not risk_lines:
+        risk_lines = ["请严格设置止损"]
 
-# 外层统一添加数字序号
-risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
-risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
+    # 外层统一添加数字序号
+    risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
+    risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
     # 脚注
     atr = data.get("atr_15m", 0)
