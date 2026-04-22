@@ -62,7 +62,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         tp = strategy.get("take_profit", 0)
         current = data.get("mark_price", 0)
 
-        # 简单估算盈亏比（用于展示）
         mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
         risk = abs(mid - stop) if stop else 0
         reward = abs(tp - mid) if tp else 0
@@ -71,7 +70,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 推理内容：每行加 `> ` 引用，保留原始换行
+    # 推理内容：每行加 `> ` 引用，保留原始换行，并对步骤和关键标题加粗
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     lines = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     quoted = []
@@ -80,22 +79,22 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         if not line:
             quoted.append('> ')
         else:
-            # 对关键标题加粗（第一步、价格路径推演等）
+            # 步骤标题加粗
             if re.match(r'^(第[一二三四五六]步)[：:]', line):
                 line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-            elif re.match(r'^价格路径推演[：:]', line):
-                line = re.sub(r'^(价格路径推演)', r'**\1**', line)
+            # 价格推演、入场区间等标题加粗
+            elif re.match(r'^(价格路径推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
+                line = re.sub(r'^([^：:]+)', r'**\1**', line)
             quoted.append(f'> {line}' if not line.startswith('>') else line)
     reasoning_block = '\n'.join(quoted)
 
-    # ========== 风险说明（彻底清理内部序号，仅保留外层统一编号） ==========
+    # 风险说明：彻底清理内部序号，仅保留外层统一编号
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 移除行首的各种序号格式
         part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
         part = re.sub(r'^主要风险[：:]\s*', '', part)
         part = part.strip()
