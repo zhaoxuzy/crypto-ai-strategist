@@ -289,8 +289,30 @@ def validate_and_enrich_strategy(s: dict, data: dict) -> tuple[bool, str, dict]:
 # ==================== 兼容旧接口 ====================
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     """
-    兼容旧版调用接口，内部调用 validate_and_enrich_strategy。
-    返回 (bool, str)，忽略返回的 enriched dict（旧版不期望它）。
+    兼容旧版调用接口。
+    若未提供 data，则仅做基础校验（方向、neutral 等）。
+    若提供 data，则进行完整校验和点位注入。
     """
-    valid, msg, _ = validate_and_enrich_strategy(s, data)
+    if data is None:
+        logger.warning("validate_strategy 未传入 data 参数，仅执行基础校验")
+        direction = s.get("direction")
+        if direction not in ["long", "short", "neutral"]:
+            return False, f"无效方向: {direction}"
+        if direction == "neutral":
+            s["signal_type"] = "neutral"
+            s["confidence"] = "low"
+            s["entry_price_low"] = 0
+            s["entry_price_high"] = 0
+            s["stop_loss"] = 0
+            s["take_profit"] = 0
+            return True, ""
+        # 基础存在性检查
+        if not s.get("reasoning"):
+            return False, "缺少 reasoning 字段"
+        return True, ""
+
+    valid, msg, enriched = validate_and_enrich_strategy(s, data)
+    if valid:
+        # 将计算出的点位合并回原字典（影响外部引用）
+        s.update(enriched)
     return valid, msg
