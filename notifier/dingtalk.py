@@ -51,9 +51,8 @@ def format_reasoning(raw_text: str) -> str:
     text = re.sub(r'(自我质疑[：:])', r'\n\1 ', text)
     text = re.sub(r'(最终结论[：:])', r'\n\1 ', text)
     text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1 ', text)
-    text = re.sub(r'(推演与决策[：:])', r'\n\1 ', text)
-    text = re.sub(r'(\d+\.\s*价格路径推演[：:])', r'\n\1', text)
-    text = re.sub(r'(\d+\.\s*入场区间[：:])', r'\n\1', text)
+    text = re.sub(r'(方向选择[：:])', r'\n\1 ', text)
+    text = re.sub(r'(如果我错了[，,]最可能是因为[：:])', r'\n\1 ', text)
 
     text = re.sub(r'\n{3,}', '\n\n', text)
 
@@ -86,11 +85,11 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     beijing_tz = timezone(timedelta(hours=8))
     now_str = datetime.now(beijing_tz).strftime("%m-%d %H:%M")
 
-    signal_type = strategy.get("signal_type", "immediate")
     direction = strategy.get("direction", "neutral")
+    signal_type = strategy.get("signal_type", "neutral")
 
-    # 根据信号类型和方向构建标题
-    if signal_type == "neutral" or direction == "neutral":
+    # 标题行
+    if direction == "neutral" or signal_type == "neutral":
         title_line = f"## ⚪ 观望 {symbol} · 🔴低 · {now_str}"
     else:
         dir_emoji = "🟢" if direction == "long" else "🔴"
@@ -104,10 +103,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         conf_map = {"high": "🟢高", "medium": "🟡中", "low": "🔴低"}
         conf_text = conf_map.get(confidence, "🟡中")
 
-        title_parts = []
-        if signal_type == "pending":
-            title_parts.append("⏳ 挂单")
-        title_parts.append(f"{dir_emoji} {dir_text} {symbol}")
+        title_parts = [f"{dir_emoji} {dir_text} {symbol}"]
         if size_text:
             title_parts.append(size_text)
         title_parts.append(conf_text)
@@ -121,8 +117,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tp = strategy.get("take_profit", 0)
     current_price = data.get("mark_price", 0)
 
-    # 盈亏比（优先使用代码计算的值，否则用中位价估算）
-    rr = strategy.get("_calculated_rr")
+    # 盈亏比优先使用代码计算值
+    rr = strategy.get("calculated_rr")
     if rr is None:
         entry_mid = (entry_low + entry_high) / 2 if entry_low and entry_high else 0
         risk = abs(entry_mid - stop) if stop != 0 else 0
@@ -130,13 +126,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         rr = reward / risk if risk > 0 else 0
     rr_str = f"{rr:.2f}" if rr else "N/A"
 
-    if signal_type == "pending":
-        exec_plan = strategy.get("execution_plan", "等待条件触发")
-        param_card = (
-            f"> 现价{current_price:.0f} · 挂单入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}\n"
-            f"> ⏳ 触发条件：{exec_plan}"
-        )
-    elif signal_type == "neutral" or direction == "neutral":
+    if direction == "neutral" or signal_type == "neutral":
         param_card = f"> 现价{current_price:.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
     else:
         param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
