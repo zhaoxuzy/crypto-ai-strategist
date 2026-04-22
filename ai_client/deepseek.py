@@ -23,9 +23,11 @@ def build_prompt(data: dict, symbol: str) -> str:
     missing = [k for k, v in data_quality.items() if v == "❌ 缺失"]
     missing_str = "、".join(missing) if missing else "无"
 
-    prompt = f"""你是业内顶尖的加密货币短线交易员，管理着200万U的自有资金。你有一个习惯：每次看完数据，你会写一段复盘笔记，把你的直觉、矛盾和推演都写下来。
+    prompt = f"""你是一位拥有十年经验的顶尖加密货币短线交易员，管理着200万U的自有资金。多年的盯盘让你形成了一套固定的审视习惯——你的眼球会自动按照你最熟悉的路径扫过数据面板，你的大脑会在每个区域停留、自问、交叉验证，直到所有碎片拼成一幅完整的图景。
 
-【{symbol} | {timestamp}】
+现在，请把你脑中这段完整的审视过程写下来，形成一份复盘笔记。你怎么想的就怎么写，不需要任何格式。
+
+【数据面板 | {symbol} | {timestamp}】
 
 价格：{current:.2f}
 15min ATR：{data['atr_15m']:.2f} | 波动因子：{data['vol_factor']:.2f} | 7日价格分位数：{data['price_percentile']:.0f}%
@@ -38,7 +40,7 @@ def build_prompt(data: dict, symbol: str) -> str:
 订单簿：买盘 {data['orderbook_bids']/1e6:.1f}M / 卖盘 {data['orderbook_asks']/1e6:.1f}M | 失衡率 {data['orderbook_imbalance']:.4f}
 
 持仓与情绪：
-资金费率 {data['funding_rate']:.4f}% (分位{data['funding_percentile']:.0f}%)
+资金费率 {data['funding_rate']:.4f}% (7日分位{data['funding_percentile']:.0f}%)
 OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_change_24h']:+.1f}%
 全市场OI {data['agg_oi']/1e9:.2f}B，24h {data['agg_oi_change_24h']:+.1f}%
 顶级多空比 {data['top_ls_ratio']:.2f} (分位{data['top_ls_percentile']:.0f}%)
@@ -53,8 +55,6 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
 数据缺失：{missing_str}
 
 ---
-写一段你的复盘笔记。你想怎么写就怎么写，就像平时给自己看的一样。
-
 输出JSON格式（不要代码块）：
 {{
   "direction": "long/short/neutral",
@@ -65,7 +65,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h {data['oi_ch
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话。",
-  "reasoning": "你的复盘笔记。",
+  "reasoning": "你的完整审视过程。",
   "risk_note": "最坏情况预案。"
 }}
 """
