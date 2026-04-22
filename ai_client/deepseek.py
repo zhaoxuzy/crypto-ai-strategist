@@ -7,6 +7,7 @@ from openai import OpenAI
 from utils.logger import logger
 
 
+# ==================== Prompt 构建 ====================
 def build_prompt(data: dict, symbol: str) -> str:
     timestamp = data.get("timestamp", "N/A")
     current = data['mark_price']
@@ -96,6 +97,7 @@ ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
     return prompt
 
 
+# ==================== API 调用与响应处理 ====================
 def _log_response_to_file(prompt: str, content: str, reasoning_content: str = None):
     try:
         log_dir = "logs"
@@ -185,63 +187,54 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     return {}
 
 
+# ==================== 科学点位计算 ====================
 def calculate_entry_stop_tp(direction: str, data: dict) -> dict:
-    """科学计算入场、止损、止盈"""
     current = data['mark_price']
     atr_1h = data.get('atr_1h', data['atr_15m'] * 2)
     above_cluster = data.get('above_cluster', '')
     below_cluster = data.get('below_cluster', '')
-    
-    # 解析清算集群
+
     above_low = above_high = below_low = below_high = None
     if '-' in above_cluster:
         above_low, above_high = map(float, above_cluster.split('-'))
     if '-' in below_cluster:
         below_low, below_high = map(float, below_cluster.split('-'))
-    
+
     if direction == "long":
-        # 入场：必须突破上方清算下沿，且不能远离现价
         if above_low is None:
             return None
         entry_low = above_low
-        entry_high = min(current * 1.003, above_high)  # 现价+0.3%以内
+        entry_high = min(current * 1.003, above_high)
         if entry_low > entry_high:
             entry_high = entry_low + atr_1h * 0.5
-        
-        # 止损：技术结构 + ATR缓冲
+
         technical_stop = below_low if below_low else entry_low - atr_1h * 1.5
         stop = min(entry_low - atr_1h * 1.5, technical_stop)
-        
-        # 止盈：基于2:1盈亏比，但不超过上方清算上沿
+
         risk = entry_high - stop
         tp_by_rr = entry_high + risk * 2.0
         tp = min(tp_by_rr, above_high) if above_high else tp_by_rr
-        
+
     else:  # short
         if below_high is None:
             return None
         entry_high = below_high
-        entry_low = max(current * 0.997, below_low)  # 现价-0.3%以内
+        entry_low = max(current * 0.997, below_low)
         if entry_low > entry_high:
             entry_low = entry_high - atr_1h * 0.5
-        
+
         technical_stop = above_high if above_high else entry_high + atr_1h * 1.5
         stop = max(entry_high + atr_1h * 1.5, technical_stop)
-        
+
         risk = stop - entry_low
         tp_by_rr = entry_low - risk * 2.0
         tp = max(tp_by_rr, below_low) if below_low else tp_by_rr
-    
-    # 校验盈亏比
+
     if direction == "long":
-        rr = (tp - entry_high) / (entry_high - stop)
+        rr = (tp - entry_high) / (entry_high - stop) if (entry_high - stop) > 0 else 0
     else:
-        rr = (entry_low - tp) / (stop - entry_low)
-    
-    if rr < 1.8:  # 放宽至1.8，因为计算更保守
-        logger.warning(f"计算出的盈亏比{rr:.2f}低于1.8，信号可能被过滤")
-        # 不直接返回None，由上层决定
-    
+        rr = (entry_low - tp) / (stop - entry_low) if (stop - entry_low) > 0 else 0
+
     return {
         "entry_price_low": round(entry_low, 2),
         "entry_price_high": round(entry_high, 2),
@@ -251,12 +244,12 @@ def calculate_entry_stop_tp(direction: str, data: dict) -> dict:
     }
 
 
+# ==================== 策略校验与点位注入 ====================
 def validate_and_enrich_strategy(s: dict, data: dict) -> tuple[bool, str, dict]:
-    """校验AI输出，并计算科学点位"""
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}", s
-    
+
     if direction == "neutral":
         s["signal_type"] = "neutral"
         s["confidence"] = "low"
@@ -265,34 +258,39 @@ def validate_and_enrich_strategy(s: dict, data: dict) -> tuple[bool, str, dict]:
         s["stop_loss"] = 0
         s["take_profit"] = 0
         return True, "", s
-    
-    # 检查深度思考痕迹
+
     reasoning = s.get("reasoning", "")
     if "自我质疑" not in reasoning:
         logger.warning("缺少自我质疑环节")
-    
-    # 计算点位
+
     points = calculate_entry_stop_tp(direction, data)
     if points is None:
         return False, "无法计算入场点位（清算集群数据缺失）", s
-    
-    # 校验入场区是否紧贴现价
+
     current = data['mark_price']
     if direction == "long" and points["entry_price_low"] < current * 0.995:
         return False, f"做多入场下限{points['entry_price_low']:.2f}低于现价过多", s
     if direction == "short" and points["entry_price_high"] > current * 1.005:
         return False, f"做空入场上限{points['entry_price_high']:.2f}高于现价过多", s
-    
-    # 合并点位
+
     s.update(points)
     s["signal_type"] = "immediate"
     s["execution_plan"] = "立即入场"
-    
-    # 仓位联动矛盾信号
+
     contradiction_kws = ["矛盾", "背离", "冲突"]
     if any(kw in reasoning for kw in contradiction_kws):
         if s.get("position_size") == "heavy":
             s["position_size"] = "medium"
             logger.warning("存在矛盾信号，仓位降为medium")
-    
+
     return True, "", s
+
+
+# ==================== 兼容旧接口 ====================
+def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
+    """
+    兼容旧版调用接口，内部调用 validate_and_enrich_strategy。
+    返回 (bool, str)，忽略返回的 enriched dict（旧版不期望它）。
+    """
+    valid, msg, _ = validate_and_enrich_strategy(s, data)
+    return valid, msg
