@@ -41,6 +41,7 @@ def build_prompt(data: dict, symbol: str) -> str:
 上方(空头)：{data['above_liq']/1e9:.2f}B，{above_cluster} (距{above_distance})
 下方(多头)：{data['below_liq']/1e9:.2f}B，{below_cluster} (距{below_distance})
 比值：{data['liq_ratio']:.3f}
+注意：距离数值已计算好（如 +1801 / -4627），在推理中直接引用，无需重新计算。
 
 订单簿：买{data['orderbook_bids']/1e6:.1f}M / 卖{data['orderbook_asks']/1e6:.1f}M | 失衡率{data['orderbook_imbalance']:.4f}
 
@@ -114,7 +115,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 输出JSON（不要代码块）：
 {{
   "direction": "long/short/neutral",
-  "confidence": "high/medium/low",
+  "confidence": "high/medium/low (注意：若direction为neutral，此项必须为low)",
   "position_size": "light/medium/heavy/none",
   "entry_price_low": 0.0,
   "entry_price_high": 0.0,
@@ -184,7 +185,11 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
     
+    # neutral 时 confidence 强制检查
     if direction == "neutral":
+        if s.get("confidence") not in ["low", "medium", "high"]:
+            # 不强制报错，但记录警告
+            logger.warning("策略校验警告：direction为neutral，但confidence非low。建议强制为low。")
         entry_low = s.get("entry_price_low", 0)
         entry_high = s.get("entry_price_high", 0)
         stop = s.get("stop_loss", 0)
@@ -203,7 +208,7 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         if entry_low > entry_high:
             return False, "入场区间下限大于上限"
 
-        # ========== 新增逻辑一致性校验 ==========
+        # ========== 逻辑一致性校验 ==========
         reasoning = s.get("reasoning", "")
         
         # 1. 盈亏比一致性检查
@@ -218,8 +223,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
                 actual_rr = round((worst_entry - tp) / (stop - worst_entry), 2) if stop != worst_entry else 0
             if abs(claimed_rr - actual_rr) > 0.1:
                 logger.warning(f"策略校验警告：盈亏比不一致。声称{claimed_rr}，实际{actual_rr}")
-                # 可选：强制返回失败，或仅警告
-                # return False, f"盈亏比矛盾: {claimed_rr} vs {actual_rr}"
 
         # 2. 期权最大痛点逻辑检查（如果data提供）
         if data:
