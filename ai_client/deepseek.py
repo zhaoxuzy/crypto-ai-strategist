@@ -130,6 +130,8 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 
 8. 微观盘口确认：实盘200万U、滑点0.05%下，何种盘口细节会延迟3秒入场？
 
+【极其重要】你必须将完整的 JSON 输出在最终回答中，不要只放在思考过程中。确保 content 字段包含有效的 JSON 对象，且 reasoning 字段包含完整的六步推演（包括第一反应、自我质疑等所有环节）。
+
 输出JSON（不要代码块）：
 {{
   "direction": "long/short/neutral",
@@ -140,15 +142,14 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令。",
-  "reasoning": "...",
-  "risk_note": "..."
+  "reasoning": "第一步：环境定调\\n分析数据：...\\n第一反应：...\\n自我质疑：...\\n最终结论：...\\n\\n第二步：...\\n\\n第六步：矛盾裁决与决策\\n交叉验证与裁决：...\\n如果我错了，最可能是因为：...\\n推演与决策：\\n1. 价格路径推演：...\\n2. 盈亏比计算：...\\n3. 止损位：...\\n4. 止盈目标：...\\n5. 赔率与胜率权衡：...\\n6. 仓位选择：...\\n7. 主动证伪信号：...\\n8. 微观盘口确认：...",
+  "risk_note": "风险说明，含证伪信号和最坏情况预案。"
 }}
 """
     return prompt
 
 
 def _log_response_to_file(prompt: str, content: str, reasoning_content: str = None):
-    """将响应持久化到日志文件"""
     try:
         log_dir = "logs"
         os.makedirs(log_dir, exist_ok=True)
@@ -168,22 +169,15 @@ def _log_response_to_file(prompt: str, content: str, reasoning_content: str = No
 
 
 def extract_json_from_content(content: str) -> str:
-    """从模型输出中鲁棒提取 JSON 字符串"""
-    # 1. 提取 ```json ... ``` 代码块
     match = re.search(r'```json\s*([\s\S]*?)\s*```', content)
     if match:
         return match.group(1).strip()
-    
-    # 2. 提取 ``` ... ``` 通用代码块
     match = re.search(r'```\s*([\s\S]*?)\s*```', content)
     if match:
         return match.group(1).strip()
-    
-    # 3. 使用栈匹配最外层完整花括号（支持嵌套）
     start = content.find('{')
     if start == -1:
         raise ValueError("未找到 JSON 起始花括号")
-    
     brace_count = 0
     in_string = False
     escape = False
@@ -206,7 +200,6 @@ def extract_json_from_content(content: str) -> str:
             brace_count -= 1
             if brace_count == 0:
                 return content[start:i+1].strip()
-    
     raise ValueError("未找到匹配的结束花括号")
 
 
@@ -220,37 +213,25 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
     for attempt in range(max_retries):
         try:
             logger.info(f"DeepSeek Reasoner API 调用 (尝试 {attempt+1}/{max_retries})")
-           resp = client.chat.completions.create(
-           model="deepseek-reasoner",
-           messages=[{"role": "user", "content": prompt}],
-           max_tokens=6000,  # 增加到 6000
-           timeout=180
-    )
-
-      content = resp.choices[0].message.content or ""
-      reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
-
-# 如果 content 为空，记录警告并重试（不直接回退）
-if not content.strip():
-    logger.warning(f"content 为空，finish_reason={resp.choices[0].finish_reason}")
-    raise ValueError("模型返回空 content，可能是输出被截断或格式异常")
+            resp = client.chat.completions.create(
+                model="deepseek-reasoner",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=6000,  # 增加到 6000
+                timeout=180
+            )
+            content = resp.choices[0].message.content or ""
+            finish_reason = resp.choices[0].finish_reason
+            reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
             
             logger.info(f"finish_reason: {finish_reason}, content长度: {len(content)}, reasoning长度: {len(reasoning) if reasoning else 0}")
             
-            # 持久化响应
             _log_response_to_file(prompt, content, reasoning)
             
-            # 确定用于提取 JSON 的文本源
-            source_text = content
-            if not source_text.strip() and reasoning:
-                logger.info("content 为空，尝试从 reasoning_content 提取 JSON")
-                source_text = reasoning
+            if not content.strip():
+                logger.warning(f"content 为空，finish_reason={finish_reason}")
+                raise ValueError("模型返回空 content，可能是输出被截断或格式异常")
             
-            if not source_text.strip():
-                raise ValueError("响应内容为空，无法提取 JSON")
-            
-            # 鲁棒提取 JSON
-            json_str = extract_json_from_content(source_text)
+            json_str = extract_json_from_content(content)
             s = json.loads(json_str)
             
             s.setdefault("position_size", "none")
@@ -270,7 +251,6 @@ if not content.strip():
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
-    """校验策略输出，若关键规则违反则返回False。"""
     direction = s.get("direction")
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
@@ -300,7 +280,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
         reasoning = s.get("reasoning", "")
         atr_1h = data.get("atr_1h", data.get("atr_15m", 0) * 2) if data else 0
 
-        # 1. 盈亏比一致性检查
         rr_match = re.search(r'盈亏比[＝=:：]\s*(\d+\.?\d*)', reasoning)
         if rr_match:
             claimed_rr = float(rr_match.group(1))
@@ -313,7 +292,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
             if abs(claimed_rr - actual_rr) > 0.1:
                 return False, f"盈亏比计算矛盾: 声称{claimed_rr} vs 实际{actual_rr}"
 
-        # 2. 入场纪律检查
         if data:
             above_cluster = data.get("above_cluster", "")
             below_cluster = data.get("below_cluster", "")
@@ -326,7 +304,6 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
                 if entry_high > below_high:
                     return False, f"做空入场上限{entry_high}高于下方清算集群上沿{below_high}"
 
-        # 3. 止损距离检查
         if atr_1h > 0:
             if direction == "long":
                 stop_distance = entry_high - stop
@@ -335,13 +312,11 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
             if stop_distance < 1.2 * atr_1h:
                 return False, f"止损距离{stop_distance:.2f}小于1.2倍1h ATR({1.2*atr_1h:.2f})"
 
-        # 4. 深度思考痕迹检查（仅警告）
         if "自我质疑" not in reasoning:
             logger.warning("策略校验警告：reasoning中缺少'自我质疑'环节")
         if "如果我错了" not in reasoning:
             logger.warning("策略校验警告：reasoning中缺少'如果我错了'的反思陈述")
 
-        # 5. 仓位与矛盾信号联动
         contradiction_keywords = ["矛盾", "背离", "冲突", "不一致"]
         if any(kw in reasoning for kw in contradiction_keywords):
             if s.get("position_size") == "heavy":
