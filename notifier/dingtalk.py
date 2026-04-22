@@ -71,19 +71,15 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     rr = reward / risk if risk > 0 else 0
     rr_str = f"{rr:.2f}" if rr > 0 else "N/A"
     
-    execution_plan = strategy.get("execution_plan", "")
-    extra_str = ""
-    if execution_plan:
-        time_match = re.search(r'预计持仓[^，。]*', execution_plan)
-        if time_match:
-            extra_str = " · " + time_match.group()
-    
-    param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}{extra_str}"
+    param_card = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # 优化六步标题显示：将“第X步：”转换为加粗样式（转义 * 号）
-    reasoning = re.sub(r'(第[一二三四五六]步)：', r'**\1：**', reasoning)
+    # 优化六步标题显示：将“第X步：标题”整体加粗
+    # 匹配模式：“第一步：环境定调” 或 “第一步:环境定调”
+    reasoning = re.sub(r'(第[一二三四五六]步)[：:]\s*([^\n]+)', r'**\1：\2**', reasoning)
+    # 确保步骤之间有空行（如果连续两个加粗标题之间没有空行，则添加）
+    reasoning = re.sub(r'(\*\*第[一二三四五六]步：.+?\*\*)(\s*)(\*\*第)', r'\1\n\n\3', reasoning, flags=re.DOTALL)
     reasoning = reasoning.strip()
 
     risk_note = strategy.get("risk_note", "请严格设置止损")
