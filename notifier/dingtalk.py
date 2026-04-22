@@ -75,12 +75,30 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     reasoning = strategy.get("reasoning", "无推理过程")
     
-    # 优化六步标题显示：将“第X步：标题”整体加粗
-    # 匹配模式：“第一步：环境定调” 或 “第一步:环境定调”
-    reasoning = re.sub(r'(第[一二三四五六]步)[：:]\s*([^\n]+)', r'**\1：\2**', reasoning)
-    # 确保步骤之间有空行（如果连续两个加粗标题之间没有空行，则添加）
-    reasoning = re.sub(r'(\*\*第[一二三四五六]步：.+?\*\*)(\s*)(\*\*第)', r'\1\n\n\3', reasoning, flags=re.DOTALL)
+    # ========== 格式化优化 ==========
+    # 1. 步骤标题加粗
+    reasoning = re.sub(r'(第[一二三四五六]步)[：:]', r'**\1：**', reasoning)
+    
+    # 2. “分析数据”和“做出结论”单独成行并加粗标记
+    reasoning = re.sub(r'分析数据[：:]', r'\n> 📊 **分析数据**\n> ', reasoning)
+    reasoning = re.sub(r'做出结论[：:]', r'\n> 📌 **做出结论**\n> ', reasoning)
+    
+    # 3. 第六步内部的关键节点单独成行并加粗
+    reasoning = re.sub(r'交叉验证与裁决[：:]', r'\n> 🔍 **交叉验证与裁决**\n> ', reasoning)
+    reasoning = re.sub(r'最终裁决[：:]', r'\n> ⚖️ **最终裁决**\n> ', reasoning)
+    reasoning = re.sub(r'主逻辑[：:]', r'\n> 🧩 **主逻辑**\n> ', reasoning)
+    reasoning = re.sub(r'核心逻辑[：:]', r'\n> 🧩 **核心逻辑**\n> ', reasoning)
+    reasoning = re.sub(r'推演与决策[：:]', r'\n> 🎯 **推演与决策**\n> ', reasoning)
+    reasoning = re.sub(r'价格(?:最可能)?路径[：:]', r'\n> 📈 **价格路径**\n> ', reasoning)
+    
+    # 4. 清理多余的连续换行和引用符号
+    reasoning = re.sub(r'\n>\s*\n>', '\n> ', reasoning)
     reasoning = reasoning.strip()
+    
+    # 如果推理内容不是以引用格式开始，则添加引用格式
+    if not reasoning.startswith('>'):
+        lines = reasoning.split('\n')
+        reasoning = '\n'.join([f'> {line}' if not line.startswith('>') and line.strip() else line for line in lines])
 
     risk_note = strategy.get("risk_note", "请严格设置止损")
     risk_items = re.split(r'[。；\n]', risk_note)
@@ -94,7 +112,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
             idx += 1
     if not risk_lines:
         risk_lines = ["1. 请严格设置止损"]
-    risk_block = "> ### ⚠️ 风险\n> " + "\n> ".join(risk_lines)
+    risk_block = "> ### ⚠️ 风险说明\n> " + "\n> ".join(risk_lines)
 
     atr = data.get("atr", 0)
     funding = data.get("funding_rate", 0)
