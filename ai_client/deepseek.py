@@ -77,7 +77,7 @@ OI {data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_cha
 交叉验证与裁决：比对前五步结论，指出印证与矛盾点，明确权重分配（例如更信赖资金流还是拥挤度），形成主逻辑。
 推演与决策：
 1. 推演价格最可能路径。
-2. 入场区间，并以入场区间最差点计算最差盈亏比（做多取上沿，做空取下沿）。
+2. 入场区间，并以入场区间最差点计算最差盈亏比（做多取上沿，做空取下沿）。**如果最差盈亏比低于1.5:1，必须输出neutral，并在推理中说明放弃交易的原因——例如“赔率不足，不值得出手”。**
 3. 止损位及数据依据（清算墙外侧、ATR倍数）。
 4. 止盈目标与流动性池关系。
 5. 仓位选择与证据链强弱挂钩。
@@ -142,7 +142,7 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
         except Exception as e:
             logger.warning(f"DeepSeek Reasoner 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                wait_time = 2 ** (attempt + 1)  # 2, 4, 8 秒
+                wait_time = 2 ** (attempt + 1)
                 logger.info(f"等待 {wait_time} 秒后重试...")
                 time.sleep(wait_time)
             else:
