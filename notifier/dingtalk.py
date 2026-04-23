@@ -36,13 +36,14 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 def format_reasoning(text: str) -> str:
     """
     将AI推理文本转为钉钉引用块格式。
-    原则：保留原始换行和段落，仅添加 `> ` 前缀并适度加粗标题。
+    严格按照要求加粗特定标题，保留原始换行和段落。
     """
     if not text:
         return "> 无推理过程"
 
-    # 统一换行符，并压缩过多空行
+    # 统一换行符
     text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # 压缩过多空行
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     # 按段落分割（以两个换行符为准）
@@ -58,21 +59,27 @@ def format_reasoning(text: str) -> str:
             line = line.strip()
             if not line:
                 continue
-            # 对常见标题进行加粗
-            if re.match(r'^(第[一二三四五六]步)[：:]', line):
+
+            # 1. 步骤标题加粗：第一步：... 至 第六步：...
+            if re.match(r'^第[一二三四五六]步[：:]', line):
                 line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-            elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|价格路径推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
+
+            # 2. 分析数据、自我质疑、最终结论 首行展示且加粗
+            elif re.match(r'^(分析数据|自我质疑|最终结论)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            # 避免重复引用标记
+            # 3. 交叉验证与裁决、流动性掠杀推演 首行展示且加粗
+            elif re.match(r'^(交叉验证与裁决|流动性掠杀推演)[：:]', line):
+                line = re.sub(r'^([^：:]+)', r'**\1**', line)
+
+            # 添加引用标记
             if line.startswith('>'):
                 quoted_lines.append(line)
             else:
                 quoted_lines.append(f'> {line}')
-        # 段落内用单个换行连接
+
         formatted_paras.append('\n'.join(quoted_lines))
 
-    # 段落之间用空行分隔（钉钉渲染出间距）
     return '\n\n'.join(formatted_paras)
 
 
@@ -120,24 +127,23 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
-    # ----- 风险说明 -----
+    # ----- 风险说明（完全保留AI输出的原始序号和内容，仅添加引用标记）-----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 移除可能已有的序号
-        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
-        part = part.strip()
-        if part and part not in risk_lines:
+        # 只添加引用标记，不改动任何内容（包括序号）
+        if part.startswith('>'):
             risk_lines.append(part)
+        else:
+            risk_lines.append(f'> {part}')
 
     if not risk_lines:
-        risk_lines = ["请严格设置止损"]
+        risk_lines = ["> 请严格设置止损"]
 
-    risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
-    risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
+    risk_block = "> ### ⚠️ 风险说明\n" + "\n".join(risk_lines)
 
     # ----- 脚注 -----
     atr = data.get("atr_15m", 0)
