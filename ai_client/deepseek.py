@@ -33,11 +33,11 @@ def build_prompt(data: dict, symbol: str) -> str:
     put_call_ratio = data['put_call_ratio']
     pc_bias = "偏空信号" if put_call_ratio > 1.0 else "偏多信号"
 
-    prompt = f"""你是拥有十年经验的顶尖加密货币短线交易员，管理200万U资金，请基于以下数据严格按六步推演。
+    eth_btc_ratio = data['eth_btc_ratio']
+    eth_btc_ma_7d = data.get('eth_btc_ma_7d', 0.0)
+    eth_btc_percentile = data.get('eth_btc_percentile', 50.0)
 
-【重要：数据覆盖纪律】在每一步的“分析数据”中，必须逐项列出该步涉及的所有数据字段的具体数值，并给出简要解读。若某项数据缺失或无法分析，必须明确标注“【未分析】”，不得跳过。
-
-【重要：价格路径推演】在完成六步推演后，你必须结合当前的趋势、数据推演价格路径。每段必须包含：①具体价格目标 ②触发条件 ③预计耗时。
+    prompt = f"""你是一个管理200万U的顶尖加密货币短线交易员。
 
 【{symbol} | {timestamp}】
 价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
@@ -55,34 +55,35 @@ OI：{data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_c
 恐慌贪婪：{data['fear_greed']} (7日前{data['fear_greed_prev_7d']})
 期权：最大痛点{max_pain:.2f} ({max_pain_bias}) | P/C比{put_call_ratio:.4f} ({pc_bias})
 资金流：CVD斜率{data['cvd_slope']:.4f} | 期货24h净流{data['netflow']/1e6:.1f}M | 交易所BTC 24h变化{data['exchange_btc_change_24h']:+.0f} BTC
-ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
+ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位数{eth_btc_percentile:.0f}%（数值越高代表ETH相对BTC越强势）
+数据缺失：{missing_str}
 
 ---
-第一步：环境定调（价格7日分位数、15min ATR、1h ATR、波动因子）
+第一步：环境定调
 分析数据：
 第一反应：
 自我质疑：
 最终结论：
 
-第二步：猎物定位（清算池上下方规模、距离、比值、订单簿买卖盘量、失衡率）
+第二步：猎物定位
 分析数据：
 第一反应：
 自我质疑：
 最终结论：
 
-第三步：对手盘解剖（OI分位、OI变化、全市场OI变化、资金费率分位、顶级多空比分位、恐慌贪婪及趋势）
+第三步：对手盘解剖
 分析数据：
 第一反应：
 自我质疑：
 最终结论：
 
-第四步：资金流验证（CVD斜率、期货24h净流、交易所BTC余额变化）
+第四步：资金流验证
 分析数据：
 第一反应：
 自我质疑：
 最终结论：
 
-第五步：辅助信号（期权最大痛点、P/C比、ETH/BTC汇率）
+第五步：辅助信号
 分析数据：
 第一反应：
 自我质疑：
@@ -90,12 +91,13 @@ ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
 
 第六步：矛盾裁决与决策
 交叉验证与裁决：
-如果我错了，最可能是因为：
 方向选择（long/short/neutral）：
 置信度（high/medium/low）：
 仓位（light/medium/heavy）：
 
-价格路径推演（必须包含具体价格、触发条件、预计耗时）：
+【流动性猎杀推演】
+基于当前清算池分布、对手盘结构和资金流方向，描述价格最可能如何测试并触发关键流动性区域，以及触发后可能产生的连锁反应。需包含触发条件和证伪标准。
+
 入场区间（说明依据）：
 止损位（说明依据）：
 止盈位（说明依据）：
@@ -112,7 +114,7 @@ ETH/BTC：{data['eth_btc_ratio']:.4f} | 数据缺失：{missing_str}
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令",
-  "reasoning": "完整的六步推演内容，必须包含价格路径推演的三段式描述，且每步分析数据中逐项列出字段数值",
+  "reasoning": "完整的六步推演内容，必须包含【流动性猎杀推演】段落",
   "risk_note": "风险说明"
 }}
 """
