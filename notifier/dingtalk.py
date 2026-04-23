@@ -36,16 +36,41 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 def format_reasoning(text: str) -> str:
     """
     将AI推理文本转为钉钉引用块格式。
-    严格遵循：不改变文本内容，仅添加 `> ` 前缀并对指定标题加粗。
+    强制在关键标签前插入换行，确保独立成行、首行加粗。
     """
     if not text:
         return "> 无推理过程"
 
-    # 统一换行符并压缩过多空行（保留原有段落结构）
+    # 1. 统一换行符，并压缩过多空行
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 按段落分割（以两个换行符为准）
+    # 2. 【核心】强制在关键标签前插入换行符，确保它们独立成行
+    #    匹配模式：标签后跟中文冒号或英文冒号
+    labels = [
+        "分析数据",
+        "第一反应",
+        "自我质疑",
+        "最终结论",
+        "交叉验证与裁决",
+        "流动性猎杀推演",
+        "入场区间",
+        "止损位",
+        "止盈位",
+        "主动证伪信号",
+        "微观盘口确认"
+    ]
+    for label in labels:
+        # 在标签前插入换行（如果前面不是换行或行首）
+        text = re.sub(rf'(?<!\n)({label}[：:])', r'\n\1', text)
+
+    # 对步骤标题也强制换行（第一步：... 等）
+    text = re.sub(r'(?<!\n)(第[一二三四五六]步[：:])', r'\n\1', text)
+
+    # 3. 再次压缩可能产生的多余空行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 4. 按段落分割（以两个换行符为准）
     paragraphs = text.split('\n\n')
     formatted_paras = []
 
@@ -59,19 +84,15 @@ def format_reasoning(text: str) -> str:
             if not line:
                 continue
 
-            # 1. 步骤标题加粗：第一步：... 至 第六步：...
+            # 加粗处理
+            # 步骤标题加粗
             if re.match(r'^第[一二三四五六]步[：:]', line):
                 line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-
-            # 2. 分析数据、自我质疑、最终结论 首行展示且加粗
-            elif re.match(r'^(分析数据|自我质疑|最终结论)[：:]', line):
+            # 其他关键标签加粗
+            elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            # 3. 交叉验证与裁决、流动性猎杀推演 首行展示且加粗
-            elif re.match(r'^(交叉验证与裁决|流动性猎杀推演)[：:]', line):
-                line = re.sub(r'^([^：:]+)', r'**\1**', line)
-
-            # 添加引用标记（避免重复添加）
+            # 添加引用标记
             if line.startswith('>'):
                 quoted_lines.append(line)
             else:
@@ -79,7 +100,7 @@ def format_reasoning(text: str) -> str:
 
         formatted_paras.append('\n'.join(quoted_lines))
 
-    # 段落之间用空行分隔（钉钉渲染出间距）
+    # 段落之间用空行分隔
     return '\n\n'.join(formatted_paras)
 
 
@@ -123,18 +144,17 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ----- 推理内容（使用格式化函数）-----
+    # ----- 推理内容（强制换行 + 加粗处理）-----
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
-    # ----- 风险说明（完全保留AI输出的原始序号和内容，仅添加引用标记）-----
+    # ----- 风险说明（完全保留AI输出，仅添加引用标记）-----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 只添加引用标记，不改动任何内容（包括序号）
         if part.startswith('>'):
             risk_lines.append(part)
         else:
