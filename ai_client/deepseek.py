@@ -49,7 +49,7 @@ def build_prompt(data: dict, symbol: str) -> str:
     core_missing = [k for k in ["atr_15m", "above_liq", "below_liq", "cvd_slope"] if k in missing]
     constraint_note = ""
     if core_missing:
-        constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
+        constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'，在分析该数据时应注明（数据缺失）；若清算数据缺失，则必须输出 'neutral'。\n"
 
     prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易，必须根据以下指令进行深度分析，标准格式输出，不得简化或跳过，否则视为无效输出。
 {constraint_note}
@@ -72,9 +72,8 @@ OI：{data['oi']/1e9:.2f}B (分位{data['oi_percentile']:.0f}%)，24h{data['oi_c
 ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位数{eth_btc_percentile:.0f}%（数值越高代表ETH相对BTC越强势）
 数据缺失：{missing_str}
 【格式硬约束】变）...
-
 ---
-【极其重要】你的最终回答中的 `reasoning` 字段必须是一个完整的、自包含的推演文本。它必须包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及其详细内容。不得以摘要或简写形式输出。你的思考过程必须显式地写出来。
+【回答硬约束】你的最终回答中的 `reasoning` 字段必须是一个完整的、自包含的推演文本、必须包含每一步的“分析数据”、“第一反应”、“自我质疑”、“最终结论”子标题及其详细内容。不得以摘要或简写形式输出。你的思考过程必须显式地写出来。
 ---
 第一步：环境定调
 分析数据：价格7日分位数、15min ATR、1h ATR、波动因子。
@@ -111,7 +110,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 方向选择（long/short/neutral）：
 置信度（high/medium/low）：
 仓位（light/medium/heavy）：
-流动性猎杀推演（必须输出，否则结果无效，基于当前清算池分布、对手盘结构和资金流方向，描述价格最可能如何测试并触发关键流动性区域，以及触发后可能产生的连锁反应。需包含触发条件和证伪标准）：
+流动性猎杀推演（必须专业研判，基于当前清算池分布、对手盘结构和资金流方向，描述价格最可能如何测试并触发关键流动性区域，以及触发后可能产生的连锁反应。需包含触发条件和证伪标准）：
 
 入场区间（说明依据）：
 止损位（说明依据）：
@@ -129,7 +128,7 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
   "stop_loss": 0.0,
   "take_profit": 0.0,
   "execution_plan": "一句话指令",
-  "reasoning": "完整的六步推演内容，必须包含【流动性猎杀推演】段落",
+  "reasoning": "完整的六步推演内容且必须包含“流动性猎杀推演”段落",
   "risk_note": "风险说明"
 }}
 """
