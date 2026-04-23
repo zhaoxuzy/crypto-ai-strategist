@@ -36,9 +36,6 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 def format_reasoning(text: str) -> str:
     """
     极简稳定版：只做必要的美化，绝不篡改AI输出的文字内容。
-    1. 为关键标题（如“第一步：”、“分析数据：”）强制换行。
-    2. 对关键标题进行加粗。
-    3. 所有行添加 `> ` 引用前缀。
     """
     if not text:
         return "> 无推理过程"
@@ -46,14 +43,9 @@ def format_reasoning(text: str) -> str:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 1. 强制在关键标题前插入换行符
-    titles = [
+    # 1. 强制在关键主标题前插入换行符，确保分段清晰
+    main_titles = [
         "第[一二三四五六]步[：:]",
-        "分析数据[：:]",
-        "第一反应[：:]",
-        "自我质疑[：:]",
-        "最终结论[：:]",
-        "交叉验证与裁决[：:]",
         "流动性猎杀推演[：:]",
         "入场区间[：:]",
         "止损位[：:]",
@@ -61,7 +53,7 @@ def format_reasoning(text: str) -> str:
         "主动证伪信号[：:]",
         "微观盘口确认[：:]"
     ]
-    for title in titles:
+    for title in main_titles:
         text = re.sub(rf'(?<!\n)({title})', r'\n\1', text)
 
     # 2. 按行处理，添加引用标记和加粗
@@ -73,10 +65,10 @@ def format_reasoning(text: str) -> str:
             quoted_lines.append('> ')
             continue
 
-        # 加粗处理：匹配常见标题
+        # 对主标题进行加粗
         if re.match(r'^(第[一二三四五六]步)[：:]', line):
             line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-        elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
+        elif re.match(r'^(流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
             line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
         if line.startswith('>'):
