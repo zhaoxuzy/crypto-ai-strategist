@@ -36,14 +36,13 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 def format_reasoning(text: str) -> str:
     """
     将AI推理文本转为钉钉引用块格式。
-    严格按照要求加粗特定标题，保留原始换行和段落。
+    严格遵循：不改变文本内容，仅添加 `> ` 前缀并对指定标题加粗。
     """
     if not text:
         return "> 无推理过程"
 
-    # 统一换行符
+    # 统一换行符并压缩过多空行（保留原有段落结构）
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    # 压缩过多空行
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     # 按段落分割（以两个换行符为准）
@@ -68,11 +67,11 @@ def format_reasoning(text: str) -> str:
             elif re.match(r'^(分析数据|自我质疑|最终结论)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            # 3. 交叉验证与裁决、流动性掠杀推演 首行展示且加粗
-            elif re.match(r'^(交叉验证与裁决|流动性掠杀推演)[：:]', line):
+            # 3. 交叉验证与裁决、流动性猎杀推演 首行展示且加粗
+            elif re.match(r'^(交叉验证与裁决|流动性猎杀推演)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            # 添加引用标记
+            # 添加引用标记（避免重复添加）
             if line.startswith('>'):
                 quoted_lines.append(line)
             else:
@@ -80,6 +79,7 @@ def format_reasoning(text: str) -> str:
 
         formatted_paras.append('\n'.join(quoted_lines))
 
+    # 段落之间用空行分隔（钉钉渲染出间距）
     return '\n\n'.join(formatted_paras)
 
 
