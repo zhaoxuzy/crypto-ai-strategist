@@ -7,6 +7,14 @@ from openai import OpenAI
 from utils.logger import logger
 
 
+# ==================== 配置参数 ====================
+TICK_SIZE = 0.1          # 价格最小变动单位，用于规整化比较
+MAX_RETRIES = 2           # 重试次数（2次总耗时约 2+4+180*3≈550s，可按需调整）
+RETRY_BASE_WAIT = 2       # 基础等待秒数
+TIMEOUT_SECONDS = 180     # API 超时时间
+# =================================================
+
+
 def build_prompt(data: dict, symbol: str) -> str:
     timestamp = data.get("timestamp", "N/A")
     current = data['mark_price']
@@ -37,8 +45,14 @@ def build_prompt(data: dict, symbol: str) -> str:
     eth_btc_ma_7d = data.get('eth_btc_ma_7d', 0.0)
     eth_btc_percentile = data.get('eth_btc_percentile', 50.0)
 
-    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。
+    # 关键数据缺失的强制约束（植入 Prompt）
+    core_missing = [k for k in ["atr_15m", "above_liq", "below_liq", "cvd_slope"] if k in missing]
+    constraint_note = ""
+    if core_missing:
+        constraint_note = f"\n【重要约束】以下核心数据缺失：{', '.join(core_missing)}。你必须将置信度设为 'low'；若清算数据缺失，则必须输出 'neutral'。\n"
 
+    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。
+{constraint_note}
 【{symbol} | {timestamp}】
 价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
 
@@ -152,11 +166,11 @@ def extract_json(content: str) -> str:
     raise ValueError("JSON 未闭合")
 
 
-def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
+def call_deepseek(prompt: str, max_retries: int = MAX_RETRIES) -> dict:
     client = OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
-        timeout=180.0
+        timeout=TIMEOUT_SECONDS
     )
     for attempt in range(max_retries):
         try:
@@ -165,16 +179,18 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
                 model="deepseek-reasoner",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=6000,
-                timeout=180
+                timeout=TIMEOUT_SECONDS
             )
             content = resp.choices[0].message.content or ""
             reasoning = getattr(resp.choices[0].message, 'reasoning_content', None)
             _log_response(prompt, content, reasoning)
 
-            if not content.strip():
-                raise ValueError("空响应")
+            # 降级逻辑：若 content 为空，则尝试从 reasoning 提取
+            final_content = content.strip() if content else (reasoning or "")
+            if not final_content:
+                raise ValueError("响应内容为空")
 
-            json_str = extract_json(content)
+            json_str = extract_json(final_content)
             s = json.loads(json_str)
 
             s.setdefault("position_size", "none")
@@ -186,10 +202,17 @@ def call_deepseek(prompt: str, max_retries: int = 3) -> dict:
         except Exception as e:
             logger.warning(f"调用失败: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** (attempt + 1))
+                wait_time = RETRY_BASE_WAIT ** (attempt + 1)
+                logger.info(f"等待 {wait_time} 秒后重试...")
+                time.sleep(wait_time)
             else:
                 raise
     return {}
+
+
+def round_to_tick(price: float) -> float:
+    """将价格规整到最小变动单位"""
+    return round(price / TICK_SIZE) * TICK_SIZE
 
 
 def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
@@ -197,18 +220,56 @@ def validate_strategy(s: dict, data: dict = None) -> tuple[bool, str]:
     if direction not in ["long", "short", "neutral"]:
         return False, f"无效方向: {direction}"
 
+    # Neutral 信号校验
     if direction == "neutral":
         for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
             if s.get(f, 0) != 0:
                 return False, f"neutral 信号不应有非零的 {f}"
+        # 检查是否在 reasoning/execution_plan 中隐含挂单意图（仅告警）
+        suspicious = ["挂单", "等待", "回调", "突破后"]
+        exec_plan = s.get("execution_plan", "")
+        reasoning = s.get("reasoning", "")
+        if any(w in exec_plan or w in reasoning for w in suspicious):
+            logger.warning("Neutral 信号可能包含挂单意图，请人工复核")
         return True, ""
 
+    # 方向信号：价格字段必须存在且为正
     for f in ["entry_price_low", "entry_price_high", "stop_loss", "take_profit"]:
         val = s.get(f)
-        if val is None or float(val) <= 0:
-            return False, f"缺少或无效的 {f}"
+        if val is None:
+            return False, f"缺少字段: {f}"
+        try:
+            if float(val) <= 0:
+                return False, f"字段 {f} 必须为正数"
+        except:
+            return False, f"字段 {f} 不是有效数字"
 
-    if s["entry_price_low"] > s["entry_price_high"]:
+    entry_low = round_to_tick(float(s["entry_price_low"]))
+    entry_high = round_to_tick(float(s["entry_price_high"]))
+    stop_loss = round_to_tick(float(s["stop_loss"]))
+    take_profit = round_to_tick(float(s["take_profit"]))
+
+    if entry_low > entry_high:
         return False, "入场区间下限大于上限"
+
+    # 核心数据缺失时的置信度强制降级（代码层二次保障）
+    if data:
+        critical_missing = []
+        if data.get("atr_15m", 0) <= 0:
+            critical_missing.append("atr_15m")
+        if data.get("above_liq", 0) <= 0 and data.get("below_liq", 0) <= 0:
+            critical_missing.append("清算数据")
+        if data.get("cvd_slope") is None:
+            critical_missing.append("cvd_slope")
+
+        if critical_missing and s.get("confidence") == "high":
+            s["confidence"] = "medium"
+            logger.warning(f"核心数据缺失 {critical_missing}，置信度强制降级为 medium")
+
+    # 写入规整化后的价格（可选，便于下游使用）
+    s["entry_price_low"] = entry_low
+    s["entry_price_high"] = entry_high
+    s["stop_loss"] = stop_loss
+    s["take_profit"] = take_profit
 
     return True, ""
