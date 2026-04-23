@@ -41,11 +41,11 @@ def extract_core_reasoning(reasoning_raw: str) -> str:
     parts = []
     text = reasoning_raw
 
-    m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=流动性猎杀推演|入场区间|如果我错了|方向选择|$)', text, re.DOTALL)
+    m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=流动性猎杀推演|入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|方向选择|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
 
-    m = re.search(r'(流动性猎杀推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|$)', text, re.DOTALL)
+    m = re.search(r'(流动性猎杀推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|方向选择|第[一二三四五六]步|交叉验证|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
 
@@ -80,7 +80,7 @@ def force_line_breaks(text: str) -> str:
         return text
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1', text)
     text = re.sub(r'(流动性猎杀推演[：:])', r'\n\n\1', text)
-    text = re.sub(r'(情景推演[：:])', r'\n\n\1', text)  # 兼容旧格式
+    text = re.sub(r'(情景推演[：:])', r'\n\n\1', text)
     text = re.sub(r'(分析数据[：:])', r'\n\1', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1', text)
     text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
@@ -114,13 +114,13 @@ def format_reasoning_block(text: str) -> str:
 
 
 def clean_risk_text(raw: str) -> list:
-    """清洗风险文本，返回无前缀的纯条目列表"""
+    """清洗风险文本，返回无前缀的纯条目列表（加强版）"""
     lines = []
     for part in raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
+        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩\s\t]+\s*', '', part)
         part = re.sub(r'^[-*•]\s*', '', part)
         part = re.sub(r'^(主要)?风险[：:]\s*', '', part)
         part = re.sub(r'^风险说明[：:]\s*', '', part)
