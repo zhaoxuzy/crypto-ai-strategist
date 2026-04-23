@@ -106,7 +106,8 @@ ETH/BTC：当前{eth_btc_ratio:.4f}，7日均值{eth_btc_ma_7d:.4f}，7日分位
 最终结论：
 
 第六步：矛盾裁决与决策
-交叉验证与裁决：
+交叉验证：
+最终裁决：
 方向选择（long/short/neutral）：
 置信度（high/medium/low）：
 仓位（light/medium/heavy）：
