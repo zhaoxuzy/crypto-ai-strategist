@@ -33,68 +33,101 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
+def _extract_section(text: str, step_pattern: str, labels: list) -> dict:
+    """
+    从文本中提取指定步骤的内容，并尝试拆分为各个子标签。
+    返回一个字典，键为子标签名，值为内容。
+    """
+    section_match = re.search(step_pattern, text, re.DOTALL)
+    if not section_match:
+        return {label: "【未提供】" for label in labels}
+
+    section_text = section_match.group(1).strip()
+
+    result = {}
+    for label in labels:
+        # 匹配标签及后续内容，直到遇到下一个标签或段落结束
+        pattern = rf'{label}[：:]\s*(.*?)(?=\n(?:{"|".join(labels)})[：:]|\Z)'
+        match = re.search(pattern, section_text, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            # 清理多余换行和空格
+            content = re.sub(r'\s+', ' ', content)
+            result[label] = content
+        else:
+            result[label] = "【未提供】"
+
+    return result
+
+
+def _extract_liquidity_hunt(text: str) -> str:
+    """提取流动性猎杀推演内容"""
+    patterns = [
+        r'【流动性猎杀推演[】]?\s*(.*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|$)',
+        r'流动性猎杀推演[：:]\s*(.*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|$)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            content = re.sub(r'\s+', ' ', content)
+            return content
+    return "【未提供】"
+
+
 def format_reasoning(text: str) -> str:
     """
-    将AI推理文本转为钉钉引用块格式。
-    - 强制关键标签独立成行、加粗。
-    - 标签后的内容换到下一行，并缩进两个空格，提升可读性。
+    智能解析AI推理文本，按标准六步框架重构，确保格式绝对受控。
     """
     if not text:
         return "> 无推理过程"
 
-    text = text.replace('\r\n', '\n').replace('\r', '\n')
-    text = re.sub(r'\n{3,}', '\n\n', text)
-
-    # 1. 强制在关键标签前插入换行
-    labels = [
-        "分析数据", "第一反应", "自我质疑", "最终结论",
-        "交叉验证与裁决", "流动性猎杀推演",
-        "入场区间", "止损位", "止盈位", "主动证伪信号", "微观盘口确认"
+    # 定义六步的提取模式
+    steps = [
+        {"name": "第一步：环境定调", "pattern": r"第一步[：:]\s*环境定调\s*(.*?)(?=第二步[：:]|$)", "labels": ["分析数据", "第一反应", "自我质疑", "最终结论"]},
+        {"name": "第二步：猎物定位", "pattern": r"第二步[：:]\s*猎物定位\s*(.*?)(?=第三步[：:]|$)", "labels": ["分析数据", "第一反应", "自我质疑", "最终结论"]},
+        {"name": "第三步：对手盘解剖", "pattern": r"第三步[：:]\s*对手盘解剖\s*(.*?)(?=第四步[：:]|$)", "labels": ["分析数据", "第一反应", "自我质疑", "最终结论"]},
+        {"name": "第四步：资金流验证", "pattern": r"第四步[：:]\s*资金流验证\s*(.*?)(?=第五步[：:]|$)", "labels": ["分析数据", "第一反应", "自我质疑", "最终结论"]},
+        {"name": "第五步：辅助信号", "pattern": r"第五步[：:]\s*辅助信号\s*(.*?)(?=第六步[：:]|交叉验证|$)", "labels": ["分析数据", "第一反应", "自我质疑", "最终结论"]},
+        {"name": "第六步：矛盾裁决与决策", "pattern": r"第六步[：:]\s*矛盾裁决与决策\s*(.*?)(?=【流动性猎杀推演|入场区间|$)", "labels": ["交叉验证与裁决"]},
     ]
-    for label in labels:
-        text = re.sub(rf'(?<!\n)({label}[：:])', r'\n\1', text)
 
-    text = re.sub(r'(?<!\n)(第[一二三四五六]步[：:])', r'\n\1', text)
+    # 提取第六步后的入场等信息
+    extra_labels = ["入场区间", "止损位", "止盈位", "主动证伪信号", "微观盘口确认"]
+    extra_data = {}
+    for label in extra_labels:
+        match = re.search(rf'{label}[：:]\s*(.*?)(?=\n(?:{"|".join(extra_labels)})[：:]|\Z)', text, re.DOTALL)
+        if match:
+            extra_data[label] = re.sub(r'\s+', ' ', match.group(1).strip())
+        else:
+            extra_data[label] = "【未提供】"
 
-    # 2. 按段落分割
-    paragraphs = text.split('\n\n')
-    formatted_paras = []
+    # 提取流动性猎杀推演
+    liquidity = _extract_liquidity_hunt(text)
 
-    for para in paragraphs:
-        if not para.strip():
-            continue
-        lines = para.split('\n')
-        quoted_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+    # 构建标准输出
+    output_lines = []
+    for step in steps:
+        output_lines.append(f"> **{step['name']}**")
+        section_data = _extract_section(text, step["pattern"], step["labels"])
+        for label in step["labels"]:
+            content = section_data.get(label, "【未提供】")
+            output_lines.append(f">   **{label}**：")
+            output_lines.append(f">     {content}")
+        output_lines.append("> ")  # 空行分隔
 
-            # 加粗处理
-            if re.match(r'^第[一二三四五六]步[：:]', line):
-                line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-            elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
-                line = re.sub(r'^([^：:]+)', r'**\1**', line)
+    # 添加流动性猎杀推演
+    output_lines.append(f"> **流动性猎杀推演**：")
+    output_lines.append(f">   {liquidity}")
+    output_lines.append("> ")
 
-            # 核心处理：将标签后的内容换行缩进
-            match = re.match(r'(\*\*[^*]+\*\*[：:]|[\w]+[：:])\s*(.*)', line)
-            if match:
-                tag = match.group(1)
-                content = match.group(2).strip()
-                # 标签行
-                quoted_lines.append(f'> {tag}' if not tag.startswith('>') else tag)
-                # 内容行（缩进两个空格）
-                if content:
-                    quoted_lines.append(f'>   {content}')
-            else:
-                if line.startswith('>'):
-                    quoted_lines.append(line)
-                else:
-                    quoted_lines.append(f'> {line}')
+    # 添加入场、止损、止盈等信息
+    for label in extra_labels:
+        content = extra_data[label]
+        output_lines.append(f"> **{label}**：")
+        output_lines.append(f">   {content}")
 
-        formatted_paras.append('\n'.join(quoted_lines))
-
-    return '\n\n'.join(formatted_paras)
+    return '\n'.join(output_lines)
 
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
@@ -136,7 +169,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         param = f"> 现价{current_price:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # ----- 推理内容 -----
+    # ----- 推理内容（智能重构）-----
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
