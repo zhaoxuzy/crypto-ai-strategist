@@ -33,67 +33,38 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
-def extract_core_reasoning(reasoning_raw: str) -> str:
-    """提取交叉验证与裁决 + 价格路径推演 + 如果我错了"""
-    if not reasoning_raw:
-        return ""
-
-    parts = []
-    text = reasoning_raw
-
-    # 1. 交叉验证与裁决
-    m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=价格路径推演|入场区间|如果我错了|方向选择|$)', text, re.DOTALL)
-    if m:
-        parts.append(m.group(1).strip())
-
-    # 2. 价格路径推演
-    m = re.search(r'(价格路径推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|$)', text, re.DOTALL)
-    if m:
-        parts.append(m.group(1).strip())
-
-    # 3. 如果我错了
-    m = re.search(r'(如果我错了[，,][\s\S]*?)(?=方向选择|价格路径推演|入场区间|$)', text, re.DOTALL)
-    if m:
-        parts.append(m.group(1).strip())
-
-    if not parts:
-        return text[-1000:] if len(text) > 1000 else text
-
-    combined = "\n\n".join(parts)
-    return combined[:2000] + "..." if len(combined) > 2000 else combined
+def clean_risk_text(raw: str) -> list:
+    """清洗风险文本，返回干净的风险条目列表"""
+    lines = []
+    for part in raw.split('\n'):
+        part = part.strip()
+        if not part:
+            continue
+        # 移除所有常见序号前缀和标签
+        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
+        part = re.sub(r'^(主要)?风险[：:]\s*', '', part)
+        part = part.strip()
+        if part and part not in lines:
+            lines.append(part)
+    return lines if lines else ["请严格设置止损"]
 
 
-def extract_detail_steps(reasoning_raw: str) -> str:
-    """提取第一步到第五步的详细推演，并强制插入换行"""
-    if not reasoning_raw:
-        return ""
-
-    # 匹配从“第一步”开始到“第六步”之前的内容
-    m = re.search(r'(第一步[：:][\s\S]*?)(?=第六步[：:]|交叉验证与裁决|$)', reasoning_raw, re.DOTALL)
-    if not m:
-        return ""
-
-    detail = m.group(1).strip()
-
-    # 强制在关键标签前插入换行，确保独立成行
-    detail = re.sub(r'(分析数据[：:])', r'\n\1 ', detail)
-    detail = re.sub(r'(第一反应[：:])', r'\n\1 ', detail)
-    detail = re.sub(r'(自我质疑[：:])', r'\n\1 ', detail)
-    detail = re.sub(r'(最终结论[：:])', r'\n\1 ', detail)
-    detail = re.sub(r'(第二步[：:]|第三步[：:]|第四步[：:]|第五步[：:])', r'\n\n\1', detail)
-
-    # 限制长度
-    if len(detail) > 3000:
-        detail = detail[:3000] + "..."
-    return detail
-
-
-def format_reasoning_block(text: str, bold_titles: bool = True) -> str:
-    """将推理文本格式化为钉钉引用块，每行加 >，标题加粗"""
+def format_reasoning_text(text: str, bold_titles: bool = True) -> str:
+    """将任意推理文本格式化为钉钉引用块，自动处理换行和标题加粗"""
     if not text:
         return "> "
 
     text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # 强制在关键标签前换行，确保独立成行
+    text = re.sub(r'(分析数据[：:])', r'\n\1 ', text)
+    text = re.sub(r'(第一反应[：:])', r'\n\1 ', text)
+    text = re.sub(r'(自我质疑[：:])', r'\n\1 ', text)
+    text = re.sub(r'(最终结论[：:])', r'\n\1 ', text)
+    text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1 ', text)
+    text = re.sub(r'(价格路径推演[：:])', r'\n\1 ', text)
+    text = re.sub(r'(如果我错了[，,])', r'\n\1 ', text)
+    text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1 ', text)
+
     lines = text.split('\n')
     quoted = []
     for line in lines:
@@ -102,10 +73,11 @@ def format_reasoning_block(text: str, bold_titles: bool = True) -> str:
             quoted.append('> ')
             continue
 
-        # 标题加粗处理
         if bold_titles:
-            if re.match(r'^(第[一二三四五六]步)', line):
+            # 步骤标题加粗
+            if re.match(r'^第[一二三四五六]步', line):
                 line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
+            # 核心逻辑内部标题加粗
             elif re.match(r'^(交叉验证与裁决|价格路径推演|如果我错了)', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
@@ -153,34 +125,28 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
         reasoning_raw = strategy.get("reasoning", "")
-        # 核心逻辑
-        core_text = extract_core_reasoning(reasoning_raw)
-        core_block = format_reasoning_block(core_text, bold_titles=True)
-        # 完整推演步骤
-        detail_text = extract_detail_steps(reasoning_raw)
-        if detail_text:
-            detail_block = "\n\n---\n\n### 📋 完整推演过程\n" + format_reasoning_block(detail_text, bold_titles=True)
+        # 核心逻辑：截取包含“交叉验证”“价格推演”“如果我错了”的连续段落
+        core_parts = []
+        # 尝试从“交叉验证与裁决”开始，到“入场区间”或“主动证伪”之前结束
+        match = re.search(r'(交叉验证与裁决[\s\S]+?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|$)', reasoning_raw, re.DOTALL)
+        if match:
+            core_text = match.group(1).strip()
+        else:
+            # 回退：取最后 1200 字符
+            core_text = reasoning_raw[-1200:] if len(reasoning_raw) > 1200 else reasoning_raw
+
+        core_block = format_reasoning_text(core_text, bold_titles=True)
+
+        # 完整推演：第一步到第五步
+        detail_match = re.search(r'(第一步[\s\S]+?)(?=第六步|交叉验证与裁决)', reasoning_raw, re.DOTALL)
+        if detail_match:
+            detail_text = detail_match.group(1).strip()
+            detail_block = "\n\n---\n\n### 📋 完整推演过程\n" + format_reasoning_text(detail_text, bold_titles=True)
         else:
             detail_block = ""
 
-    # 风险说明：彻底清洗前缀
-    risk_raw = strategy.get("risk_note", "请严格设置止损")
-    risk_lines = []
-    for part in risk_raw.split('\n'):
-        part = part.strip()
-        if not part:
-            continue
-        # 移除所有常见序号和“主要风险”前缀
-        part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
-        part = re.sub(r'^主要风险[：:]\s*', '', part)
-        part = re.sub(r'^风险[：:]\s*', '', part)
-        part = part.strip()
-        if part and part not in risk_lines:
-            risk_lines.append(part)
-
-    if not risk_lines:
-        risk_lines = ["请严格设置止损"]
-
+    # 风险说明
+    risk_lines = clean_risk_text(strategy.get("risk_note", "请严格设置止损"))
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
@@ -193,7 +159,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # 组装最终消息
     message = f"{title}\n\n{param}\n\n### 🧠 核心逻辑\n{core_block}\n\n{risk_block}"
     if detail_block:
         message += detail_block
