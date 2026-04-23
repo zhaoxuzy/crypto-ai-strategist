@@ -33,6 +33,70 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
+def extract_core_reasoning(reasoning_raw: str) -> str:
+    """提取交叉验证与裁决 + 价格路径推演 + 如果我错了"""
+    if not reasoning_raw:
+        return ""
+
+    parts = []
+    text = reasoning_raw
+
+    m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=价格路径推演|入场区间|如果我错了|方向选择|$)', text, re.DOTALL)
+    if m:
+        parts.append(m.group(1).strip())
+
+    m = re.search(r'(价格路径推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|$)', text, re.DOTALL)
+    if m:
+        parts.append(m.group(1).strip())
+
+    m = re.search(r'(如果我错了[，,][\s\S]*?)(?=方向选择|价格路径推演|入场区间|$)', text, re.DOTALL)
+    if m:
+        parts.append(m.group(1).strip())
+
+    if not parts:
+        return text[-1000:] if len(text) > 1000 else text
+
+    combined = "\n\n".join(parts)
+    return combined[:2000] + "..." if len(combined) > 2000 else combined
+
+
+def extract_detail_steps(reasoning_raw: str) -> str:
+    """提取第一步到第五步的详细推演（用于后置展示）"""
+    if not reasoning_raw:
+        return ""
+
+    # 匹配从“第一步”开始到“第六步”之前的内容
+    m = re.search(r'(第一步[：:][\s\S]*?)(?=第六步[：:]|交叉验证与裁决|$)', reasoning_raw, re.DOTALL)
+    if m:
+        detail = m.group(1).strip()
+        # 如果内容太长，适当截断（保留前2500字符）
+        if len(detail) > 2500:
+            detail = detail[:2500] + "..."
+        return detail
+    return ""
+
+
+def format_reasoning_block(text: str, bold_titles: bool = True) -> str:
+    """将推理文本格式化为钉钉引用块，可选标题加粗"""
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    lines = text.split('\n')
+    quoted = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            quoted.append('> ')
+        else:
+            if bold_titles:
+                # 步骤标题加粗
+                if re.match(r'^(第[一二三四五六]步)', line):
+                    line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
+                # 核心部分标题加粗
+                elif re.match(r'^(交叉验证与裁决|价格路径推演|如果我错了)', line):
+                    line = re.sub(r'^([^：:]+)', r'**\1**', line)
+            quoted.append(f'> {line}' if not line.startswith('>') else line)
+    return '\n'.join(quoted)
+
+
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%m-%d %H:%M")
@@ -41,6 +105,8 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     if direction == "neutral":
         title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
         param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
+        core_block = "> 当前无交易机会，观望。"
+        detail_block = ""
     else:
         emoji = "🟢" if direction == "long" else "🔴"
         text = "做多" if direction == "long" else "做空"
@@ -70,30 +136,16 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 推理内容：主动插入换行确保首行独立，并加粗标题
-    reasoning_raw = strategy.get("reasoning", "无推理过程")
-    text = reasoning_raw.replace('\r\n', '\n').replace('\r', '\n')
-    # 强制关键标签前换行
-    text = re.sub(r'(分析数据[：:])', r'\n\1', text)
-    text = re.sub(r'(第一反应[：:])', r'\n\1', text)
-    text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
-    text = re.sub(r'(最终结论[：:])', r'\n\1', text)
-    text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1', text)
-    text = re.sub(r'(价格路径推演[：:])', r'\n\1', text)
-    text = re.sub(r'(入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', r'\n**\1**：', text)
-
-    lines = text.split('\n')
-    quoted = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            quoted.append('> ')
+        reasoning_raw = strategy.get("reasoning", "")
+        # 核心逻辑（前置）
+        core_text = extract_core_reasoning(reasoning_raw)
+        core_block = format_reasoning_block(core_text, bold_titles=True)
+        # 完整推演步骤（后置）
+        detail_text = extract_detail_steps(reasoning_raw)
+        if detail_text:
+            detail_block = "\n\n---\n\n### 📋 完整推演过程\n" + format_reasoning_block(detail_text, bold_titles=True)
         else:
-            # 步骤标题加粗
-            if re.match(r'^(第[一二三四五六]步)', line):
-                line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-            quoted.append(f'> {line}' if not line.startswith('>') else line)
-    reasoning_block = '\n'.join(quoted)
+            detail_block = ""
 
     # 风险说明
     risk_raw = strategy.get("risk_note", "请严格设置止损")
@@ -123,4 +175,9 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    return f"{title}\n\n{param}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
+    # 组装消息：核心前置 + 完整推演后置
+    message = f"{title}\n\n{param}\n\n### 🧠 核心逻辑\n{core_block}\n\n{risk_block}"
+    if detail_block:
+        message += detail_block
+    message += f"\n\n{foot}"
+    return message
