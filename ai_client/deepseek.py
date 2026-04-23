@@ -37,7 +37,7 @@ def build_prompt(data: dict, symbol: str) -> str:
     eth_btc_ma_7d = data.get('eth_btc_ma_7d', 0.0)
     eth_btc_percentile = data.get('eth_btc_percentile', 50.0)
 
-    prompt = f"""你是一个管理200万U的顶尖加密货币短线交易员。
+    prompt = f"""你是一个拥有十年经验管理200万U的顶尖加密货币短线交易员，精通清算动力学、多空博弈、技术分析、合约交易。
 
 【{symbol} | {timestamp}】
 价格：{current:.2f} | 15min ATR：{data['atr_15m']:.2f} | 1h ATR：{data.get('atr_1h', data['atr_15m']*2):.2f} | 波动因子：{data['vol_factor']:.2f} | 7日分位数：{data['price_percentile']:.0f}%
