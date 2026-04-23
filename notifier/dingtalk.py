@@ -36,7 +36,8 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 def format_reasoning(text: str) -> str:
     """
     将AI推理文本转为钉钉引用块格式。
-    强制在关键标签前插入换行，确保独立成行、首行加粗。
+    - 强制关键标签独立成行、加粗。
+    - 标签后的内容换到下一行，并缩进两个空格，提升可读性。
     """
     if not text:
         return "> 无推理过程"
@@ -44,7 +45,7 @@ def format_reasoning(text: str) -> str:
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # 强制关键标签换行
+    # 1. 强制在关键标签前插入换行
     labels = [
         "分析数据", "第一反应", "自我质疑", "最终结论",
         "交叉验证与裁决", "流动性猎杀推演",
@@ -55,6 +56,7 @@ def format_reasoning(text: str) -> str:
 
     text = re.sub(r'(?<!\n)(第[一二三四五六]步[：:])', r'\n\1', text)
 
+    # 2. 按段落分割
     paragraphs = text.split('\n\n')
     formatted_paras = []
 
@@ -74,10 +76,22 @@ def format_reasoning(text: str) -> str:
             elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            if line.startswith('>'):
-                quoted_lines.append(line)
+            # 核心改动：将标签后的内容换行缩进
+            match = re.match(r'(\*\*[^*]+\*\*[：:]|[\w]+[：:])\s*(.*)', line)
+            if match:
+                tag = match.group(1)
+                content = match.group(2).strip()
+                # 标签行
+                quoted_lines.append(f'> {tag}' if not tag.startswith('>') else tag)
+                # 内容行（缩进两个空格）
+                if content:
+                    # 如果内容中包含分号，可进一步拆分（可选）
+                    quoted_lines.append(f'>   {content}')
             else:
-                quoted_lines.append(f'> {line}')
+                if line.startswith('>'):
+                    quoted_lines.append(line)
+                else:
+                    quoted_lines.append(f'> {line}')
 
         formatted_paras.append('\n'.join(quoted_lines))
 
@@ -109,7 +123,6 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(now)
         title = "## " + " · ".join(parts)
 
-        # 参数卡片所需变量
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)
         stop = strategy.get("stop_loss", 0)
@@ -128,7 +141,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     reasoning_raw = strategy.get("reasoning", "无推理过程")
     reasoning_block = format_reasoning(reasoning_raw)
 
-    # ----- 风险说明（原样保留，仅添加引用标记）-----
+    # ----- 风险说明 -----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_raw.split('\n'):
@@ -154,5 +167,4 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    # ----- 最终拼接 -----
     return f"{title}\n\n{param}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
