@@ -34,31 +34,31 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def extract_core_reasoning(reasoning_raw: str) -> str:
-    """提取核心逻辑：从交叉验证开始到具体操作字段之前，并附带错误反思"""
+    """提取核心逻辑：从交叉验证开始，尽可能多取后续内容"""
     if not reasoning_raw:
         return ""
 
     text = reasoning_raw
     core = ""
 
-    # 1. 提取主体：交叉验证与裁决 → 入场区间/止损位/止盈位/主动证伪/微观盘口/如果我错了/方向选择 之前
+    # 尝试从"交叉验证与裁决"取到"入场区间"或"止损位"等操作字段之前
     m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|方向选择|$)', text, re.DOTALL)
     if m:
         core = m.group(1).strip()
 
-    # 2. 尝试追加“如果我错了”部分（如果存在且未包含在主体内）
+    # 如果没取到，直接取前1500字符
+    if not core:
+        core = text[:1500].strip()
+        if len(text) > 1500:
+            core += "..."
+
+    # 尝试附加"如果我错了"段落（如果未包含）
     if "如果我错了" not in core:
         wrong_m = re.search(r'(如果我错了[，,][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|方向选择|$)', text, re.DOTALL)
         if wrong_m:
-            if core:
-                core += "\n\n"
-            core += wrong_m.group(1).strip()
+            core = core + "\n\n" + wrong_m.group(1).strip()
 
-    # 如果提取失败，回退到前1500字符
-    if not core:
-        core = text[:1500] + "..." if len(text) > 1500 else text
-
-    # 截断长度防止超出钉钉限制
+    # 限制长度
     if len(core) > 2000:
         core = core[:2000] + "..."
     return core
@@ -79,26 +79,25 @@ def extract_detail_steps(reasoning_raw: str) -> str:
 
 
 def force_line_breaks(text: str) -> str:
-    """在关键子标题前强制插入换行符，保证钉钉显示独立成行"""
+    """强制在关键标题前插入换行"""
     if not text:
         return text
-    # 步骤标题前加两个换行（段落分隔）
+    # 步骤标题
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1', text)
-    # 核心逻辑标题前加两个换行
+    # 推演标题
     text = re.sub(r'(流动性猎杀推演|价格路径推演|情景推演)[：:]', r'\n\n\1：', text)
-    # 子标题前加单个换行
+    # 子标题
     text = re.sub(r'(分析数据[：:])', r'\n\1', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1', text)
     text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
     text = re.sub(r'(最终结论[：:])', r'\n\1', text)
     text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1', text)
-    # 压缩多余换行
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 
 def format_reasoning_block(text: str) -> str:
-    """将文本格式化为钉钉引用块：每行加 > ，标题自动加粗"""
+    """格式化为钉钉引用块，标题加粗"""
     if not text:
         return "> "
 
@@ -111,7 +110,6 @@ def format_reasoning_block(text: str) -> str:
             quoted.append('> ')
             continue
 
-        # 标题加粗处理
         if re.match(r'^(第[一二三四五六]步)', line):
             line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
         elif re.match(r'^(交叉验证与裁决|流动性猎杀推演|价格路径推演|如果我错了)', line):
@@ -122,24 +120,23 @@ def format_reasoning_block(text: str) -> str:
 
 
 def clean_risk_text(raw: str) -> list:
-    """清洗风险文本，彻底移除所有序号前缀和标签，返回纯条目列表"""
+    """彻底清洗风险文本中的任何前导序号和标签"""
     lines = []
     for part in raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 循环剥离开头的数字、点、括号、空格等序号字符
+        # 反复剥离开头的数字、点、空格、括号等
         while True:
             m = re.match(r'^([\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩\s\t]+)(.*)$', part)
             if m:
                 part = m.group(2).strip()
             else:
                 break
-        # 移除项目符号
+        # 去除项目符号
         part = re.sub(r'^[-*•]\s*', '', part)
-        # 移除"风险"标签
+        # 去除"风险"字样
         part = re.sub(r'^(主要)?风险[：:]\s*', '', part)
-        part = re.sub(r'^风险说明[：:]\s*', '', part)
         part = part.strip()
         if part and part not in lines:
             lines.append(part)
