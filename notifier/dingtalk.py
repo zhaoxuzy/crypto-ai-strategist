@@ -33,50 +33,47 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
         return False
 
 
-def force_line_breaks(text: str) -> str:
-    """在关键标题前插入换行，确保分段清晰"""
-    text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\1', text)
-    text = re.sub(r'(分析数据[：:])', r'\n\1 ', text)
-    text = re.sub(r'(第一反应[：:])', r'\n\1 ', text)
-    text = re.sub(r'(自我质疑[：:])', r'\n\1 ', text)
-    text = re.sub(r'(最终结论[：:])', r'\n\1 ', text)
-    text = re.sub(r'(交叉验证与裁决[：:])', r'\n\1 ', text)
-    text = re.sub(r'(价格路径推演[：:])', r'\n\1 ', text)
-    text = re.sub(r'(入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', r'\n\1 ', text)
-    return text
-
-
-def format_reasoning_block(raw_text: str) -> str:
-    if not raw_text:
+def format_reasoning(text: str) -> str:
+    """
+    将AI推理文本转为钉钉引用块格式。
+    原则：保留原始换行和段落，仅添加 `> ` 前缀并适度加粗标题。
+    """
+    if not text:
         return "> 无推理过程"
 
-    text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
-    text = force_line_breaks(text)
+    # 统一换行符，并压缩过多空行
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    lines = text.split('\n')
-    quoted = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            quoted.append('> ')
-            continue
-        if line.startswith('>'):
-            quoted.append(line)
-        else:
-            quoted.append(f'> {line}')
+    # 按段落分割（以两个换行符为准）
+    paragraphs = text.split('\n\n')
+    formatted_paras = []
 
-    # 压缩连续空行
-    cleaned = []
-    prev_empty = False
-    for qline in quoted:
-        is_empty = (qline.strip() == '>')
-        if is_empty and prev_empty:
+    for para in paragraphs:
+        if not para.strip():
             continue
-        cleaned.append(qline)
-        prev_empty = is_empty
+        lines = para.split('\n')
+        quoted_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # 对常见标题进行加粗
+            if re.match(r'^(第[一二三四五六]步)[：:]', line):
+                line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
+            elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|价格路径推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
+                line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-    return '\n'.join(cleaned)
+            # 避免重复引用标记
+            if line.startswith('>'):
+                quoted_lines.append(line)
+            else:
+                quoted_lines.append(f'> {line}')
+        # 段落内用单个换行连接
+        formatted_paras.append('\n'.join(quoted_lines))
+
+    # 段落之间用空行分隔（钉钉渲染出间距）
+    return '\n\n'.join(formatted_paras)
 
 
 def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
@@ -85,6 +82,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
     direction = strategy.get("direction", "neutral")
 
+    # ----- 标题行 -----
     if direction == "neutral":
         title = f"## ⚪ 观望 {symbol} · 🔴低 · {now}"
         param = f"> 现价{data.get('mark_price', 0):.0f} · 入场0-0 · 止损0 · 止盈0 · 盈亏比N/A"
@@ -103,6 +101,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
         parts.append(now)
         title = "## " + " · ".join(parts)
 
+        # 参数卡片
         entry_low = strategy.get("entry_price_low", 0)
         entry_high = strategy.get("entry_price_high", 0)
         stop = strategy.get("stop_loss", 0)
@@ -117,18 +116,18 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
 
         param = f"> 现价{current:.0f} · 入场{entry_low:.0f}-{entry_high:.0f} · 止损{stop:.0f} · 止盈{tp:.0f} · 盈亏比{rr_str}"
 
-    # 解析 reasoning 中的核心推演部分
+    # ----- 推理内容（使用格式化函数）-----
     reasoning_raw = strategy.get("reasoning", "无推理过程")
-    core_block = format_reasoning_block(reasoning_raw)
+    reasoning_block = format_reasoning(reasoning_raw)
 
-    # 风险说明
+    # ----- 风险说明 -----
     risk_raw = strategy.get("risk_note", "请严格设置止损")
     risk_lines = []
     for part in risk_raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 移除行首序号干扰
+        # 移除可能已有的序号
         part = re.sub(r'^[\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩]+\s*', '', part)
         part = part.strip()
         if part and part not in risk_lines:
@@ -140,7 +139,7 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     risk_items = '\n> '.join([f"{i+1}. {s}" for i, s in enumerate(risk_lines)])
     risk_block = f"> ### ⚠️ 风险说明\n> {risk_items}"
 
-    # 脚注
+    # ----- 脚注 -----
     atr = data.get("atr_15m", 0)
     funding = data.get("funding_rate", 0)
     oi_chg = data.get("oi_change_24h", 0)
@@ -149,4 +148,5 @@ def format_strategy_message(symbol: str, strategy: dict, data: dict) -> str:
     fg = data.get("fear_greed", 50)
     foot = f"📎 ATR{atr:.0f} · 费率{funding:.4f}% · OI{oi_chg:+.1f}% · CVD{cvd_dir} · 贪婪{fg}"
 
-    return f"{title}\n\n{param}\n\n### 🧠 交易员推理\n{core_block}\n\n{risk_block}\n\n{foot}"
+    # ----- 最终拼接 -----
+    return f"{title}\n\n{param}\n\n### 🧠 交易员推理\n{reasoning_block}\n\n{risk_block}\n\n{foot}"
