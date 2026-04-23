@@ -85,7 +85,7 @@ def force_line_breaks(text: str) -> str:
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1', text)
     text = re.sub(r'(流动性猎杀推演[：:])', r'\n\n\1', text)
     text = re.sub(r'(情景推演[：:])', r'\n\n\1', text)
-    text = re.subr(r'(分析数据[：:])', r'\n\1', text)
+    text = re.sub(r'(分析数据[：:])', r'\n\1', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1', text)
     text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
     text = re.sub(r'(最终结论[：:])', r'\n\1', text)
@@ -118,7 +118,7 @@ def format_reasoning_block(text: str) -> str:
 
 
 def clean_risk_text(raw: str) -> list:
-    """清洗风险文本，返回无前缀的纯条目列表（终极版）"""
+    """清洗风险文本，返回无前缀的纯条目列表"""
     lines = []
     for part in raw.split('\n'):
         part = part.strip()
