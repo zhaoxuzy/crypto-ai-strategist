@@ -34,7 +34,7 @@ def send_dingtalk_message(content: str, title: str = "策略推送") -> bool:
 
 
 def extract_core_reasoning(reasoning_raw: str) -> str:
-    """提取交叉验证与裁决 + 流动性猎杀推演 + 如果我错了，失败则回退前半部分"""
+    """提取交叉验证与裁决 + 流动性猎杀推演 + 如果我错了"""
     if not reasoning_raw:
         return ""
 
@@ -46,10 +46,14 @@ def extract_core_reasoning(reasoning_raw: str) -> str:
     if m:
         parts.append(m.group(1).strip())
 
-    # 2. 流动性猎杀推演（更宽容）
+    # 2. 流动性猎杀推演（兼容旧格式）
     m = re.search(r'(流动性猎杀推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|方向选择|第[一二三四五六]步|交叉验证|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
+    else:
+        m = re.search(r'(价格路径推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|$)', text, re.DOTALL)
+        if m:
+            parts.append(m.group(1).strip())
 
     # 3. 如果我错了
     m = re.search(r'(如果我错了[，,][\s\S]*?)(?=方向选择|流动性猎杀推演|入场区间|$)', text, re.DOTALL)
@@ -60,8 +64,7 @@ def extract_core_reasoning(reasoning_raw: str) -> str:
         combined = "\n\n".join(parts)
         return combined[:2000] + "..." if len(combined) > 2000 else combined
 
-    # 回退：取前 2000 字符
-    return text[:2000] + "..." if len(text) > 2000 else text
+    return text[:1500] + "..." if len(text) > 1500 else text
 
 
 def extract_detail_steps(reasoning_raw: str) -> str:
@@ -79,12 +82,12 @@ def extract_detail_steps(reasoning_raw: str) -> str:
 
 
 def force_line_breaks(text: str) -> str:
-    """暴力换行：在所有关键子标题前强制插入换行符"""
+    """在所有关键子标题前强制插入换行符"""
     if not text:
         return text
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1', text)
     text = re.sub(r'(流动性猎杀推演[：:])', r'\n\n\1', text)
-    text = re.sub(r'(情景推演[：:])', r'\n\n\1', text)
+    text = re.sub(r'(情景推演|价格路径推演)[：:]', r'\n\n\1', text)
     text = re.sub(r'(分析数据[：:])', r'\n\1', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1', text)
     text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
@@ -110,7 +113,7 @@ def format_reasoning_block(text: str) -> str:
 
         if re.match(r'^(第[一二三四五六]步)', line):
             line = re.sub(r'^(第[一二三四五六]步)', r'**\1**', line)
-        elif re.match(r'^(交叉验证与裁决|流动性猎杀推演|如果我错了)', line):
+        elif re.match(r'^(交叉验证与裁决|流动性猎杀推演|价格路径推演|如果我错了)', line):
             line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
         quoted.append(f'> {line}' if not line.startswith('>') else line)
@@ -124,7 +127,6 @@ def clean_risk_text(raw: str) -> list:
         part = part.strip()
         if not part:
             continue
-        # 循环移除所有开头的数字、点、空格组合
         while True:
             m = re.match(r'^([\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩\s\t]+)(.*)$', part)
             if m:
