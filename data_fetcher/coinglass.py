@@ -244,15 +244,40 @@ class CoinGlassClient:
         params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
         return self._request("api/futures/open-interest/aggregated-history", params, allow_backup=False, silent_fail=True)
 
-    def get_eth_btc_ratio(self) -> float:
+    def get_eth_btc_ratio(self) -> dict:
+        """返回 ETH/BTC 汇率的当前值、7日均值、7日分位数"""
         try:
-            eth = self.get_kline_history("ETH", "4h", 1)
-            btc = self.get_kline_history("BTC", "4h", 1)
-            eth_close = self._get_close_from_candle(eth[0]) if eth else 0
-            btc_close = self._get_close_from_candle(btc[0]) if btc else 1
-            return eth_close / btc_close if btc_close > 0 else 0.0
-        except:
-            return 0.0
+            eth_kline = self.get_kline_history("ETH", "4h", 42)
+            btc_kline = self.get_kline_history("BTC", "4h", 42)
+
+            if not eth_kline or not btc_kline:
+                return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
+
+            ratios = []
+            for eth_candle, btc_candle in zip(eth_kline, btc_kline):
+                eth_close = self._get_close_from_candle(eth_candle)
+                btc_close = self._get_close_from_candle(btc_candle)
+                if btc_close > 0:
+                    ratios.append(eth_close / btc_close)
+
+            if not ratios:
+                return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
+
+            current = ratios[-1]
+            ma_7d = sum(ratios) / len(ratios)
+
+            sorted_ratios = sorted(ratios)
+            rank = sum(1 for r in sorted_ratios if r < current)
+            percentile = round((rank / len(sorted_ratios)) * 100, 2)
+
+            return {
+                "current": current,
+                "ma_7d": round(ma_7d, 6),
+                "percentile_7d": percentile
+            }
+        except Exception as e:
+            logger.warning(f"获取 ETH/BTC 汇率历史失败: {e}")
+            return {"current": 0.0, "ma_7d": 0.0, "percentile_7d": 50.0}
 
     def get_all_data(self, symbol: str = "BTC") -> dict:
         base_symbol = symbol.upper()
@@ -283,7 +308,10 @@ class CoinGlassClient:
                     logger.error(f"获取 {key} 失败: {e}")
                     results[key] = None
 
-        eth_btc_ratio = self.get_eth_btc_ratio()
+        eth_btc_data = self.get_eth_btc_ratio()
+        eth_btc_ratio = eth_btc_data.get("current", 0.0)
+        eth_btc_ma_7d = eth_btc_data.get("ma_7d", 0.0)
+        eth_btc_percentile = eth_btc_data.get("percentile_7d", 50.0)
 
         data_quality = {}
         for key in tasks.keys():
@@ -399,6 +427,8 @@ class CoinGlassClient:
             "fear_greed": fear_greed,
             "fear_greed_prev_7d": fear_greed_prev_7d,
             "eth_btc_ratio": eth_btc_ratio,
+            "eth_btc_ma_7d": eth_btc_ma_7d,
+            "eth_btc_percentile": eth_btc_percentile,
             "netflow": netflow,
             "orderbook_bids": orderbook.get("bids_usd", 0.0),
             "orderbook_asks": orderbook.get("asks_usd", 0.0),
