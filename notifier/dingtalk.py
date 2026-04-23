@@ -41,17 +41,14 @@ def extract_core_reasoning(reasoning_raw: str) -> str:
     parts = []
     text = reasoning_raw
 
-    # 1. 交叉验证与裁决
     m = re.search(r'(交叉验证与裁决[：:][\s\S]*?)(?=流动性猎杀推演|入场区间|如果我错了|方向选择|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
 
-    # 2. 流动性猎杀推演
     m = re.search(r'(流动性猎杀推演[：:][\s\S]*?)(?=入场区间|止损位|止盈位|主动证伪|微观盘口|如果我错了|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
 
-    # 3. 如果我错了
     m = re.search(r'(如果我错了[，,][\s\S]*?)(?=方向选择|流动性猎杀推演|入场区间|$)', text, re.DOTALL)
     if m:
         parts.append(m.group(1).strip())
@@ -83,7 +80,7 @@ def force_line_breaks(text: str) -> str:
         return text
     text = re.sub(r'(第[一二三四五六]步[：:])', r'\n\n\1', text)
     text = re.sub(r'(流动性猎杀推演[：:])', r'\n\n\1', text)
-    text = re.subr(r'(情景推演[：:])', r'\n\n\1', text)  # 兼容旧格式
+    text = re.sub(r'(情景推演[：:])', r'\n\n\1', text)  # 兼容旧格式
     text = re.sub(r'(分析数据[：:])', r'\n\1', text)
     text = re.sub(r'(第一反应[：:])', r'\n\1', text)
     text = re.sub(r'(自我质疑[：:])', r'\n\1', text)
