@@ -100,21 +100,18 @@ def format_reasoning_block(text: str) -> str:
 
 
 def clean_risk_text(raw: str) -> list:
-    """彻底清洗风险文本，移除所有前导序号和标签"""
+    """
+    彻底清洗风险文本：移除所有前导序号、空格、项目符号和风险标签，
+    返回纯净的文本行列表。
+    """
     lines = []
     for part in raw.split('\n'):
         part = part.strip()
         if not part:
             continue
-        # 关键修复：先去除左侧空白，再反复剥离序号字符
-        part = part.lstrip()
-        while True:
-            m = re.match(r'^([\d\.、\)）①②③④⑤⑥⑦⑧⑨⑩\s\t]+)(.*)$', part)
-            if m:
-                part = m.group(2).strip()
-            else:
-                break
-        part = re.sub(r'^[-*•]\s*', '', part)
+        # 移除开头所有非中文、非英文字母、非数字的字符（包括序号、空格、点等）
+        part = re.sub(r'^[^\w\u4e00-\u9fff]+', '', part)
+        # 移除可能残留的"风险"标签
         part = re.sub(r'^(主要)?风险[：:]\s*', '', part)
         part = part.strip()
         if part and part not in lines:
