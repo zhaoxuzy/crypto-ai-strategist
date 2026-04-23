@@ -76,7 +76,7 @@ def format_reasoning(text: str) -> str:
             elif re.match(r'^(分析数据|第一反应|自我质疑|最终结论|交叉验证与裁决|流动性猎杀推演|入场区间|止损位|止盈位|主动证伪信号|微观盘口确认)[：:]', line):
                 line = re.sub(r'^([^：:]+)', r'**\1**', line)
 
-            # 核心改动：将标签后的内容换行缩进
+            # 核心处理：将标签后的内容换行缩进
             match = re.match(r'(\*\*[^*]+\*\*[：:]|[\w]+[：:])\s*(.*)', line)
             if match:
                 tag = match.group(1)
@@ -85,7 +85,6 @@ def format_reasoning(text: str) -> str:
                 quoted_lines.append(f'> {tag}' if not tag.startswith('>') else tag)
                 # 内容行（缩进两个空格）
                 if content:
-                    # 如果内容中包含分号，可进一步拆分（可选）
                     quoted_lines.append(f'>   {content}')
             else:
                 if line.startswith('>'):
