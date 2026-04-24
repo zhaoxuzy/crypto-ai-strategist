@@ -1,8 +1,5 @@
 name: Crypto Brain
 
-on:
-  schedule:
-    - cron: '0,30 0-16 * * *'
   workflow_dispatch:
     inputs:
       symbol:
