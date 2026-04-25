@@ -1,5 +1,5 @@
 name: Crypto Brain
-
+on:
   workflow_dispatch:
     inputs:
       symbol:
