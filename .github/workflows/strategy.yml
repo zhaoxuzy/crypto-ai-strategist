@@ -1,4 +1,4 @@
-name: Crypto Brain
+name: SOL
 on:
   workflow_dispatch:
     inputs:
